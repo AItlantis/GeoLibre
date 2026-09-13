@@ -6406,6 +6406,7 @@
     "description": "Katmanlar ve projeler arasında yeniden kullanılabilir stilleri, sembolleri, etiket ön ayarlarını ve renk geçişlerini kaydedin, göz atın ve uygulayın.",
     "searchPlaceholder": "Stilleri ve etiketleri ara…",
     "presetsSection": "Yerleşik ön ayarlar",
+    "presetActions": "Ön ayar eylemleri",
     "librarySection": "Kitaplığım",
     "projectSection": "Bu proje",
     "empty": "Eşleşen kayıtlı stil yok. Başlamak için bir katmanın stilini kaydedin veya bir kitaplık içe aktarın.",

@@ -6406,6 +6406,7 @@
     "description": "Enregistrez, parcourez et appliquez des styles, symboles, préréglages d'étiquettes et rampes de couleurs réutilisables entre couches et projets.",
     "searchPlaceholder": "Rechercher styles et étiquettes…",
     "presetsSection": "Préréglages intégrés",
+    "presetActions": "Actions du préréglage",
     "librarySection": "Ma bibliothèque",
     "projectSection": "Ce projet",
     "empty": "Aucun style enregistré ne correspond. Enregistrez le style d'une couche ou importez une bibliothèque pour commencer.",

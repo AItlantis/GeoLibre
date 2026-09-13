@@ -6331,6 +6331,7 @@
     "description": "Simpan, telusuri, dan terapkan gaya, simbol, preset label, dan gradasi warna yang dapat digunakan kembali di seluruh layer dan proyek.",
     "searchPlaceholder": "Cari gaya dan tag…",
     "presetsSection": "Preset bawaan",
+    "presetActions": "Aksi preset",
     "librarySection": "Pustaka saya",
     "projectSection": "Proyek ini",
     "empty": "Tidak ada gaya tersimpan yang cocok. Simpan gaya layer atau impor pustaka untuk memulai.",

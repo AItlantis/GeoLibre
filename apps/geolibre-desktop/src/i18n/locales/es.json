@@ -6406,6 +6406,7 @@
     "description": "Guarde, explore y aplique estilos, símbolos, ajustes preestablecidos de etiquetas y rampas de color reutilizables en capas y proyectos.",
     "searchPlaceholder": "Buscar estilos y etiquetas…",
     "presetsSection": "Ajustes preestablecidos integrados",
+    "presetActions": "Acciones del ajuste preestablecido",
     "librarySection": "Mi biblioteca",
     "projectSection": "Este proyecto",
     "empty": "No hay estilos guardados que coincidan. Guarde el estilo de una capa o importe una biblioteca para empezar.",

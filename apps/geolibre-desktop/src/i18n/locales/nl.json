@@ -6406,6 +6406,7 @@
     "description": "Sla herbruikbare stijlen, symbolen, labelvoorinstellingen en kleurverlopen op, blader erdoorheen en pas ze toe op lagen en projecten.",
     "searchPlaceholder": "Stijlen en tags zoeken…",
     "presetsSection": "Ingebouwde voorinstellingen",
+    "presetActions": "Voorinstellingsacties",
     "librarySection": "Mijn bibliotheek",
     "projectSection": "Dit project",
     "empty": "Geen opgeslagen stijlen komen overeen. Sla de stijl van een laag op of importeer een bibliotheek om te beginnen.",

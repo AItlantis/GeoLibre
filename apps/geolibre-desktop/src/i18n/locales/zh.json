@@ -6331,6 +6331,7 @@
     "description": "保存、浏览和应用可复用的样式、符号、标注预设和色带，可跨图层与项目使用。",
     "searchPlaceholder": "搜索样式和标签…",
     "presetsSection": "内置预设",
+    "presetActions": "预设操作",
     "librarySection": "我的库",
     "projectSection": "此项目",
     "empty": "没有匹配的已保存样式。保存图层样式或导入样式库以开始使用。",

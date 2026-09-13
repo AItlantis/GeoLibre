@@ -6406,6 +6406,7 @@
     "description": "Speichern, durchsuchen und wenden Sie wiederverwendbare Stile, Symbole, Beschriftungsvorlagen und Farbverläufe über Ebenen und Projekte hinweg an.",
     "searchPlaceholder": "Stile und Tags durchsuchen…",
     "presetsSection": "Integrierte Vorlagen",
+    "presetActions": "Vorlagenaktionen",
     "librarySection": "Meine Bibliothek",
     "projectSection": "Dieses Projekt",
     "empty": "Keine gespeicherten Stile passen. Speichern Sie den Stil einer Ebene oder importieren Sie eine Bibliothek, um zu beginnen.",

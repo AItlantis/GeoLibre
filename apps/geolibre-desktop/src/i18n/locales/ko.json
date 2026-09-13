@@ -6331,6 +6331,7 @@
     "description": "레이어와 프로젝트 전반에서 재사용 가능한 스타일, 심볼, 레이블 사전 설정, 색상 램프를 저장, 탐색, 적용합니다.",
     "searchPlaceholder": "스타일 및 태그 검색…",
     "presetsSection": "내장 사전 설정",
+    "presetActions": "사전 설정 작업",
     "librarySection": "내 라이브러리",
     "projectSection": "이 프로젝트",
     "empty": "일치하는 저장된 스타일이 없습니다. 레이어의 스타일을 저장하거나 라이브러리를 가져와 시작하세요.",

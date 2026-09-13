@@ -6406,6 +6406,7 @@
     "description": "Salve, navegue e aplique estilos, símbolos, predefinições de rótulos e rampas de cores reutilizáveis em camadas e projetos.",
     "searchPlaceholder": "Pesquisar estilos e tags…",
     "presetsSection": "Predefinições integradas",
+    "presetActions": "Ações da predefinição",
     "librarySection": "Minha biblioteca",
     "projectSection": "Este projeto",
     "empty": "Nenhum estilo salvo corresponde. Salve o estilo de uma camada ou importe uma biblioteca para começar.",

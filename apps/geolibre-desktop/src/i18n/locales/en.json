@@ -6523,6 +6523,7 @@
     "description": "Save, browse, and apply reusable styles, symbols, label presets, and color ramps across layers and projects.",
     "searchPlaceholder": "Search styles and tags…",
     "presetsSection": "Built-in presets",
+    "presetActions": "Preset actions",
     "librarySection": "My library",
     "projectSection": "This project",
     "empty": "No saved styles match. Save a layer's style or import a library to get started.",
