@@ -13,6 +13,7 @@
 // layer and apply an entry to it — while browsing the library.
 
 import {
+  localFileName,
   BUILT_IN_STYLE_PRESETS,
   createStyleLibraryEntryId,
   DEFAULT_LAYER_STYLE,
@@ -494,11 +495,7 @@ export function StyleManagerPanel() {
         readText: true,
       });
       if (!picked || picked.text === undefined) return;
-      const fileName =
-        picked.path
-          .split(/[\\/]/)
-          .pop()
-          ?.replace(/\.[^.]+$/, "") ?? "";
+      const fileName = localFileName(picked.path).replace(/\.[^.]+$/, "");
       const trimmed = picked.text.trimStart();
       if (trimmed.startsWith("<")) {
         // A QGIS QML or OGC SLD file: convert it to a full-style entry via the

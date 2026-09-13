@@ -198,3 +198,4 @@ export {
   createCesiumKmlLayer,
   type CesiumKmlLayerOptions,
 } from "./cesium-kml";
+export { localFileName, uniqueImportedLayerName } from "./file-name";
