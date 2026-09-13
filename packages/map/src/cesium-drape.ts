@@ -6,6 +6,7 @@ import {
   type DecodedTile,
 } from "./cesium-protocol-imagery";
 import { createLayerSync, type LayerSync } from "./headless";
+import { arcgisVectorStyle } from "./arcgis-vector-style";
 
 // The MapLibre drape (issue #2284): tile-backed vector layers on the globe.
 //
@@ -58,10 +59,11 @@ function isVectorArchive(layer: GeoLibreLayer): boolean {
 /**
  * Whether the globe draws `layer` through the drape: a tile-backed vector
  * kind with a source to read. Raster archives take the native imagery bridge
- * instead, and `arcgis` (VectorTileServer) layers are painted by their own
- * control, which the drape has no way to host.
+ * instead. ArcGIS VectorTileServer layers need their resolved sources and
+ * style layers; old control-only records cannot be reconstructed here.
  */
 export function isDrapedLayer(layer: GeoLibreLayer): boolean {
+  if (layer.type === "arcgis") return arcgisVectorStyle(layer) !== null;
   if (!DRAPED_TYPES.has(layer.type)) return false;
   if (layer.type === "vector-tiles") {
     return (

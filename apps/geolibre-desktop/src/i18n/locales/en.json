@@ -6900,6 +6900,7 @@
     "footerDeck": "Changes apply live to DuckDB deck.gl layer styling.",
     "footerMaplibre": "Changes apply live to MapLibre paint properties.",
     "pluginPaintedFooter": "This layer is drawn by its plugin, which provides its own styling controls.",
+    "serviceStyledFooter": "This layer keeps its service's own styling; opacity, order, zoom range, and filters still apply.",
     "extrusion": {
       "color": "Extrusion color",
       "opacity": "Extrusion opacity",

@@ -59,6 +59,7 @@ import {
   getVectorLayerPropertyValues,
 } from "@geolibre/plugins";
 import {
+  arcgisVectorStyle,
   layerBlendModesSupported,
   subscribeLayerBlendModeSupport,
   type MapEngine,
@@ -1789,6 +1790,10 @@ export function StylePanel({
   // for it (#1445). The plugin declares that with `paintMode: "plugin"`; the
   // panel then offers only what actually reaches the layer.
   const isPluginPaintedLayer = pluginOwnsPaint(layer);
+  // An ArcGIS vector-tile layer with its resolved style keeps the service's
+  // own paint: layer sync forwards only opacity, order, zoom range, and
+  // filters to its native layers, so the color editors would be inert.
+  const isServiceStyledLayer = layer.type === "arcgis" && arcgisVectorStyle(layer) !== null;
   const blendModeSelectId = `blend-mode-${layer.id}`;
   // Opacity survives the suppression when (and only when) the plugin bridged a
   // setter for it; otherwise the slider would be the same inert control.
@@ -1798,6 +1803,7 @@ export function StylePanel({
     !isRasterTileLayer &&
     !isDeckRasterLayer &&
     !isPluginPaintedLayer &&
+    !isServiceStyledLayer &&
     (layer.type === "geojson" ||
       layer.type === "vector-tiles" ||
       layer.type === "mbtiles" ||
@@ -1808,6 +1814,7 @@ export function StylePanel({
     !isRasterTileLayer &&
     !isDeckRasterLayer &&
     !isPluginPaintedLayer &&
+    !isServiceStyledLayer &&
     supportsExtrusionControls(layer);
   const hasRasterPaintControls =
     !isPluginPaintedLayer &&
@@ -4751,11 +4758,13 @@ export function StylePanel({
     </>
   );
 
-  if (isPluginPaintedLayer) {
+  if (isPluginPaintedLayer || isServiceStyledLayer) {
     // The plugin paints this layer itself, so the panel keeps only the controls
     // that still reach it: insert-below and the zoom range (MapLibre honors both
     // on a custom layer) plus Opacity when the registration bridged setOpacity.
-    // Everything else is styled from the plugin's own panel.
+    // Everything else is styled from the plugin's own panel. A service-styled
+    // ArcGIS layer lands here too; its opacity is a native paint property, so
+    // the slider always reaches it.
     return (
       <aside aria-label={t("style.panelLabel")} className={STYLE_PANEL_ASIDE_CLASS}>
         {resizeHandle}
@@ -4778,7 +4787,7 @@ export function StylePanel({
           <div className="space-y-4 p-3 pe-5">
             {beforeIdControl}
             {zoomRangeControls}
-            {hasBridgedOpacity && (
+            {(hasBridgedOpacity || isServiceStyledLayer) && (
               <RasterStyleSlider
                 label={t("style.raster.opacity")}
                 value={layer.opacity}
@@ -4805,7 +4814,9 @@ export function StylePanel({
           </div>
         </ScrollArea>
         <Separator />
-        <p className="p-2 text-[10px] text-muted-foreground">{t("style.pluginPaintedFooter")}</p>
+        <p className="p-2 text-[10px] text-muted-foreground">
+          {t(isServiceStyledLayer ? "style.serviceStyledFooter" : "style.pluginPaintedFooter")}
+        </p>
       </aside>
     );
   }

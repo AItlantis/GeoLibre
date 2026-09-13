@@ -1,3 +1,4 @@
+import { arcgisOpacity, arcgisVectorStyle } from "./arcgis-vector-style";
 import {
   compileFeatureExpression,
   compileLayerFilters,
@@ -692,6 +693,28 @@ function syncExternalNativeLayer(
   beforeId?: string,
 ): void {
   const nativeLayerIds = getExternalNativeLayerIds(layer);
+  const arcgisStyle = arcgisVectorStyle(layer);
+  if (arcgisStyle) {
+    for (const [id, source] of Object.entries(arcgisStyle.sources)) {
+      if (!map.getSource(id)) map.addSource(id, structuredClone(source));
+    }
+    for (const spec of arcgisStyle.layers) {
+      if (!map.getLayer(spec.id)) map.addLayer(structuredClone(spec), beforeId);
+      const properties =
+        spec.type === "symbol"
+          ? ["text-opacity", "icon-opacity"]
+          : spec.type === "circle"
+            ? ["circle-opacity", "circle-stroke-opacity"]
+            : [`${spec.type}-opacity`];
+      const paint = spec.paint as Record<string, unknown> | undefined;
+      for (const property of properties) {
+        const opacity = arcgisOpacity(paint?.[property], layer.opacity);
+        if (!styleValuesEqual(getDynamicPaintProperty(map, spec.id, property), opacity)) {
+          setDynamicPaintProperty(map, spec.id, property, opacity);
+        }
+      }
+    }
+  }
   if (isPMTilesExternalLayer(layer)) {
     ensurePMTilesExternalLayer(map, layer, nativeLayerIds, beforeId);
   }
@@ -810,7 +833,7 @@ function syncExternalNativeLayer(
       applyExternalNativeFeatureFilters(map, nativeLayerId, layer);
     }
 
-    if (!controlOwnsPaint(layer)) {
+    if (!arcgisStyle && !controlOwnsPaint(layer)) {
       setExternalNativeLayerPaint(map, nativeLayerId, nativeLayer.type, layer);
     }
     // External layers carry their own zoom range from the control or tile
