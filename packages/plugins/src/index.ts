@@ -74,6 +74,9 @@ export {
 } from "./plugins/maplibre-basemap-control";
 export {
   addArcGISLayer,
+  isArcGISWritableLayer,
+  saveArcGISLayerEdits,
+  arcGISLayerHasPendingEdits,
   setArcGISFetch,
   fetchArcGISImageServiceRasterFunctions,
   fetchArcGISMapServiceSublayers,

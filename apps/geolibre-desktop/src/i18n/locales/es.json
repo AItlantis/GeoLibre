@@ -7167,6 +7167,8 @@
     "saveEditsSuccess": "Se guardaron {{count}} entidad(es) en el archivo de origen.",
     "saveEditsNoFeatures": "Esta capa no tiene entidades que guardar.",
     "saveEditsError": "No se pudieron guardar las ediciones en el archivo de origen.",
+    "saveEditsToArcgis": "Guardar ediciones en el servicio ArcGIS",
+    "saveEditsArcgisSuccess": "Guardado en ArcGIS: {{inserted}} insertadas, {{updated}} actualizadas, {{deleted}} eliminadas.",
     "saveEditsToPostgis": "Guardar ediciones en la tabla de PostGIS",
     "saveEditsPostgisSuccess": "Guardado en {{table}}: {{inserted}} insertadas, {{updated}} actualizadas, {{deleted}} eliminadas.",
     "saveEditsPostgisSkippedFields": "No se guardaron los campos sin una columna de tabla coincidente: {{fields}}.",

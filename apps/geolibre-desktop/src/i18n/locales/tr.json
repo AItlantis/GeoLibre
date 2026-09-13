@@ -7167,6 +7167,8 @@
     "saveEditsSuccess": "{{count}} öğe kaynak dosyaya kaydedildi.",
     "saveEditsNoFeatures": "Bu katmanda kaydedilecek öğe yok.",
     "saveEditsError": "Düzenlemeler kaynak dosyaya kaydedilemedi.",
+    "saveEditsToArcgis": "Düzenlemeleri ArcGIS servisine kaydet",
+    "saveEditsArcgisSuccess": "ArcGIS hizmetine kaydedildi: {{inserted}} eklendi, {{updated}} güncellendi, {{deleted}} silindi.",
     "saveEditsToPostgis": "Düzenlemeleri PostGIS tablosuna kaydet",
     "saveEditsPostgisSuccess": "{{table}} tablosuna kaydedildi: {{inserted}} eklendi, {{updated}} güncellendi, {{deleted}} silindi.",
     "saveEditsPostgisSkippedFields": "Eşleşen tablo sütunu olmayan alanlar kaydedilmedi: {{fields}}.",

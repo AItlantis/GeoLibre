@@ -7087,6 +7087,8 @@
     "saveEditsSuccess": "已将 {{count}} 个要素保存到源文件。",
     "saveEditsNoFeatures": "此图层没有可保存的要素。",
     "saveEditsError": "无法将编辑保存到源文件。",
+    "saveEditsToArcgis": "保存编辑到 ArcGIS 服务",
+    "saveEditsArcgisSuccess": "已保存到 ArcGIS：新增 {{inserted}} 个，更新 {{updated}} 个，删除 {{deleted}} 个。",
     "saveEditsToPostgis": "保存编辑到 PostGIS 表",
     "saveEditsPostgisSuccess": "已保存到 {{table}}：新增 {{inserted}} 个，更新 {{updated}} 个，删除 {{deleted}} 个。",
     "saveEditsPostgisSkippedFields": "没有匹配表列的字段未被保存：{{fields}}。",

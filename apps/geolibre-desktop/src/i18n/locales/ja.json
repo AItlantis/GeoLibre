@@ -7087,6 +7087,8 @@
     "saveEditsSuccess": "{{count}}件のフィーチャを元ファイルに保存しました。",
     "saveEditsNoFeatures": "このレイヤーには保存するフィーチャがありません。",
     "saveEditsError": "編集内容を元ファイルに保存できませんでした。",
+    "saveEditsToArcgis": "編集内容をArcGISサービスに保存",
+    "saveEditsArcgisSuccess": "ArcGISに保存しました: 挿入{{inserted}}件、更新{{updated}}件、削除{{deleted}}件。",
     "saveEditsToPostgis": "編集内容をPostGISテーブルに保存",
     "saveEditsPostgisSuccess": "{{table}}に保存しました: 挿入{{inserted}}件、更新{{updated}}件、削除{{deleted}}件。",
     "saveEditsPostgisSkippedFields": "対応するテーブル列がないフィールドは保存されませんでした: {{fields}}。",

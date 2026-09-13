@@ -7327,6 +7327,8 @@
     "saveEditsSuccess": "Сохранено объектов в исходный файл: {{count}}.",
     "saveEditsNoFeatures": "В этом слое нет объектов для сохранения.",
     "saveEditsError": "Не удалось сохранить изменения в исходный файл.",
+    "saveEditsToArcgis": "Сохранить изменения в сервис ArcGIS",
+    "saveEditsArcgisSuccess": "Сохранено в ArcGIS: добавлено {{inserted}}, обновлено {{updated}}, удалено {{deleted}}.",
     "saveEditsToPostgis": "Сохранить изменения в таблицу PostGIS",
     "saveEditsPostgisSuccess": "Сохранено в {{table}}: добавлено {{inserted}}, обновлено {{updated}}, удалено {{deleted}}.",
     "saveEditsPostgisSkippedFields": "Поля без соответствующего столбца таблицы не сохранены: {{fields}}.",

@@ -7176,6 +7176,8 @@
     "saveEditsSuccess": "Salvati {{count}} elemento/i nel file sorgente.",
     "saveEditsNoFeatures": "Questo layer non contiene elementi da salvare.",
     "saveEditsError": "Impossibile salvare le modifiche nel file sorgente.",
+    "saveEditsToArcgis": "Salva modifiche nel servizio ArcGIS",
+    "saveEditsArcgisSuccess": "Salvato in ArcGIS: {{inserted}} inseriti, {{updated}} aggiornati, {{deleted}} eliminati.",
     "saveEditsToPostgis": "Salva modifiche nella tabella PostGIS",
     "saveEditsPostgisSuccess": "Salvato in {{table}}: {{inserted}} inseriti, {{updated}} aggiornati, {{deleted}} eliminati.",
     "saveEditsPostgisSkippedFields": "I campi senza una colonna corrispondente nella tabella non sono stati salvati: {{fields}}.",

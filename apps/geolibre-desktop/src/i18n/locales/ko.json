@@ -7087,6 +7087,8 @@
     "saveEditsSuccess": "{{count}}개의 피처를 원본 파일에 저장했습니다.",
     "saveEditsNoFeatures": "이 레이어에는 저장할 피처가 없습니다.",
     "saveEditsError": "원본 파일에 편집 내용을 저장할 수 없습니다.",
+    "saveEditsToArcgis": "ArcGIS 서비스에 편집 저장",
+    "saveEditsArcgisSuccess": "ArcGIS에 저장했습니다: {{inserted}}개 삽입, {{updated}}개 수정, {{deleted}}개 삭제.",
     "saveEditsToPostgis": "PostGIS 테이블에 편집 저장",
     "saveEditsPostgisSuccess": "{{table}}에 저장했습니다: {{inserted}}개 삽입, {{updated}}개 수정, {{deleted}}개 삭제.",
     "saveEditsPostgisSkippedFields": "일치하는 테이블 열이 없는 필드는 저장되지 않았습니다: {{fields}}.",

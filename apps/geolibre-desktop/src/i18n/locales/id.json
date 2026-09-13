@@ -7087,6 +7087,8 @@
     "saveEditsSuccess": "Menyimpan {{count}} fitur ke file sumber.",
     "saveEditsNoFeatures": "Layer ini tidak memiliki fitur untuk disimpan.",
     "saveEditsError": "Tidak dapat menyimpan pengeditan ke file sumber.",
+    "saveEditsToArcgis": "Simpan perubahan ke layanan ArcGIS",
+    "saveEditsArcgisSuccess": "Tersimpan ke ArcGIS: {{inserted}} ditambahkan, {{updated}} diperbarui, {{deleted}} dihapus.",
     "saveEditsToPostgis": "Simpan perubahan ke tabel PostGIS",
     "saveEditsPostgisSuccess": "Tersimpan ke {{table}}: {{inserted}} ditambahkan, {{updated}} diperbarui, {{deleted}} dihapus.",
     "saveEditsPostgisSkippedFields": "Bidang tanpa kolom tabel yang cocok tidak disimpan: {{fields}}.",

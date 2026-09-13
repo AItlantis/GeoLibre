@@ -7167,6 +7167,8 @@
     "saveEditsSuccess": "{{count}} entité(s) enregistrée(s) dans le fichier source.",
     "saveEditsNoFeatures": "Cette couche n'a aucune entité à enregistrer.",
     "saveEditsError": "Impossible d'enregistrer les modifications dans le fichier source.",
+    "saveEditsToArcgis": "Enregistrer les modifications dans le service ArcGIS",
+    "saveEditsArcgisSuccess": "Enregistré dans ArcGIS : {{inserted}} inséré(s), {{updated}} mis à jour, {{deleted}} supprimé(s).",
     "saveEditsToPostgis": "Enregistrer les modifications dans la table PostGIS",
     "saveEditsPostgisSuccess": "Enregistré dans {{table}} : {{inserted}} inséré(s), {{updated}} mis à jour, {{deleted}} supprimé(s).",
     "saveEditsPostgisSkippedFields": "Les champs sans colonne de table correspondante n'ont pas été enregistrés : {{fields}}.",

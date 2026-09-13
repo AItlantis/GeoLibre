@@ -7167,6 +7167,8 @@
     "saveEditsSuccess": "{{count}} Objekt(e) in der Quelldatei gespeichert.",
     "saveEditsNoFeatures": "Diese Ebene enthält keine zu speichernden Objekte.",
     "saveEditsError": "Änderungen konnten nicht in der Quelldatei gespeichert werden.",
+    "saveEditsToArcgis": "Änderungen im ArcGIS-Dienst speichern",
+    "saveEditsArcgisSuccess": "In ArcGIS gespeichert: {{inserted}} eingefügt, {{updated}} aktualisiert, {{deleted}} gelöscht.",
     "saveEditsToPostgis": "Änderungen in PostGIS-Tabelle speichern",
     "saveEditsPostgisSuccess": "In {{table}} gespeichert: {{inserted}} eingefügt, {{updated}} aktualisiert, {{deleted}} gelöscht.",
     "saveEditsPostgisSkippedFields": "Felder ohne passende Tabellenspalte wurden nicht gespeichert: {{fields}}.",
