@@ -534,9 +534,11 @@ export {
 } from "./plugins/openaerialmap-api";
 export {
   maplibrePlanetOpenDataPlugin,
+  maplibrePortolanPlugin,
   maplibreStacCatalogsPlugin,
   PLANET_DISASTER_DATA_CATALOG_URL,
   PLANET_OPEN_DATA_PLUGIN_ID,
+  PORTOLAN_PLUGIN_ID,
   setStacLabels,
   STAC_PLUGIN_ID,
   type StacLabels,
@@ -547,8 +549,10 @@ export {
   connectStac,
   isVisualizableAsset,
   itemBbox,
+  loadPortolanIndex,
   loadStacIndex,
   openCatalogNode,
+  PORTOLAN_REGISTRY_URL,
   searchStacApi,
   searchStaticStac,
   STAC_INDEX_CATALOGS_URL,
