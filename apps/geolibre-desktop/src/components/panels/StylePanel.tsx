@@ -4908,7 +4908,7 @@ export function StylePanel({
               </>
             )}
             {layer.metadata.sourceKind === RASTER_SOURCE_KIND && (
-              <RasterSymbologySection layer={layer} />
+              <RasterSymbologySection layer={layer} mapControllerRef={mapControllerRef} />
             )}
             {/* A Time Slider source is not in the raster plugin's registry, so
                 the section above has nothing to attach to; its own spec fields

@@ -7,6 +7,7 @@ import { buildProjectEgressSnapshot } from "../lib/build-project-snapshot";
 import { nativeWmsTileUrl } from "../lib/native-wms-url";
 import {
   addRasterToMap,
+  readRasterWindow,
   setRasterRenderEngine,
   addZarrRasterLayer,
   buildSelectorTimeBinding,
@@ -111,6 +112,7 @@ import type {
   GeoLibreZarrQueryGeometry,
   GeoLibreZarrQueryOptions,
   GeoLibreZarrQuerySelector,
+  GeoLibreRasterWindowOptions,
 } from "@geolibre/plugins";
 import { cogEngineDefaults } from "../lib/cog-render-engine";
 import { invoke } from "@tauri-apps/api/core";
@@ -1058,6 +1060,8 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
       mapControllerRef?.current?.fitBounds(bounds),
     getViewBounds: () => mapControllerRef?.current?.getViewBounds() ?? null,
     getMap: () => mapControllerRef?.current?.getMap() ?? null,
+    readRasterWindow: (layerId: string, options: GeoLibreRasterWindowOptions) =>
+      readRasterWindow(layerId, options),
     getMapRenderer: () => useAppStore.getState().primaryRenderer,
     getCesiumScene: () => {
       const engine = mapControllerRef?.current;
