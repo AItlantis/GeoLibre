@@ -22,6 +22,7 @@ import type {
 } from "./map-engine";
 import {
   compileMapboxLayer,
+  isMapboxPluginRaster,
   DEFAULT_MAPBOX_TEXT_FONT,
   type MapboxLayerPlan,
 } from "./mapbox-layers";
@@ -305,6 +306,12 @@ export class MapboxEngine implements MapEngine {
     // with the layer panel, including after a style swap or drag reorder.
     for (const original of [...layers].reverse()) {
       try {
+        // The raster control owns these layers and synchronizes their display
+        // settings from the store. Compiling the COG URL again is unsupported.
+        if (isMapboxPluginRaster(original)) {
+          this.removeLayer(original.id);
+          continue;
+        }
         if (!original.visible) this.errors.delete(`layer:${original.id}`);
         const opacity = this.storyOpacities.get(original.id);
         const layer = opacity === undefined ? original : { ...original, opacity };

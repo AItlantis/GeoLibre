@@ -53,12 +53,12 @@ export function styleUsesUnsupportedSource(style: { sources?: object }): boolean
 }
 
 /**
- * Whether {@link compileMapboxLayer} can produce a native Mapbox plan for a
- * layer. The layer panels use it to badge a layer the Mapbox renderer cannot
- * draw (a MapLibre custom protocol, deck.gl, COG, ...) before the engine's
- * error banner would report it.
+ * Whether Mapbox can draw a layer through a native plan or the raster plugin.
+ * The layer panels use it to badge unsupported layers before the engine's
+ * error banner would report them.
  */
 export function isMapboxSupportedLayer(layer: GeoLibreLayer): boolean {
+  if (isMapboxPluginRaster(layer)) return true;
   const cached = supportedLayerCache.get(layer);
   if (cached !== undefined) return cached;
   let supported = true;
@@ -69,6 +69,15 @@ export function isMapboxSupportedLayer(layer: GeoLibreLayer): boolean {
   }
   supportedLayerCache.set(layer, supported);
   return supported;
+}
+
+/** The raster plugin mounts its GPU overlay or TiTiler layer on Mapbox itself. */
+export function isMapboxPluginRaster(layer: GeoLibreLayer): boolean {
+  return (
+    layer.type === "cog" &&
+    layer.metadata.sourceKind === "maplibre-gl-raster" &&
+    layer.metadata.externalNativeLayer === true
+  );
 }
 
 // Store layers are immutable records (every edit creates a new object), so the

@@ -3,6 +3,7 @@ import { beforeEach, describe, it } from "node:test";
 import type * as mapboxgl from "mapbox-gl";
 import type { MapPreferences } from "@geolibre/core";
 import { MapboxEngine } from "../packages/map/src/mapbox-engine";
+import { isMapboxSupportedLayer } from "../packages/map/src/mapbox-layers";
 import { geojsonLayer } from "./helpers/layer-fixtures";
 
 // The Mapbox engine never loads mapbox-gl here (its import in the module under
@@ -295,6 +296,25 @@ describe("MapboxEngine.syncLayers", () => {
     engine.syncLayers([layer]);
     engine.syncLayers([]);
     assert.deepEqual(engine.getRenderStatus().errors, []);
+  });
+
+  it("leaves plugin-managed rasters to their renderer without unsupported-layer errors", () => {
+    const layer = geojsonLayer({
+      id: "campus",
+      type: "cog",
+      geojson: undefined,
+      source: { type: "raster", url: "https://example.com/campus.tif" },
+      metadata: { sourceKind: "maplibre-gl-raster", externalNativeLayer: true },
+    });
+    map.addLayer({ id: layer.id, type: "custom" });
+    engine.syncLayers([layer]);
+    assert.equal(isMapboxSupportedLayer(layer), true);
+    assert.deepEqual(engine.getRenderStatus().errors, []);
+    assert.equal(map.sources.size, 0);
+    assert.ok(map.getLayer(layer.id));
+    engine.syncLayers([{ ...layer, opacity: 0.5 }]);
+    engine.syncLayers([]);
+    assert.ok(map.getLayer(layer.id), "the plugin owns teardown too");
   });
 
   it("drops a source error once the source loads or its layer is removed", () => {
