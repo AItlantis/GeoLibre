@@ -785,7 +785,7 @@ export function parseMapboxStyle(input: unknown): MapboxStyleImportResult {
   const root = input as { layers?: unknown } | null;
   const rawLayers = asArray(root?.layers);
   if (!rawLayers) {
-    warnings.push("This file is not a Mapbox GL style (no `layers` array); nothing was imported.");
+    warnings.push("That is not a Mapbox GL style (no `layers` array); nothing was imported.");
     return { style: patch, labels, warnings, matchedLayerCount: 0 };
   }
 
