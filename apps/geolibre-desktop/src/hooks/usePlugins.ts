@@ -1074,6 +1074,14 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
     readRasterWindow: (layerId: string, options: GeoLibreRasterWindowOptions) =>
       readRasterWindow(layerId, options),
     getMapRenderer: () => useAppStore.getState().primaryRenderer,
+    getMapboxMap: () => {
+      const engine = mapControllerRef?.current;
+      return engine?.kind === "mapbox" &&
+        "getMapboxMap" in engine &&
+        typeof engine.getMapboxMap === "function"
+        ? engine.getMapboxMap()
+        : null;
+    },
     getCesiumScene: () => {
       const engine = mapControllerRef?.current;
       return engine instanceof CesiumEngine ? engine.getCesiumScene() : null;

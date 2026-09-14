@@ -36,7 +36,7 @@ import {
   unwireVectorStoreSync,
   wireVectorStoreSync,
 } from "./vector-layer-sync";
-import { bridgeVectorControlToCesium, exceedsCesiumVectorLimit } from "./vector-cesium-bridge";
+import { bridgeVectorControlToStore, exceedsCesiumVectorLimit } from "./vector-cesium-bridge";
 import { readableStacLayerHref } from "./stac-signing";
 import type { FeatureCollection } from "geojson";
 
@@ -899,7 +899,8 @@ function createVectorControl(
     },
   });
 
-  if (app.getMapRenderer?.() === "cesium") bridgeVectorControlToCesium(control, app);
+  if (app.getMapRenderer?.() === "cesium" || app.getMapRenderer?.() === "mapbox")
+    bridgeVectorControlToStore(control, app);
 
   for (const event of ["layeradded", "layerremoved", "layerupdated"] as const) {
     control.on(event, () => syncVectorLayersToStore(control));

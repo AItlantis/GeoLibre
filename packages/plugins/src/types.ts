@@ -624,6 +624,8 @@ export interface GeoLibreAppAPI {
   getMap?: () => MapLibreMap | null;
   /** Active primary renderer, including while its canvas is being replaced. */
   getMapRenderer?: () => MapRendererKind;
+  /** Native Mapbox map, available only while Mapbox is the primary renderer. */
+  getMapboxMap?: () => ReturnType<import("@geolibre/map").MapboxEngine["getMapboxMap"]>;
   /**
    * The primary Cesium globe's native scene, or `null` when the primary map is
    * not a globe (or is still mounting). The globe's counterpart to
