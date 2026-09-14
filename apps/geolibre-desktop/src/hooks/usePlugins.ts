@@ -1026,6 +1026,17 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
           callback(state.basemapStyleUrl);
         }
       }),
+    getLayers: () => useAppStore.getState().layers.map((layer) => layer.id),
+    onLayersChanged: (callback: (layerIds: string[]) => void) =>
+      useAppStore.subscribe((state, prev) => {
+        const layerIds = state.layers.map((layer) => layer.id);
+        if (
+          layerIds.length !== prev.layers.length ||
+          layerIds.some((id, index) => id !== prev.layers[index]?.id)
+        ) {
+          callback(layerIds);
+        }
+      }),
     fetchArrayBuffer: fetchRemoteArrayBuffer,
     resolvePluginAssetUrl: resolvePluginAssetUrlForLoadedPlugin,
     activatePlugin: async (pluginId: string, state?: unknown) => {
