@@ -84,9 +84,12 @@ describe("Tier 1 built-in plugin engine support audit", () => {
     }
   });
 
-  it("declares support for MapLibre only on BasemapControl plugin", () => {
-    assert.deepEqual(maplibreBasemapControlPlugin.engines, ["maplibre"]);
+  // Mapbox shares the basemap control (its style picker lives there), but the
+  // control still has no Cesium counterpart.
+  it("declares support for MapLibre and Mapbox but not Cesium on BasemapControl plugin", () => {
+    assert.deepEqual(maplibreBasemapControlPlugin.engines, ["maplibre", "mapbox"]);
     assert.equal(isPluginEngineSupported(maplibreBasemapControlPlugin, "maplibre"), true);
+    assert.equal(isPluginEngineSupported(maplibreBasemapControlPlugin, "mapbox"), true);
     assert.equal(isPluginEngineSupported(maplibreBasemapControlPlugin, "cesium"), false);
   });
 

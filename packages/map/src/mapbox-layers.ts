@@ -103,7 +103,20 @@ export function compileMapboxLayer(
   layer: GeoLibreLayer,
   compileOptions: CompileMapboxLayerOptions = {},
 ): MapboxLayerPlan {
-  const sourceId = `geolibre-mapbox-${layer.id}`;
+  // Adopt raster basemaps created by the shared control. Reusing their native
+  // IDs lets store visibility, opacity, removal and style restoration work
+  // without leaving a second, uncontrolled copy on the map.
+  const basemap =
+    layer.type === "raster" && layer.metadata?.sourceKind === "maplibre-basemap-control";
+  const sourceId =
+    basemap && typeof layer.metadata?.sourceId === "string"
+      ? layer.metadata.sourceId
+      : `geolibre-mapbox-${layer.id}`;
+  const nativeIds = basemap ? layer.metadata?.nativeLayerIds : undefined;
+  const rasterId =
+    Array.isArray(nativeIds) && typeof nativeIds[0] === "string"
+      ? nativeIds[0]
+      : `${sourceId}-raster`;
   const style = { ...DEFAULT_LAYER_STYLE, ...layer.style };
   const layout = { visibility: layer.visible ? ("visible" as const) : ("none" as const) };
   const zoom = { minzoom: style.minZoom, maxzoom: style.maxZoom };
@@ -245,7 +258,7 @@ export function compileMapboxLayer(
   }
   const rasterLayers = [
     {
-      id: `${sourceId}-raster`,
+      id: rasterId,
       type: "raster",
       source: sourceId,
       layout,

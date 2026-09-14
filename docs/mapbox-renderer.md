@@ -15,11 +15,16 @@ errors redact access tokens. Use a public Mapbox token appropriate for your
 application. Mapbox use is associated with that token's account and is subject
 to Mapbox's terms and usage pricing.
 
-The map's Basemap selector offers Mapbox styles and the shared project basemap.
-A Mapbox-specific choice is saved as `preferences.map.mapboxStyleUrl`; it does
-not replace the basemap used by MapLibre and Cesium. All Mapbox panes share that
-choice. Tokens are not added to the style URL by this selector. The existing
-Environment variables settings retain their normal project credential handling.
+New projects use Mapbox Streets by default for the Mapbox renderer. Open the
+shared **Basemaps** panel from the Layers panel or Add Data to select Mapbox
+styles (including Standard), public styles, or stacked raster basemaps. The
+separate floating Mapbox selector has been removed.
+
+A style selected in the Basemaps panel is saved as
+`preferences.map.mapboxStyleUrl` while Mapbox is active, leaving the shared
+MapLibre/Cesium background unchanged. All Mapbox panes share that choice.
+Previously saved projects keep their selected styles. Provider credentials
+come from Environment variables or the basemap control's API keys panel.
 
 ## Supported paths
 
@@ -41,7 +46,7 @@ The vector import panel uses the existing store-based geometry bridge.
 The offline (local PMTiles) basemap is MapLibre-only as well: its `pmtiles://`
 source protocol is not registered with Mapbox, so a Mapbox pane whose project
 basemap is an offline archive falls back to the default basemap (with a console
-warning). Pick a Mapbox style from the pane's Basemap selector instead.
+warning). Pick a Mapbox style from the shared Basemaps panel instead.
 MapLibre custom protocols, tiled/streamed vector imports beyond the bridge's
 materialization limits, custom COG terrain, deck.gl, and specialized plugin-owned
 layers require additional adapters. Visible unsupported layers report an error

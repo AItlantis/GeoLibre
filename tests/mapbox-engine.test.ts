@@ -508,3 +508,33 @@ describe("MapboxEngine camera and preferences", () => {
     assert.ok(map.calls.includes("setMaxZoom:12"));
   });
 });
+
+describe("Mapbox shared raster basemaps", () => {
+  it("adopts the control layer, updates visibility and removes it without duplicates", () => {
+    const { engine, map } = makeEngine();
+    const sourceId = "maplibre-basemap-control-source-osm";
+    const layerId = "osm";
+    const source = {
+      type: "raster",
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      tileSize: 256,
+    };
+    map.addSource(sourceId, source);
+    map.addLayer({ id: layerId, type: "raster", source: sourceId });
+    const layer = {
+      ...geojsonLayer({ id: "basemap-osm" }),
+      type: "raster" as const,
+      geojson: undefined,
+      source,
+      metadata: { sourceKind: "maplibre-basemap-control", sourceId, nativeLayerIds: [layerId] },
+    };
+    engine.syncLayers([layer]);
+    assert.equal(map.sources.size, 1);
+    assert.equal(map.layers.length, 1);
+    engine.syncLayers([{ ...layer, visible: false, opacity: 0.4 }]);
+    assert.equal((map.getLayer(layerId)?.layout as Record<string, unknown>).visibility, "none");
+    engine.syncLayers([]);
+    assert.equal(map.sources.size, 0);
+    assert.equal(map.layers.length, 0);
+  });
+});
