@@ -138,9 +138,9 @@ describe("Mapbox Add Data adapters", () => {
       isMapboxSupportedLayer({ ...base, type: "deckgl-viz", metadata: { sourceKind: "other" } }),
       false,
     );
-    for (const id of ["deckgl-viz", "gltf-model", "duckdb"])
+    for (const id of ["deckgl-viz", "gltf-model", "duckdb", "kml"])
       assert.equal(supportsAddDataRenderer(id, "mapbox"), true);
-    for (const id of ["mbtiles", "cesium-ion", "czml", "kml"])
+    for (const id of ["mbtiles", "cesium-ion", "czml"])
       assert.equal(supportsAddDataRenderer(id, "mapbox"), false);
   });
   it("moves the tile traversal bounds along the geodetic surface normal", () => {

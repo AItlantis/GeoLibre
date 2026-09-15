@@ -131,7 +131,9 @@ The Add Data menu and command palette withhold loaders that require an
 unimplemented MapLibre protocol or custom render pass. These entries are
 visible but disabled in the menu with a Mapbox compatibility hint: MBTiles
 and Gaussian Splatting.
-Cesium Ion, CZML, and KML scene loaders remain Cesium-only.
+Cesium Ion and CZML scene loaders remain Cesium-only; KML / KMZ opens on every
+renderer, going through the host KML importer (the drag-and-drop path) off the
+globe.
 
 Deck.gl Layer, 3D Model, and DuckDB are enabled: the first two render through
 the shared interleaved deck.gl overlay (as 3D Tiles already did), the third
@@ -195,7 +197,7 @@ service restrictions are included explicitly.
 | 3D Tiles | AGI headquarters tileset renders through deck.gl; altitude placement, visibility and restoration have regression coverage |
 | Cesium Ion | Disabled: Cesium-only |
 | CZML | Disabled: Cesium-only |
-| KML / KMZ | Disabled: Cesium scene loader |
+| KML / KMZ | Imported through the host KML importer as GeoJSON, ground-overlay, and model layers, the same path a dropped file takes |
 | 3D Model | Shanghai sample model placed through the scenegraph builder |
 | DuckDB | NYC sample database queried; the result layer rendered and survived a MapLibre → Mapbox renderer swap |
 | PostgreSQL | Panel explains its Desktop/Martin requirement; no database connection tested |

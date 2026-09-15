@@ -110,7 +110,9 @@ export function AddDataMenu({
     "cesium-ion": { onSelect: () => onSetAddDataKind("cesium-ion"), disabled: !cesiumPrimary },
     // CZML dynamic 3D scenes load through Cesium only (issue #2290).
     czml: { onSelect: () => onSetAddDataKind("czml"), disabled: !cesiumPrimary },
-    kml: { onSelect: () => onSetAddDataKind("kml"), disabled: !cesiumPrimary },
+    // KML/KMZ loads natively on the globe and through the host KML importer
+    // (the drag-and-drop path) on the 2D renderers, so it is never gated.
+    kml: { onSelect: () => onSetAddDataKind("kml") },
     // The glTF model opens the same deck.gl scenegraph builder, so it is
     // gated the way "deckgl-viz" is.
     "gltf-model": { onSelect: onAddGltfModel, disabled: !capabilities.deckOverlay },
