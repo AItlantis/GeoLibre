@@ -668,14 +668,6 @@ function footprintStyleLayers(map: StacMap): string[] {
   ].filter((id) => map.getLayer(id));
 }
 
-function canAddAssetToMap(item: StacItem, key: string, asset: StacAsset): boolean {
-  const format = assetFormat(asset);
-  if (appRef?.getMapRenderer?.() === "mapbox" && format === "zarr") {
-    return false;
-  }
-  return canAddAsset(item, key, asset);
-}
-
 function assetLabel(key: string, asset: StacAsset): string {
   return asset.title || key;
 }
@@ -699,10 +691,7 @@ function assetFormatLabel(asset: StacAsset): string {
 
 /** The Add button's tooltip: what it would add, or why it will not. */
 function addReason(item: StacItem, key: string, asset: StacAsset): string {
-  if (canAddAssetToMap(item, key, asset)) return asset.href;
-  if (appRef?.getMapRenderer?.() === "mapbox" && assetFormat(asset) === "zarr") {
-    return labels.addUnsupported;
-  }
+  if (canAddAsset(item, key, asset)) return asset.href;
   if (!isVisualizableAsset(asset)) return labels.addUnsupported;
   if (requiresTarget(asset) && !zarrStoreTakesKeys(zarrStorePath(asset.href).url)) {
     return labels.zarrProblem("unsupported-url");
@@ -711,7 +700,7 @@ function addReason(item: StacItem, key: string, asset: StacAsset): string {
 }
 
 function assetOptionLabel(item: StacItem, key: string, asset: StacAsset): string {
-  const addability = canAddAssetToMap(item, key, asset) ? "" : ` (${labels.notAddable})`;
+  const addability = canAddAsset(item, key, asset) ? "" : ` (${labels.notAddable})`;
   return `${assetLabel(key, asset)} — ${assetFormatLabel(asset)}${addability}`;
 }
 
@@ -1301,7 +1290,7 @@ function buildPanel(container: HTMLElement): () => void {
           assetSelect.append(option);
         }
         // Preselect something the user can actually add; assets often lead with metadata.
-        const firstAddable = assets.find(([key, asset]) => canAddAssetToMap(item, key, asset));
+        const firstAddable = assets.find(([key, asset]) => canAddAsset(item, key, asset));
         if (firstAddable) assetSelect.value = firstAddable[0];
         const selected = (): [string, StacAsset] =>
           assets.find(([key]) => key === assetSelect.value) ?? assets[0];
@@ -1322,7 +1311,7 @@ function buildPanel(container: HTMLElement): () => void {
 
         const syncAsset = (): void => {
           const [key, asset] = selected();
-          const addable = canAddAssetToMap(item, key, asset);
+          const addable = canAddAsset(item, key, asset);
           const targets = assetTargets(item, key, asset);
           // Rebuilt on every sync, including the one right after Add, so keep the user's pick.
           const chosen = targetSelect.value;

@@ -2334,8 +2334,8 @@ export async function addCloudNetcdfLayer(
   }
 
   // The untiled Zarr renderer draws in Web Mercator; switch off globe first
-  // (matching the COG raster flow) so the layer paints.
-  ensureMercatorProjection(app.getMap?.());
+  // (matching the COG raster flow) so the layer paints, on either 2D engine.
+  ensureMercatorProjection(app.getMap?.() ?? app.getMapboxMap?.());
 
   const refs =
     options.refs ?? (await loadKerchunkReference(options.url, { headers: options.headers }));

@@ -163,7 +163,6 @@ interface AddNetcdfDialogProps {
 export function AddNetcdfDialog({ open, appApi, onOpenChange }: AddNetcdfDialogProps) {
   const { t } = useTranslation();
   const addImageOverlayLayer = useAppStore((state) => state.addImageOverlayLayer);
-  const mapbox = useAppStore((state) => state.primaryRenderer === "mapbox");
   // The same catalogue the Style panel's Raster symbology offers, so the choice
   // made here and the choice made after the fact are drawn from one list.
   const rampOptions = useColormapRamps();
@@ -233,11 +232,13 @@ export function AddNetcdfDialog({ open, appApi, onOpenChange }: AddNetcdfDialogP
   // added as an image overlay rather than drawn by @carbonplan/zarr-layer, whose
   // `shift_x` uniform lookup throws on drivers that eliminate it (Mesa, so most
   // Linux Intel/AMD machines), leaving the layer permanently blank. See
-  // composeColormappedImage.
-  // Mapbox can render a selected plane as an image, including a time slice,
-  // but cannot host the Zarr custom render pass used by animated cubes.
-  const useImagePath = dataset !== null && !rgbMode && (!hasTimeAxis || mapbox);
-  const unsupportedReference = mapbox && loadedRefs !== null && dataset === null;
+  // composeColormappedImage. Local cubes with a time axis go through the Zarr
+  // control on both 2D engines (@carbonplan/zarr-layer hosts on Mapbox GL as
+  // well). A remote NetCDF/HDF file has no layer-refs builder — its reader
+  // serves grids, not a store — so a remote cube renders its selected time
+  // slice as an image; without this, submit had no branch for it and added
+  // nothing.
+  const useImagePath = dataset !== null && !rgbMode && (!hasTimeAxis || dataset.kind === "remote");
 
   const closeOpenFile = () => {
     const open = openFileRef.current;
@@ -428,7 +429,7 @@ export function AddNetcdfDialog({ open, appApi, onOpenChange }: AddNetcdfDialogP
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!variable || unsupportedReference) return;
+    if (!variable) return;
     const gen = opGen.current;
     setError(null);
     setAdding(true);
@@ -829,11 +830,6 @@ export function AddNetcdfDialog({ open, appApi, onOpenChange }: AddNetcdfDialogP
           )}
 
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {unsupportedReference && (
-            <p role="status" className="text-sm text-muted-foreground">
-              {t("renderer.layerMapboxUnsupported")}
-            </p>
-          )}
           {status && !error && <p className="text-sm text-muted-foreground">{status}</p>}
 
           <div className="flex justify-end gap-2">
@@ -847,7 +843,7 @@ export function AddNetcdfDialog({ open, appApi, onOpenChange }: AddNetcdfDialogP
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" disabled={!variable || adding || unsupportedReference}>
+            <Button type="submit" disabled={!variable || adding}>
               {adding ? t("addData.netcdf.adding") : t("addData.netcdf.addLayer")}
             </Button>
           </div>

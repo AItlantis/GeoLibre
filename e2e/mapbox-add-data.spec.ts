@@ -42,12 +42,12 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.locator(".mapboxgl-canvas")).toBeVisible();
 
     await page.getByRole("button", { name: "Add Data", exact: true }).click();
-    for (const name of ["MBTiles Layer", "Zarr Layer", "Gaussian Splatting"]) {
+    for (const name of ["MBTiles Layer", "Gaussian Splatting"]) {
       await expect(page.getByRole("menuitem", { name, exact: true })).toBeDisabled();
     }
-    // Drawn through deck.gl overlays, which Mapbox hosts natively (see
-    // mapbox-deck-overlays.spec.ts for the render checks).
-    for (const name of ["DuckDB Layer", "Deck.gl Layer", "3D Model (glTF)"]) {
+    // Drawn through deck.gl overlays or a Mapbox-capable custom layer (see
+    // mapbox-deck-overlays.spec.ts and mapbox-zarr.spec.ts for the checks).
+    for (const name of ["DuckDB Layer", "Deck.gl Layer", "3D Model (glTF)", "Zarr Layer"]) {
       await expect(page.getByRole("menuitem", { name, exact: true })).toBeEnabled();
     }
     await page.keyboard.press("Escape");

@@ -82,6 +82,10 @@ export function isMapboxPluginLayer(layer: GeoLibreLayer): boolean {
   if (layer.type === "duckdb-query" && layer.metadata.sourceKind === "duckdb-query") return true;
   if (layer.metadata.externalNativeLayer === true) {
     if (layer.type === "lidar" && layer.metadata.sourceKind === "lidar-url") return true;
+    // @carbonplan/zarr-layer is a CustomLayerInterface implementation that
+    // targets Mapbox GL as well as MapLibre; the Zarr control adds it to
+    // whichever map hosts the control.
+    if (layer.type === "zarr" && layer.metadata.sourceKind === "zarr-url") return true;
     if (
       layer.type === "3d-tiles" &&
       ["3d-tiles-url", "google-photorealistic-3d-tiles", "arcgis-i3s"].includes(

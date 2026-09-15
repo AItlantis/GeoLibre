@@ -87,6 +87,8 @@ describe("Mapbox Add Data adapters", () => {
     for (const [type, sourceKind] of [
       ["lidar", "lidar-url"],
       ["3d-tiles", "3d-tiles-url"],
+      // @carbonplan/zarr-layer targets Mapbox GL too; the control adds it.
+      ["zarr", "zarr-url"],
     ] as const) {
       const layer = {
         ...geojsonLayer(),
@@ -104,7 +106,7 @@ describe("Mapbox Add Data adapters", () => {
         false,
       );
     }
-    for (const id of ["pmtiles", "lidar", "3d-tiles"])
+    for (const id of ["pmtiles", "lidar", "3d-tiles", "zarr"])
       assert.equal(supportsAddDataRenderer(id, "mapbox"), true);
     assert.equal(supportsAddDataRenderer("splatting", "mapbox"), false);
   });
@@ -138,7 +140,7 @@ describe("Mapbox Add Data adapters", () => {
     );
     for (const id of ["deckgl-viz", "gltf-model", "duckdb"])
       assert.equal(supportsAddDataRenderer(id, "mapbox"), true);
-    for (const id of ["mbtiles", "zarr", "cesium-ion", "czml", "kml"])
+    for (const id of ["mbtiles", "cesium-ion", "czml", "kml"])
       assert.equal(supportsAddDataRenderer(id, "mapbox"), false);
   });
   it("moves the tile traversal bounds along the geodetic surface normal", () => {

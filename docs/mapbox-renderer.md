@@ -38,6 +38,14 @@ come from Environment variables or the basemap control's API keys panel.
   vector layers, through the same shared interleaved deck.gl overlay.
 - DuckDB query layers from **Add Data → DuckDB**, drawn by the panel's own
   deck.gl overlay.
+- Zarr layers from **Add Data → Zarr Layer**, STAC Zarr assets, and NetCDF/HDF
+  or Kerchunk cubes with a time axis, drawn by `@carbonplan/zarr-layer` — a
+  `CustomLayerInterface` implementation that targets Mapbox GL as well as
+  MapLibre (globe and Mercator), added by the same Zarr control. Zarr Layer
+  and STAC adds keep the current projection; local NetCDF/HDF cubes and
+  Kerchunk references draw untiled in Web Mercator, so adding one switches the
+  map to Mercator, as on MapLibre. A remote NetCDF/HDF URL renders its
+  selected slice as an image overlay instead.
 - HTTP(S) raster tiles (XYZ, WMS and WMTS), vector tiles with named source layers,
   and georeferenced image/video sources.
 - Shared layer/group visibility, opacity and ordering; synchronized or independent
@@ -121,8 +129,8 @@ import, so early clicks cannot lose a panel-opening request.
 
 The Add Data menu and command palette withhold loaders that require an
 unimplemented MapLibre protocol or custom render pass. These entries are
-visible but disabled in the menu with a Mapbox compatibility hint: MBTiles,
-Zarr, and Gaussian Splatting.
+visible but disabled in the menu with a Mapbox compatibility hint: MBTiles
+and Gaussian Splatting.
 Cesium Ion, CZML, and KML scene loaders remain Cesium-only.
 
 Deck.gl Layer, 3D Model, and DuckDB are enabled: the first two render through
@@ -139,12 +147,11 @@ FlatGeobuf uses the shared vector importer on Mapbox. ArcGIS vector-tile
 services retain their resolved tile sources, service styles, classification
 filters, visibility, and opacity. STAC supports catalog browsing, extent
 search, bbox drawing, footprints, and selection on both MapLibre and Mapbox;
-remote vector PMTiles assets can be added, while Zarr remains download-only on Mapbox.
+remote vector PMTiles and Zarr assets can be added on either.
 
-NetCDF/HDF files and directly readable remote files can render a selected
-plane, including a time slice, as an image. Mapbox does not animate that image
-through the Zarr renderer. Kerchunk references that require that renderer
-cannot be added under Mapbox.
+NetCDF/HDF files and directly readable remote files render a selected plane as
+an image on both engines; cubes with a time axis, and Kerchunk references, go
+through the Zarr renderer on Mapbox exactly as on MapLibre.
 
 ### Browser validation
 
@@ -181,7 +188,7 @@ service restrictions are included explicitly.
 | GeoParquet | US states: 52 features imported and rendered |
 | FlatGeobuf | Countries: 179 features imported through the shared vector bridge |
 | PMTiles | Remote vector archives use native Mapbox sources; Tilezen’s nine source layers and Mapbox’s earthquake archive rendered |
-| Zarr | Panel/sample loading exercised; custom rendering remains unsupported and entry disabled |
+| Zarr | CarbonPlan climate sample added through the panel: the custom layer mounts on the Mapbox map and loads its pyramid (6 levels, band/month axes). Checked without a paintable token, so pixel output was not confirmed; the renderer's Mapbox support is upstream's |
 | NetCDF / HDF | Air-temperature file: selected time slice added as a native image |
 | LiDAR | Autzen COPC rendered (10,653,336 archive points); the small PDAL COPC fixture loads 1,065 points |
 | Gaussian Splatting | Panel opens; custom rendering unsupported and entry disabled |

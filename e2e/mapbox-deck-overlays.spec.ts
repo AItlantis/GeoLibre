@@ -146,10 +146,10 @@ for (const theme of ["light", "dark"] as const) {
     // The menu offers the deck.gl-drawn sources and still withholds the ones
     // that need a MapLibre protocol or custom render pass.
     await page.getByRole("button", { name: "Add Data", exact: true }).click();
-    for (const name of ["Deck.gl Layer", "3D Model (glTF)", "DuckDB Layer"]) {
+    for (const name of ["Deck.gl Layer", "3D Model (glTF)", "DuckDB Layer", "Zarr Layer"]) {
       await expect(page.getByRole("menuitem", { name, exact: true })).toBeEnabled();
     }
-    for (const name of ["MBTiles Layer", "Zarr Layer", "Gaussian Splatting"]) {
+    for (const name of ["MBTiles Layer", "Gaussian Splatting"]) {
       await expect(page.getByRole("menuitem", { name, exact: true })).toBeDisabled();
     }
     await page.keyboard.press("Escape");
