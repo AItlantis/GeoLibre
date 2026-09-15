@@ -650,7 +650,7 @@ export function createAssistantTools(deps: AssistantToolDeps): Tool[] {
   const applySymbology = tool({
     name: "apply_symbology",
     description:
-      "Color a vector layer by one of its attribute fields using a graduated (numeric) or categorized (text) color ramp. Use list_layers to find field names and color ramps like reds, blues, viridis.",
+      "Color a vector layer by one of its attribute fields using a graduated (numeric) or categorized (text) color ramp. Use list_layers to find field names and color ramps like reds, blues, viridis. For thresholds fixed by an external standard (air-quality bands, agency severity levels), pass `breaks` instead of class_count/scheme. Returns the stops actually applied, which can be fewer than the classes asked for.",
     inputSchema: z.object({
       layer: z.string().describe("Layer name or id."),
       property: z.string().describe("Attribute field to style by."),
@@ -658,6 +658,12 @@ export function createAssistantTools(deps: AssistantToolDeps): Tool[] {
       color_ramp: z.string().optional().describe("Color ramp id (e.g. reds, viridis)."),
       class_count: z.number().optional().describe("Number of classes for graduated mode."),
       scheme: z.enum(["equal-interval", "quantile"]).optional(),
+      breaks: z
+        .array(z.number())
+        .optional()
+        .describe(
+          "Explicit class lower bounds for graduated mode, e.g. [0, 25, 37, 50, 90]. Overrides class_count and scheme. Each value opens a class that runs up to the next one; the last class is open-ended above. At least two distinct values are required; past 12 the map still paints every break but the Style panel's class count reads 12.",
+        ),
     }),
     callback: (input) => {
       const layer = resolveLayer(input.layer);
@@ -668,13 +674,20 @@ export function createAssistantTools(deps: AssistantToolDeps): Tool[] {
         colorRamp: input.color_ramp,
         classCount: input.class_count,
         scheme: input.scheme,
+        breaks: input.breaks,
       });
       store().setLayerStyle(layer.id, style);
+      const stops = style.vectorStyleStops ?? [];
+      // Report the stops, not just how many there are: duplicate breaks collapse
+      // (see createGraduatedClassBreaks), so a request for 5 classes can land on
+      // 3, and explicit breaks are worth echoing back so the caller can confirm
+      // the thresholds that reached the map are the ones it asked for.
       return json({
         layerId: layer.id,
         mode: input.mode,
         property: input.property,
-        classes: style.vectorStyleStops?.length ?? 0,
+        classes: stops.length,
+        stops: stops.map((stop) => ({ value: stop.value, color: stop.color })),
       });
     },
   });
