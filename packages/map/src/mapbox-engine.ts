@@ -47,6 +47,10 @@ export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   styleSpec: true,
   nativeMapInstance: false,
   customLayers: false,
+  // `@deck.gl/mapbox` targets mapbox-gl natively: the shared interleaved
+  // overlay binds to the Mapbox map through `getMapboxMap`, which is how 3D
+  // Tiles, LiDAR, Deck.gl Layers and DuckDB query results draw here.
+  deckOverlay: true,
   terrain: true,
   picking: true,
   onMapDrawing: true,

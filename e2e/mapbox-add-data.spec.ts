@@ -42,14 +42,13 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.locator(".mapboxgl-canvas")).toBeVisible();
 
     await page.getByRole("button", { name: "Add Data", exact: true }).click();
-    for (const name of [
-      "MBTiles Layer",
-      "Zarr Layer",
-      "Gaussian Splatting",
-      "DuckDB Layer",
-      "Deck.gl Layer",
-    ]) {
+    for (const name of ["MBTiles Layer", "Zarr Layer", "Gaussian Splatting"]) {
       await expect(page.getByRole("menuitem", { name, exact: true })).toBeDisabled();
+    }
+    // Drawn through deck.gl overlays, which Mapbox hosts natively (see
+    // mapbox-deck-overlays.spec.ts for the render checks).
+    for (const name of ["DuckDB Layer", "Deck.gl Layer", "3D Model (glTF)"]) {
+      await expect(page.getByRole("menuitem", { name, exact: true })).toBeEnabled();
     }
     await page.keyboard.press("Escape");
 
@@ -62,7 +61,9 @@ for (const theme of ["light", "dark"] as const) {
       mimeType: "application/octet-stream",
       buffer: await countries.body(),
     });
-    await expect(page.getByText(/flatgeobuf · 179 ft/)).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText(/flatgeobuf · 179 ft/)).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(layerRow(page, "countries")).toBeVisible();
     await expect(layerRow(page, "countries")).not.toContainText("No Mapbox");
     await page.getByRole("button", { name: "Close panel", exact: true }).click();
@@ -87,9 +88,13 @@ for (const theme of ["light", "dark"] as const) {
       .getByRole("textbox", { name: "Bounding box (west, south, east, north)" })
       .fill("-118.52,33.99,-118.44,34.06");
     await page.getByRole("button", { name: "Search items", exact: true }).click();
-    await expect(layerRow(page, "STAC search footprints")).toBeVisible({ timeout: 30_000 });
+    await expect(layerRow(page, "STAC search footprints")).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(layerRow(page, "STAC search footprints")).not.toContainText("No Mapbox");
     await expect(page.getByRole("alert")).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath(`mapbox-add-data-${theme}.png`) });
+    await page.screenshot({
+      path: testInfo.outputPath(`mapbox-add-data-${theme}.png`),
+    });
   });
 }

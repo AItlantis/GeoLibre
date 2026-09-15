@@ -76,6 +76,10 @@ export function isMapboxSupportedLayer(layer: GeoLibreLayer): boolean {
 
 /** These plugins own their Mapbox overlays and synchronize the layer store themselves. */
 export function isMapboxPluginLayer(layer: GeoLibreLayer): boolean {
+  // Drawn by the shared deck.gl overlay (deckgl-viz plugin) and the DuckDB
+  // control's own deck overlay; both bind to the Mapbox map directly.
+  if (layer.type === "deckgl-viz" && layer.metadata.sourceKind === "deckgl-viz") return true;
+  if (layer.type === "duckdb-query" && layer.metadata.sourceKind === "duckdb-query") return true;
   if (layer.metadata.externalNativeLayer === true) {
     if (layer.type === "lidar" && layer.metadata.sourceKind === "lidar-url") return true;
     if (

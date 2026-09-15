@@ -108,6 +108,39 @@ describe("Mapbox Add Data adapters", () => {
       assert.equal(supportsAddDataRenderer(id, "mapbox"), true);
     assert.equal(supportsAddDataRenderer("splatting", "mapbox"), false);
   });
+  it("treats deck.gl-drawn store layers as plugin-owned on Mapbox", () => {
+    // Deck.gl Layers (and glTF models, which are the scenegraph kind) render
+    // through the shared MapboxOverlay; DuckDB results through the control's
+    // own deck overlay. Neither compiles to a native plan, so without this the
+    // engine would remove them and raise a "requires a renderer-specific
+    // adapter" error while the overlay is drawing them.
+    const base = { ...geojsonLayer(), geojson: undefined, source: {} };
+    assert.equal(
+      isMapboxSupportedLayer({
+        ...base,
+        type: "deckgl-viz",
+        metadata: { sourceKind: "deckgl-viz", deckViz: { layerKind: "scatterplot" } },
+      }),
+      true,
+    );
+    assert.equal(
+      isMapboxSupportedLayer({
+        ...base,
+        type: "duckdb-query",
+        metadata: { sourceKind: "duckdb-query", externalNativeLayer: true },
+      }),
+      true,
+    );
+    // The type alone is not enough: a foreign source kind is still unsupported.
+    assert.equal(
+      isMapboxSupportedLayer({ ...base, type: "deckgl-viz", metadata: { sourceKind: "other" } }),
+      false,
+    );
+    for (const id of ["deckgl-viz", "gltf-model", "duckdb"])
+      assert.equal(supportsAddDataRenderer(id, "mapbox"), true);
+    for (const id of ["mbtiles", "zarr", "cesium-ion", "czml", "kml"])
+      assert.equal(supportsAddDataRenderer(id, "mapbox"), false);
+  });
   it("moves the tile traversal bounds along the geodetic surface normal", () => {
     let translated: number[] | undefined;
     let selected = false;

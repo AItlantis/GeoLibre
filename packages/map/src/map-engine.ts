@@ -242,6 +242,15 @@ export interface MapEngineCapabilities {
    * overlays — layers whose pixels something other than the engine draws.
    */
   readonly customLayers: boolean;
+  /**
+   * The engine hosts deck.gl's `MapboxOverlay` (`@deck.gl/mapbox`), so the
+   * shared interleaved deck overlay and everything drawn through it — Deck.gl
+   * Layers, glTF models, DuckDB query results, 3D Tiles, LiDAR — has a map to
+   * bind to. Narrower than {@link customLayers}: Mapbox GL JS is that
+   * overlay's native host without exposing a MapLibre map or hosting MapLibre
+   * `CustomLayerInterface` layers.
+   */
+  readonly deckOverlay: boolean;
   /** 3D terrain can be enabled and exaggerated. */
   readonly terrain: boolean;
   /** {@link MapEngine.identifyFeatures} can return features. */
@@ -271,6 +280,7 @@ export const MAPLIBRE_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   styleSpec: true,
   nativeMapInstance: true,
   customLayers: true,
+  deckOverlay: true,
   terrain: true,
   picking: true,
   onMapDrawing: true,

@@ -1309,6 +1309,12 @@ export function DesktopShell({
       restoreThreeDTilesLayers(appAPI);
       void restoreLidarLayers(appAPI).catch(console.error);
     }
+    // Same contract for the shared deck.gl overlay: re-attach it to the current
+    // map and re-render any deckgl-viz layers a restored project carries. It
+    // binds to either 2D engine (`getMap()` or `getMapboxMap()`), so it sits
+    // above the native-map gate below; on Cesium the plugin manager has
+    // already deactivated the plugin and this only clears its layers.
+    restoreDeckViz(appAPI, pluginManager.isActive(DECK_VIZ_PLUGIN_ID));
     if (!engine.capabilities.nativeMapInstance) {
       void restoreLocalFileLayers();
       return;
@@ -1354,9 +1360,6 @@ export function DesktopShell({
       pluginManager.deactivate(REVERSE_GEOCODE_PLUGIN_ID, appAPI);
     }
     restoreReverseGeocode(appAPI, pluginManager.isActive(REVERSE_GEOCODE_PLUGIN_ID));
-    // Same contract for the deck.gl overlay: re-attach it to the current map
-    // and re-render any deckgl-viz layers a restored project carries.
-    restoreDeckViz(appAPI, pluginManager.isActive(DECK_VIZ_PLUGIN_ID));
   }, [enforceViewerPlugins, externalPluginsReady, mapReadyGeneration, projectGeneration]);
 
   useEffect(() => {

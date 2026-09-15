@@ -32,6 +32,12 @@ come from Environment variables or the basemap control's API keys panel.
   line, polygon, extrusion, label, data-driven color, opacity, and filter styles.
 - Remote vector PMTiles archives through Mapbox GL JS’s native archive reader.
 - LiDAR (LAS/LAZ, COPC) and standard 3D Tiles through deck.gl overlays.
+- Deck.gl Layers built in **Add Data → Deck.gl Layer** (every kind in the
+  builder, including the 3D Model scenegraph kind behind **Add Data → 3D
+  Model**), plus the 3D Z-value and feature-diagram rendering of ordinary
+  vector layers, through the same shared interleaved deck.gl overlay.
+- DuckDB query layers from **Add Data → DuckDB**, drawn by the panel's own
+  deck.gl overlay.
 - HTTP(S) raster tiles (XYZ, WMS and WMTS), vector tiles with named source layers,
   and georeferenced image/video sources.
 - Shared layer/group visibility, opacity and ordering; synchronized or independent
@@ -69,8 +75,11 @@ source protocol is not registered with Mapbox, so a Mapbox pane whose project
 basemap is an offline archive falls back to the default basemap (with a console
 warning). Pick a Mapbox style from the shared Basemaps panel instead.
 MapLibre custom protocols, tiled/streamed vector imports beyond the bridge's
-materialization limits, custom COG terrain, general deck.gl visualizations, and other plugin-owned
-layers require additional adapters. Visible unsupported layers report an error
+materialization limits, custom COG terrain, and other plugin-owned layers
+require additional adapters. Layers drawn with deck.gl need none:
+`@deck.gl/mapbox` targets Mapbox GL JS natively, so the engine reports
+`capabilities.deckOverlay` and the shared interleaved overlay binds to the
+Mapbox map through `app.getMapboxMap()`. Visible unsupported layers report an error
 on the map instead of being silently omitted. Advanced MapLibre-only symbology
 (such as custom marker assets and blend modes) is not reproduced by this native
 renderer. Mapbox Standard is loaded as a local style import with a shared opacity setting.
@@ -113,8 +122,18 @@ import, so early clicks cannot lose a panel-opening request.
 The Add Data menu and command palette withhold loaders that require an
 unimplemented MapLibre protocol or custom render pass. These entries are
 visible but disabled in the menu with a Mapbox compatibility hint: MBTiles,
-Zarr, Gaussian Splatting, DuckDB, and deck.gl/3D models.
+Zarr, and Gaussian Splatting.
 Cesium Ion, CZML, and KML scene loaders remain Cesium-only.
+
+Deck.gl Layer, 3D Model, and DuckDB are enabled: the first two render through
+the shared interleaved deck.gl overlay (as 3D Tiles already did), the third
+through the DuckDB panel's own deck.gl overlay. Like every deck.gl overlay they
+hold the map in the Mercator projection while their layers are shown, so a
+globe view snaps to Mercator when one is added. Deck.gl Layer data is stored
+inline in the project, as on MapLibre. The DuckDB panel remounts on the live
+map after a renderer swap; results that were only cached in the panel are
+redrawn when it reopens, and a project-restored query layer needs its query
+re-run, exactly as on MapLibre.
 
 FlatGeobuf uses the shared vector importer on Mapbox. ArcGIS vector-tile
 services retain their resolved tile sources, service styles, classification
@@ -158,7 +177,7 @@ service restrictions are included explicitly.
 | GeoRSS | USGS daily earthquake feed: 34 features imported (the live count changes) |
 | STAC | Earth Search connected; 20 Sentinel-2 search footprints added |
 | Video | Mapbox coastal video sample: native video source mounted |
-| Deck.gl | Disabled: custom renderer has no adapter |
+| Deck.gl | Scatterplot sample (Manhattan points) rendered through the shared deck.gl overlay; visibility and opacity follow the layer store |
 | GeoParquet | US states: 52 features imported and rendered |
 | FlatGeobuf | Countries: 179 features imported through the shared vector bridge |
 | PMTiles | Remote vector archives use native Mapbox sources; Tilezen’s nine source layers and Mapbox’s earthquake archive rendered |
@@ -170,8 +189,8 @@ service restrictions are included explicitly.
 | Cesium Ion | Disabled: Cesium-only |
 | CZML | Disabled: Cesium-only |
 | KML / KMZ | Disabled: Cesium scene loader |
-| 3D Model | Disabled: deck.gl scenegraph renderer |
-| DuckDB | Panel opens; dedicated custom renderer unsupported and entry disabled |
+| 3D Model | Shanghai sample model placed through the scenegraph builder |
+| DuckDB | NYC sample database queried; the result layer rendered and survived a MapLibre → Mapbox renderer swap |
 | PostgreSQL | Panel explains its Desktop/Martin requirement; no database connection tested |
 | Apache Iceberg | Panel opens; no table/catalog connection supplied for an import |
 

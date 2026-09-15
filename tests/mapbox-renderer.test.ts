@@ -14,8 +14,11 @@ import { compileMapboxLayer, styleUsesUnsupportedSource } from "../packages/map/
 import { proxyWmsTiles } from "../packages/map/src/wms-proxy";
 import { resolveTextFontFromStyleLayers } from "../packages/map/src/text-font";
 import { MAPBOX_CAPABILITIES, redactMapboxError } from "../packages/map/src/mapbox-engine";
+import { MAPLIBRE_CAPABILITIES } from "../packages/map/src/map-engine";
+import { CESIUM_CAPABILITIES } from "../packages/map/src/cesium-engine";
 import { isPluginEngineSupported } from "../packages/plugins/src/types";
 import { maplibreLayerControlPlugin } from "../packages/plugins/src/plugins/layer-control";
+import { maplibreDeckGlVizPlugin } from "../packages/plugins/src/plugins/maplibre-deckgl-viz";
 import { geojsonLayer } from "./helpers/layer-fixtures";
 
 describe("Mapbox project and plugin boundaries", () => {
@@ -43,6 +46,18 @@ describe("Mapbox project and plugin boundaries", () => {
     assert.equal(isPluginEngineSupported({ engines: ["mapbox"] }, "mapbox"), true);
     assert.equal(MAPBOX_CAPABILITIES.nativeMapInstance, false);
     assert.equal(MAPBOX_CAPABILITIES.customLayers, false);
+  });
+  it("hosts the shared deck.gl overlay and keeps the Deck.gl Layer plugin active", () => {
+    // `@deck.gl/mapbox` targets mapbox-gl natively, so the Add Data → Deck.gl
+    // Layer / 3D Model builders gate on this rather than on customLayers.
+    assert.equal(MAPBOX_CAPABILITIES.deckOverlay, true);
+    assert.equal(MAPLIBRE_CAPABILITIES.deckOverlay, true);
+    assert.equal(CESIUM_CAPABILITIES.deckOverlay, false);
+    // The plugin manager deactivates plugins that omit the new engine on a
+    // renderer swap; the overlay plugin must survive MapLibre ↔ Mapbox.
+    assert.equal(isPluginEngineSupported(maplibreDeckGlVizPlugin, "mapbox"), true);
+    assert.equal(isPluginEngineSupported(maplibreDeckGlVizPlugin, "maplibre"), true);
+    assert.equal(isPluginEngineSupported(maplibreDeckGlVizPlugin, "cesium"), false);
   });
   it("keeps the Layer Control plugin active on Mapbox", () => {
     // The plugin manager deactivates plugins that do not declare the new
