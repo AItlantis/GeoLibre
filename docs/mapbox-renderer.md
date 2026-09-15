@@ -15,9 +15,9 @@ errors redact access tokens. Use a public Mapbox token appropriate for your
 application. Mapbox use is associated with that token's account and is subject
 to Mapbox's terms and usage pricing.
 
-New projects use Mapbox Streets by default for the Mapbox renderer. Open the
+New projects use Mapbox Standard by default for the Mapbox renderer. Open the
 shared **Basemaps** panel from the Layers panel or Add Data to select Mapbox
-styles (including Standard), public styles, or stacked raster basemaps. The
+styles (including Streets), public styles, or stacked raster basemaps. The
 separate floating Mapbox selector has been removed.
 
 A style selected in the Basemaps panel is saved as
@@ -30,6 +30,8 @@ come from Environment variables or the basemap control's API keys panel.
 
 - Native GeoJSON, including the vector importer's materialized data, with point,
   line, polygon, extrusion, label, data-driven color, opacity, and filter styles.
+- Remote vector PMTiles archives through Mapbox GL JS’s native archive reader.
+- LiDAR (LAS/LAZ, COPC) and standard 3D Tiles through deck.gl overlays.
 - HTTP(S) raster tiles (XYZ, WMS and WMTS), vector tiles with named source layers,
   and georeferenced image/video sources.
 - Shared layer/group visibility, opacity and ordering; synchronized or independent
@@ -48,13 +50,13 @@ source protocol is not registered with Mapbox, so a Mapbox pane whose project
 basemap is an offline archive falls back to the default basemap (with a console
 warning). Pick a Mapbox style from the shared Basemaps panel instead.
 MapLibre custom protocols, tiled/streamed vector imports beyond the bridge's
-materialization limits, custom COG terrain, deck.gl, and specialized plugin-owned
+materialization limits, custom COG terrain, general deck.gl visualizations, and other plugin-owned
 layers require additional adapters. Visible unsupported layers report an error
 on the map instead of being silently omitted. Advanced MapLibre-only symbology
 (such as custom marker assets and blend modes) is not reproduced by this native
-renderer. Mapbox Standard's imported basemap layers do not expose the same
-per-layer opacity controls as classic styles; use a classic style for background
-opacity editing.
+renderer. Mapbox Standard is loaded as a local style import with a shared opacity setting.
+The Background card fades its land and water colors, labels (including ocean labels),
+3D objects, and atmosphere while preserving project layers and Standard's configuration.
 
 ## License and terms
 
@@ -92,14 +94,14 @@ import, so early clicks cannot lose a panel-opening request.
 The Add Data menu and command palette withhold loaders that require an
 unimplemented MapLibre protocol or custom render pass. These entries are
 visible but disabled in the menu with a Mapbox compatibility hint: MBTiles,
-PMTiles, Zarr, LiDAR, Gaussian Splatting, 3D Tiles, DuckDB, and deck.gl/3D models.
+Zarr, Gaussian Splatting, DuckDB, and deck.gl/3D models.
 Cesium Ion, CZML, and KML scene loaders remain Cesium-only.
 
 FlatGeobuf uses the shared vector importer on Mapbox. ArcGIS vector-tile
 services retain their resolved tile sources, service styles, classification
 filters, visibility, and opacity. STAC supports catalog browsing, extent
 search, bbox drawing, footprints, and selection on both MapLibre and Mapbox;
-assets that need PMTiles or Zarr remain download-only on Mapbox.
+remote vector PMTiles assets can be added, while Zarr remains download-only on Mapbox.
 
 NetCDF/HDF files and directly readable remote files can render a selected
 plane, including a time slice, as an image. Mapbox does not animate that image
@@ -140,12 +142,12 @@ service restrictions are included explicitly.
 | Deck.gl | Disabled: custom renderer has no adapter |
 | GeoParquet | US states: 52 features imported and rendered |
 | FlatGeobuf | Countries: 179 features imported through the shared vector bridge |
-| PMTiles | Archive read reproduced an unsupported-protocol error; entry now disabled |
+| PMTiles | Remote vector archives use native Mapbox sources; Tilezen’s nine source layers and Mapbox’s earthquake archive rendered |
 | Zarr | Panel/sample loading exercised; custom rendering remains unsupported and entry disabled |
 | NetCDF / HDF | Air-temperature file: selected time slice added as a native image |
-| LiDAR | Panel/sample loading exercised; custom rendering remains unsupported and entry disabled |
+| LiDAR | Autzen COPC rendered (10,653,336 archive points); the small PDAL COPC fixture loads 1,065 points |
 | Gaussian Splatting | Panel opens; custom rendering unsupported and entry disabled |
-| 3D Tiles | Panel opens; custom rendering unsupported and entry disabled |
+| 3D Tiles | AGI headquarters tileset renders through deck.gl; altitude placement, visibility and restoration have regression coverage |
 | Cesium Ion | Disabled: Cesium-only |
 | CZML | Disabled: Cesium-only |
 | KML / KMZ | Disabled: Cesium scene loader |
@@ -164,3 +166,24 @@ npm exec -- playwright test e2e/mapbox-add-data.spec.ts
 
 The tests skip when `MAPBOX_TOKEN` is absent. They use live public services;
 remote-service availability is part of these integration checks.
+
+### PMTiles and 3D adapters
+
+The PMTiles panel keeps its archive discovery and source-layer selection UI, but
+Mapbox imports go through the layer store. Each selected source layer has an
+independent Mapbox source and editable style. This path supports remote HTTP(S)
+**vector** archives whose URL path ends in `.pmtiles`; raster archives, local files,
+and the offline PMTiles basemap remain unsupported and receive a load error.
+
+LiDAR uses the existing point-cloud loader and its separate deck.gl canvas.
+Standard 3D Tiles use the shared interleaved overlay, retaining the same project
+source records as MapLibre. Both require Mercator. Tileset altitude offsets move
+the geometry and traversal bounds together, so lowered tiles remain visible when
+zooming in or reopening a saved project. The 3D Tiles panel reports loading and
+fetch errors; visibility, opacity and removal follow the layer store.
+
+The opt-in `e2e/mapbox-archives-3d.spec.ts` uses public PMTiles, COPC and AGI tileset
+URLs and checks save/reopen in light and dark themes. Set `MAPBOX_TOKEN` at runtime,
+then run it with `npx playwright test e2e/mapbox-archives-3d.spec.ts`.
+Google Photorealistic and authenticated I3S services require their own credentials;
+those services and every 3D Tiles extension are not covered by this test.

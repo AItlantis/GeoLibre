@@ -8,6 +8,7 @@ import {
 import type { StyleSpecification, Popup } from "mapbox-gl";
 import type { MapEngine } from "./map-engine";
 import { MapboxEngine, redactMapboxError } from "./mapbox-engine";
+import { prepareMapboxStandard } from "./mapbox-standard-style";
 import { styleUsesUnsupportedSource } from "./mapbox-layers";
 import { resolveMapStyle } from "./map-controller";
 
@@ -30,7 +31,7 @@ export function MapboxCanvas({ accessToken, viewId, engineRef, onEngineReady }: 
     let cleanup = () => {};
     setError(null);
     void Promise.all([import("mapbox-gl"), import("mapbox-gl/dist/mapbox-gl.css")])
-      .then(([module]) => {
+      .then(async ([module]) => {
         if (cancelled || !container.current) return;
         const gl = module.default;
         const state = useAppStore.getState();
@@ -55,16 +56,21 @@ export function MapboxCanvas({ accessToken, viewId, engineRef, onEngineReady }: 
             ...(projection ? { projection: { name: projection.type } } : {}),
           } as StyleSpecification;
         };
+        const initialStyle = await prepareMapboxStandard(
+          resolvedStyle(state.preferences.map.mapboxStyleUrl ?? state.basemapStyleUrl),
+          accessToken,
+        );
+        if (cancelled || !container.current) return;
         const map = new gl.Map({
           container: container.current,
           accessToken,
           ...view,
-          style: resolvedStyle(state.preferences.map.mapboxStyleUrl ?? state.basemapStyleUrl),
+          style: initialStyle,
           projection: state.preferences.map.projection,
           attributionControl: false,
           preserveDrawingBuffer: true,
         });
-        engine = new MapboxEngine(map, gl);
+        engine = new MapboxEngine(map, gl, accessToken);
         const current = engine;
         let applying = false;
         let popup: Popup | undefined;
@@ -137,6 +143,7 @@ export function MapboxCanvas({ accessToken, viewId, engineRef, onEngineReady }: 
         const unsubscribe = useAppStore.subscribe(update);
         cleanup = unsubscribe;
         update(state);
+        update(useAppStore.getState(), state);
         map.on("moveend", () => {
           if (applying || cancelled) return;
           const next = useAppStore.getState(),

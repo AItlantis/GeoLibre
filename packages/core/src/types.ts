@@ -1693,7 +1693,7 @@ export const DEFAULT_PROJECT_PREFERENCES: ProjectPreferences = {
     showPointerElevation: false,
     terrainEnabled: false,
     coordinateFormat: "dd",
-    mapboxStyleUrl: "mapbox://styles/mapbox/streets-v12",
+    mapboxStyleUrl: "mapbox://styles/mapbox/standard",
   },
   environmentVariables: [],
   geocoding: {

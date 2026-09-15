@@ -43,12 +43,9 @@ for (const theme of ["light", "dark"] as const) {
 
     await page.getByRole("button", { name: "Add Data", exact: true }).click();
     for (const name of [
-      "PMTiles Layer",
       "MBTiles Layer",
       "Zarr Layer",
-      "LiDAR Layer",
       "Gaussian Splatting",
-      "3D Tiles Layer",
       "DuckDB Layer",
       "Deck.gl Layer",
     ]) {

@@ -670,7 +670,7 @@ function footprintStyleLayers(map: StacMap): string[] {
 
 function canAddAssetToMap(item: StacItem, key: string, asset: StacAsset): boolean {
   const format = assetFormat(asset);
-  if (appRef?.getMapRenderer?.() === "mapbox" && (format === "zarr" || format === "pmtiles")) {
+  if (appRef?.getMapRenderer?.() === "mapbox" && format === "zarr") {
     return false;
   }
   return canAddAsset(item, key, asset);
@@ -700,10 +700,7 @@ function assetFormatLabel(asset: StacAsset): string {
 /** The Add button's tooltip: what it would add, or why it will not. */
 function addReason(item: StacItem, key: string, asset: StacAsset): string {
   if (canAddAssetToMap(item, key, asset)) return asset.href;
-  if (
-    appRef?.getMapRenderer?.() === "mapbox" &&
-    ["zarr", "pmtiles"].includes(assetFormat(asset) ?? "")
-  ) {
+  if (appRef?.getMapRenderer?.() === "mapbox" && assetFormat(asset) === "zarr") {
     return labels.addUnsupported;
   }
   if (!isVisualizableAsset(asset)) return labels.addUnsupported;

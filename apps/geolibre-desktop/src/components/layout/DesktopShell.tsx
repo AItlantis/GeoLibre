@@ -1305,6 +1305,10 @@ export function DesktopShell({
     reattachFlightSimulator(appAPI);
     // VectorControl has a Cesium bridge and must restore on either engine.
     restoreVectorLayers(appAPI);
+    if (engine.kind === "mapbox") {
+      restoreThreeDTilesLayers(appAPI);
+      void restoreLidarLayers(appAPI).catch(console.error);
+    }
     if (!engine.capabilities.nativeMapInstance) {
       void restoreLocalFileLayers();
       return;

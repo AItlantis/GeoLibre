@@ -4,11 +4,8 @@ import type { MapRendererKind } from "@geolibre/core";
 // Keep the menu and command palette in agreement until they have adapters.
 const MAPBOX_UNSUPPORTED_SOURCES = new Set([
   "mbtiles",
-  "pmtiles",
   "zarr",
-  "lidar",
   "splatting",
-  "3d-tiles",
   "duckdb",
   "deckgl-viz",
   "gltf-model",

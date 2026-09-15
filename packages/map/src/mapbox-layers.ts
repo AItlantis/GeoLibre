@@ -56,12 +56,12 @@ export function styleUsesUnsupportedSource(style: { sources?: object }): boolean
 }
 
 /**
- * Whether Mapbox can draw a layer through a native plan or the raster plugin.
+ * Whether Mapbox can draw a layer through a native plan or a supported plugin.
  * The layer panels use it to badge unsupported layers before the engine's
  * error banner would report them.
  */
 export function isMapboxSupportedLayer(layer: GeoLibreLayer): boolean {
-  if (isMapboxPluginRaster(layer)) return true;
+  if (isMapboxPluginLayer(layer)) return true;
   const cached = supportedLayerCache.get(layer);
   if (cached !== undefined) return cached;
   let supported = true;
@@ -74,8 +74,18 @@ export function isMapboxSupportedLayer(layer: GeoLibreLayer): boolean {
   return supported;
 }
 
-/** The raster plugin mounts its GPU overlay or TiTiler layer on Mapbox itself. */
-export function isMapboxPluginRaster(layer: GeoLibreLayer): boolean {
+/** These plugins own their Mapbox overlays and synchronize the layer store themselves. */
+export function isMapboxPluginLayer(layer: GeoLibreLayer): boolean {
+  if (layer.metadata.externalNativeLayer === true) {
+    if (layer.type === "lidar" && layer.metadata.sourceKind === "lidar-url") return true;
+    if (
+      layer.type === "3d-tiles" &&
+      ["3d-tiles-url", "google-photorealistic-3d-tiles", "arcgis-i3s"].includes(
+        String(layer.metadata.sourceKind),
+      )
+    )
+      return true;
+  }
   return (
     layer.type === "cog" &&
     layer.metadata.sourceKind === "maplibre-gl-raster" &&
@@ -262,6 +272,24 @@ export function compileMapboxLayer(
       sourceId,
       source: { type: "geojson", data: layer.geojson, generateId: true },
       layers: vectorLayers(),
+    };
+  }
+  if (layer.type === "pmtiles") {
+    const url = String(layer.source.url ?? layer.sourcePath ?? "").replace(/^pmtiles:\/\//, "");
+    if (
+      layer.source.tileType !== "vector" ||
+      !/^https?:\/\//.test(url) ||
+      !new URL(url).pathname.endsWith(".pmtiles")
+    ) {
+      throw new Error("Mapbox PMTiles requires a remote vector .pmtiles archive");
+    }
+    const names = layer.source.sourceLayers;
+    if (!Array.isArray(names) || !names.length)
+      throw new Error("Vector tiles need a source-layer name");
+    return {
+      sourceId,
+      source: { type: "vector", url },
+      layers: names.flatMap((name) => vectorLayers(String(name))),
     };
   }
   const urls = [

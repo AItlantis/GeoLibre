@@ -140,6 +140,12 @@ function makeMap() {
       calls.push("jumpTo");
       ({ center, zoom, bearing, pitch } = view);
     },
+    flyTo: (view: { center: [number, number]; zoom: number; pitch?: number }) => {
+      calls.push(`flyTo:${JSON.stringify(view)}`);
+      center = view.center;
+      zoom = view.zoom;
+      if (view.pitch !== undefined) pitch = view.pitch;
+    },
     setMinZoom: (v: number) => calls.push(`setMinZoom:${v}`),
     setMaxZoom: (v: number) => calls.push(`setMaxZoom:${v}`),
     getMaxZoom: () => 18,
@@ -456,6 +462,37 @@ describe("MapboxEngine camera and preferences", () => {
     assert.equal(engine.readView().bearing, 30);
   });
 
+  it("tilts into a tileset on zoom-to-layer, like the MapLibre engine", () => {
+    const { engine, map } = makeEngine();
+    const tileset = {
+      ...geojsonLayer(),
+      geojson: undefined,
+      type: "3d-tiles" as const,
+      source: { url: "https://example.com/tileset.json" },
+      metadata: {
+        externalNativeLayer: true,
+        sourceKind: "3d-tiles-url",
+        center: [-75, 40],
+        zoom: 15,
+      },
+    };
+    map.calls.length = 0;
+    engine.fitLayer(tileset);
+    assert.deepEqual(map.calls, ['flyTo:{"center":[-75,40],"zoom":15,"pitch":60}']);
+    // An already steeper camera is kept, and a point cloud is not tilted.
+    map.jumpTo({ center: [-75, 40], zoom: 15, bearing: 0, pitch: 70 });
+    engine.fitLayer(tileset);
+    assert.equal(map.calls.at(-1), 'flyTo:{"center":[-75,40],"zoom":15,"pitch":70}');
+    engine.fitLayer({
+      ...tileset,
+      type: "lidar",
+      metadata: { ...tileset.metadata, sourceKind: "lidar-url", zoom: undefined },
+    });
+    assert.equal(map.calls.at(-1), 'flyTo:{"center":[-75,40],"zoom":16}');
+    engine.fitLayer({ ...tileset, metadata: { externalNativeLayer: true, center: "nowhere" } });
+    assert.equal(map.calls.length, 4);
+  });
+
   it("clamps a saved camera to the project preferences before moving", () => {
     const { engine, map } = makeEngine();
     engine.applyMapPreferences({
@@ -640,4 +677,37 @@ describe("Mapbox ArcGIS vector tile services", () => {
     assert.equal(map.layers.length, 0);
     assert.match(engine.getRenderStatus().errors[0] ?? "", /tile templates/);
   });
+});
+
+it("retries a Standard visibility change made while its opacity update is loading", () => {
+  const { engine, map } = makeEngine();
+  engine.setBlankBackgroundColor("#ffffff");
+  const config: Record<string, unknown> = {
+    geolibreBasemapOpacity: 1,
+    geolibreBlankColor: "#ffffff",
+  };
+  Object.assign(map, {
+    getConfigProperty: (_id: string, key: string) => config[key],
+    setConfigProperty: (_id: string, key: string, value: unknown) => {
+      config[key] = value;
+      map.setStyleLoaded(false);
+    },
+  });
+  map.getStyle = () => ({
+    layers: [],
+    imports: [
+      {
+        id: "basemap",
+        url: "mapbox://styles/mapbox/standard",
+        data: { schema: { geolibreBasemapOpacity: { type: "number", default: 1 } } },
+      },
+    ],
+  });
+  map.fire("style.load");
+  engine.setBasemapOpacity(0.5);
+  engine.setBasemapVisible(false);
+  assert.equal(config.geolibreBasemapOpacity, 0.5);
+  map.setStyleLoaded(true);
+  map.fire("idle");
+  assert.equal(config.geolibreBasemapOpacity, 0);
 });
