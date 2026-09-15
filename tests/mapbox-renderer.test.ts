@@ -15,6 +15,7 @@ import { proxyWmsTiles } from "../packages/map/src/wms-proxy";
 import { resolveTextFontFromStyleLayers } from "../packages/map/src/text-font";
 import { MAPBOX_CAPABILITIES, redactMapboxError } from "../packages/map/src/mapbox-engine";
 import { isPluginEngineSupported } from "../packages/plugins/src/types";
+import { maplibreLayerControlPlugin } from "../packages/plugins/src/plugins/layer-control";
 import { geojsonLayer } from "./helpers/layer-fixtures";
 
 describe("Mapbox project and plugin boundaries", () => {
@@ -42,6 +43,15 @@ describe("Mapbox project and plugin boundaries", () => {
     assert.equal(isPluginEngineSupported({ engines: ["mapbox"] }, "mapbox"), true);
     assert.equal(MAPBOX_CAPABILITIES.nativeMapInstance, false);
     assert.equal(MAPBOX_CAPABILITIES.customLayers, false);
+  });
+  it("keeps the Layer Control plugin active on Mapbox", () => {
+    // The plugin manager deactivates plugins that do not declare the new
+    // engine on a renderer swap, and this plugin's deactivate removes the
+    // control — so without the declaration the Mapbox map lost its layer
+    // control and the Plugins menu entry.
+    assert.equal(isPluginEngineSupported(maplibreLayerControlPlugin, "mapbox"), true);
+    assert.equal(isPluginEngineSupported(maplibreLayerControlPlugin, "maplibre"), true);
+    assert.equal(isPluginEngineSupported(maplibreLayerControlPlugin, "cesium"), false);
   });
   it("redacts credentials from engine errors", () => {
     const result = redactMapboxError(

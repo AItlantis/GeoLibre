@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
 import type * as mapboxgl from "mapbox-gl";
-import type { MapPreferences } from "@geolibre/core";
+import { useAppStore, type MapPreferences } from "@geolibre/core";
 import { MapboxEngine } from "../packages/map/src/mapbox-engine";
 import { isMapboxSupportedLayer } from "../packages/map/src/mapbox-layers";
 import { geojsonLayer } from "./helpers/layer-fixtures";
@@ -206,7 +206,9 @@ describe("MapboxEngine construction", () => {
   });
   it("mounts the built-in controls and takes the style's layers as the basemap", () => {
     const { engine, map } = makeEngine();
-    assert.equal(map.controls.length, 4);
+    // Navigation, fullscreen, scale, attribution, plus the layer control that
+    // mounts once the style has loaded (the fake reports it loaded up front).
+    assert.equal(map.controls.length, 5);
     assert.deepEqual(engine.getBasemapStyleLayerIds(), ["background"]);
     assert.equal(engine.getMap(), null);
     assert.equal(engine.getMapboxMap(), map as unknown as mapboxgl.Map);
@@ -214,11 +216,11 @@ describe("MapboxEngine construction", () => {
   it("keeps the attribution control mounted", () => {
     const { engine, map } = makeEngine();
     assert.equal(engine.setBuiltInControlVisible("attribution", false), false);
-    assert.equal(map.controls.length, 4);
+    assert.equal(map.controls.length, 5);
     assert.equal(engine.setBuiltInControlVisible("scale", false), true);
-    assert.equal(map.controls.length, 3);
-    assert.equal(engine.setBuiltInControlVisible("scale", true), true);
     assert.equal(map.controls.length, 4);
+    assert.equal(engine.setBuiltInControlVisible("scale", true), true);
+    assert.equal(map.controls.length, 5);
   });
   it("detaches every listener on destroy", () => {
     const { engine, map } = makeEngine();
@@ -710,4 +712,156 @@ it("retries a Standard visibility change made while its opacity update is loadin
   map.setStyleLoaded(true);
   map.fire("idle");
   assert.equal(config.geolibreBasemapOpacity, 0);
+});
+
+// The layer control is maplibre-gl-layer-control driven through the shared
+// LayerControlHost. These tests cover the Mapbox side of that seam: when the
+// engine mounts it, how it answers the built-in control API, when it rebuilds,
+// and — against a linkedom DOM — that the panel lists store layers, mirrors
+// store state in place, and keeps GeoLibre's own layers out of the Background
+// group on a style whose basemap the control cannot fetch.
+describe("MapboxEngine layer control", () => {
+  it("mounts the layer control once the style has loaded, unless a pane opts out", () => {
+    const { map } = makeEngine();
+    assert.equal(map.controls.length, 5);
+    const paneMap = makeMap();
+    new MapboxEngine(paneMap as unknown as mapboxgl.Map, gl, "", {
+      controlVisibility: { "layer-control": false },
+    });
+    assert.equal(paneMap.controls.length, 4);
+    const lateMap = makeMap();
+    lateMap.setStyleLoaded(false);
+    new MapboxEngine(lateMap as unknown as mapboxgl.Map, gl);
+    assert.equal(lateMap.controls.length, 4);
+    lateMap.setStyleLoaded(true);
+    lateMap.fire("style.load");
+    assert.equal(lateMap.controls.length, 5);
+  });
+  it("hides, shows and repositions the layer control through the built-in control API", () => {
+    const { engine, map } = makeEngine();
+    assert.equal(engine.getBuiltInControlPosition("layer-control"), "top-right");
+    assert.equal(engine.setBuiltInControlVisible("layer-control", false), true);
+    assert.equal(map.controls.length, 4);
+    // Hidden stays hidden across a rebuild trigger.
+    engine.syncLayers([geojsonLayer()]);
+    assert.equal(map.controls.length, 4);
+    assert.equal(engine.setBuiltInControlVisible("layer-control", true), true);
+    assert.equal(map.controls.length, 5);
+    const before = map.controls.at(-1);
+    assert.equal(engine.setBuiltInControlPosition("layer-control", "top-left"), true);
+    assert.equal(engine.getBuiltInControlPosition("layer-control"), "top-left");
+    assert.equal(map.controls.length, 5);
+    assert.notEqual(map.controls.at(-1), before);
+  });
+  it("rebuilds the control only when the controllable layer set changes", () => {
+    const { engine, map } = makeEngine();
+    const initial = map.controls.at(-1);
+    engine.syncLayers([geojsonLayer()]);
+    const withLayer = map.controls.at(-1);
+    assert.notEqual(withLayer, initial);
+    // Visibility and opacity are mirrored in place, never by a rebuild that
+    // would collapse the panel mid-drag.
+    engine.syncLayers([geojsonLayer({ visible: false, opacity: 0.5 })]);
+    assert.equal(map.controls.at(-1), withLayer);
+    engine.syncLayers([geojsonLayer({ name: "Renamed" })]);
+    assert.notEqual(map.controls.at(-1), withLayer);
+    engine.syncLayers([]);
+    assert.equal(map.controls.length, 5);
+  });
+  it("drops the control before a style swap and remounts it on style.load", () => {
+    const { engine, map } = makeEngine();
+    (map as unknown as { setStyle: () => void }).setStyle = () => {
+      map.calls.push("setStyle");
+    };
+    engine.setResolvedStyle({ version: 8, sources: {}, layers: [] });
+    assert.ok(map.calls.includes("setStyle"));
+    assert.equal(map.controls.length, 4);
+    map.fire("style.load");
+    assert.equal(map.controls.length, 5);
+  });
+  it("lists store layers, mirrors store state, and seeds the basemap group", () => {
+    const { window } = parseHTML('<div id="map"><div class="mapboxgl-ctrl-top-right"></div></div>');
+    const globals = globalThis as { document?: unknown; window?: unknown };
+    const previous = { document: globals.document, window: globals.window };
+    globals.document = window.document;
+    globals.window = window;
+    const basemapVisible = useAppStore.getState().basemapVisible;
+    try {
+      const map = makeMap();
+      const container = window.document.getElementById("map")!;
+      map.getContainer = () => container;
+      // The fake's fixed style only names the basemap; the control needs to
+      // see the live layer list to classify layers. Start with no root layers
+      // at all, the shape of Mapbox Standard (its basemap lives in imports).
+      map.getStyle = () => ({ sources: {}, layers: map.layers as { id: string; type: string }[] });
+      // A real map runs a control's onAdd inside addControl; the control
+      // detects its layers there, so the fake has to do the same here.
+      const mounted = new Map<unknown, HTMLElement>();
+      Object.assign(map, {
+        getLayoutProperty: () => undefined,
+        getPaintProperty: () => undefined,
+        addControl: (control: Partial<mapboxgl.IControl>) => {
+          map.controls.push(control);
+          if (control.onAdd) mounted.set(control, control.onAdd(map as unknown as mapboxgl.Map));
+        },
+        removeControl: (control: Partial<mapboxgl.IControl>) => {
+          map.controls.splice(map.controls.indexOf(control), 1);
+          control.onRemove?.(map as unknown as mapboxgl.Map);
+          mounted.delete(control);
+        },
+      });
+      const engine = new MapboxEngine(map as unknown as mapboxgl.Map, gl);
+      // With no root layers and no project layers the control alone would
+      // build an empty panel; the host still offers the Background row.
+      assert.deepEqual(
+        Array.from(container.querySelectorAll(".layer-control-item")).map((item) =>
+          item.getAttribute("data-layer-id"),
+        ),
+        ["Background"],
+      );
+
+      // A style with a root basemap layer, loaded afresh.
+      map.layers.push({ id: "background", type: "background" });
+      map.fire("style.load");
+      engine.syncLayers([geojsonLayer()]);
+      const nativeIds = map.layers.map((l) => l.id as string).filter((id) => id !== "background");
+      assert.ok(nativeIds.length > 0);
+
+      const element = mounted.get(map.controls.at(-1))!;
+      assert.ok(element.classList.contains("maplibregl-ctrl-layer-control"));
+      const items = Array.from(container.querySelectorAll(".layer-control-item")).map((item) =>
+        item.getAttribute("data-layer-id"),
+      );
+      // One row per GeoLibre layer (by store id, not per native style layer)
+      // plus the Background group.
+      assert.deepEqual(items.sort(), ["Background", "layer-a"]);
+
+      engine.syncLayers([geojsonLayer({ visible: false, opacity: 0.4 })]);
+      const row = container.querySelector('.layer-control-item[data-layer-id="layer-a"]')!;
+      assert.equal(row.querySelector<HTMLInputElement>(".layer-control-checkbox")!.checked, false);
+      assert.equal(row.querySelector<HTMLInputElement>(".layer-control-opacity")!.value, "0.4");
+
+      // Toggling Background reaches the store (which drives the engine) and,
+      // because the basemap ids were seeded from the loaded style rather than
+      // guessed from "whatever was on the map", leaves the layer's native
+      // style layers alone.
+      map.calls.length = 0;
+      const background = container.querySelector<HTMLInputElement>(
+        '.layer-control-item[data-layer-id="Background"] .layer-control-checkbox',
+      )!;
+      background.checked = false;
+      background.dispatchEvent(new window.Event("change"));
+      assert.equal(useAppStore.getState().basemapVisible, false);
+      assert.ok(map.calls.includes("setLayoutProperty:background:visibility"));
+      for (const id of nativeIds) {
+        assert.ok(!map.calls.includes(`setLayoutProperty:${id}:visibility`), id);
+      }
+    } finally {
+      useAppStore.setState({ basemapVisible });
+      if (previous.document === undefined) delete globals.document;
+      else globals.document = previous.document;
+      if (previous.window === undefined) delete globals.window;
+      else globals.window = previous.window;
+    }
+  });
 });

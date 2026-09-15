@@ -37,6 +37,7 @@ import {
   STANDARD_BLANK_COLOR,
 } from "./mapbox-standard-style";
 import { arcgisOpacity } from "./arcgis-vector-style";
+import { LayerControlHost } from "./layer-control-host";
 
 export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   styleSpec: true,
@@ -47,6 +48,10 @@ export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   onMapDrawing: true,
   domControls: true,
 });
+
+const BLANK_BACKGROUND_LAYER_ID = "geolibre-blank-background";
+const HIGHLIGHT_SOURCE_ID = "geolibre-mapbox-highlight";
+const HIGHLIGHT_LAYER_IDS = ["geolibre-mapbox-highlight-line", "geolibre-mapbox-highlight-point"];
 
 export function redactMapboxError(message: string): string {
   return message
@@ -80,6 +85,29 @@ export class MapboxEngine implements MapEngine {
     { control: mapboxgl.IControl; visible: boolean; position: maplibregl.ControlPosition }
   >();
   private disposers = new Set<() => void>();
+  private layerControlVisible: boolean;
+  // The same on-map layer control MapLibre shows, driven through the shared
+  // host: the control only needs the style API and IControl, which Mapbox has.
+  private layerControlHost = new LayerControlHost({
+    getMap: () => this.map,
+    addControl: (control, position) => {
+      this.addControl(control, position);
+    },
+    removeControl: (control) => this.removeControl(control),
+    getLayers: () => this.layers,
+    getNativeLayerIds: (layer) => this.nativeLayerIds(layer),
+    getSourceIds: (layer) => {
+      const plan = this.plans.get(layer.id);
+      return plan ? [plan.sourceId, ...Object.keys(plan.additionalSources ?? {})] : [];
+    },
+    excludedLayerIds: [BLANK_BACKGROUND_LAYER_ID, ...HIGHLIGHT_LAYER_IDS],
+    // Never hand the control a URL: `mapbox://` styles are not fetchable, and
+    // the engine already holds the loaded style's own layers (see styleLoaded),
+    // which is a better basemap answer than a second fetch would give.
+    getBasemapStyleUrl: () => null,
+    getBasemapLayerIds: () => this.getBasemapStyleLayerIds(),
+    getBasemapState: () => ({ visible: this.basemapVisible, opacity: this.basemapOpacity }),
+  });
   private storyOpacities = new Map<string, number>();
   private rotating = false;
   private syncPending = false;
@@ -93,8 +121,18 @@ export class MapboxEngine implements MapEngine {
     map: mapboxgl.Map,
     private gl: typeof mapboxgl.default,
     private accessToken = "",
+    options: {
+      /**
+       * Override built-in control visibility before the controls are added.
+       * Secondary (split/grid) panes pass `{ "layer-control": false }` so they
+       * don't mount a second layer control that would write the shared
+       * layer/basemap state back to the global store.
+       */
+      controlVisibility?: Partial<Record<BuiltInMapControl, boolean>>;
+    } = {},
   ) {
     this.map = map;
+    this.layerControlVisible = options.controlVisibility?.["layer-control"] ?? true;
     this.surface = {
       getCanvas: () => map.getCanvas(),
       getContainer: () => map.getContainer(),
@@ -107,6 +145,7 @@ export class MapboxEngine implements MapEngine {
     map.on("error", this.onError);
     map.on("sourcedata", this.onSourceData);
     map.on("idle", this.flushLayers);
+    map.on("styledata", this.onStyleData);
     this.addNativeControl("navigation", new gl.NavigationControl());
     this.addNativeControl("fullscreen", new gl.FullscreenControl());
     this.addNativeControl("scale", new gl.ScaleControl(), "bottom-left");
@@ -152,6 +191,13 @@ export class MapboxEngine implements MapEngine {
     this.setBlankBackgroundColor(this.blankColor);
     this.setTerrainEnabled(this.terrain);
     this.syncLayers(this.layers);
+    if (this.layerControlVisible) this.layerControlHost.add();
+  };
+  // Plugins can add native style layers directly (outside the layer store);
+  // refresh the layer control on style changes so internal-flagged layers are
+  // excluded reactively (debounced by the host).
+  private onStyleData = () => {
+    this.layerControlHost.scheduleStyleRefresh();
   };
   destroy(): void {
     if (!this.map) return;
@@ -163,6 +209,8 @@ export class MapboxEngine implements MapEngine {
     this.map.off("error", this.onError);
     this.map.off("sourcedata", this.onSourceData);
     this.map.off("idle", this.flushLayers);
+    this.map.off("styledata", this.onStyleData);
+    this.layerControlHost.destroy();
     this.map.remove();
     this.pluginControls.clear();
     this.map = null;
@@ -393,6 +441,8 @@ export class MapboxEngine implements MapEngine {
           );
       }
     }
+    this.layerControlHost.refresh();
+    this.layerControlHost.syncState();
   }
   private removeLayer(id: string): void {
     const plan = this.plans.get(id),
@@ -432,6 +482,7 @@ export class MapboxEngine implements MapEngine {
       this.errors.clear();
       this.plans.clear();
       this.previous.clear();
+      this.layerControlHost.remove();
       this.map.setStyle(prepared, {
         diff: false,
         localFontFamily: null,
@@ -455,10 +506,12 @@ export class MapboxEngine implements MapEngine {
   setBasemapVisible(visible: boolean): void {
     this.basemapVisible = visible;
     this.applyBasemap();
+    this.layerControlHost.syncState();
   }
   setBasemapOpacity(opacity: number): void {
     this.basemapOpacity = opacity;
     this.applyBasemap();
+    this.layerControlHost.syncState();
   }
   private applyBasemap(): void {
     const map = this.map;
@@ -514,9 +567,9 @@ export class MapboxEngine implements MapEngine {
   setBlankBackgroundColor(color: string | null): void {
     this.blankColor = color;
     this.applyBasemap();
-    if (this.map?.getLayer("geolibre-blank-background"))
+    if (this.map?.getLayer(BLANK_BACKGROUND_LAYER_ID))
       this.map.setPaintProperty(
-        "geolibre-blank-background",
+        BLANK_BACKGROUND_LAYER_ID,
         "background-color",
         color ?? (document.documentElement.classList.contains("dark") ? "#262626" : "#ffffff"),
       );
@@ -528,6 +581,13 @@ export class MapboxEngine implements MapEngine {
   restoreLayerStyles(): void {
     this.storyOpacities.clear();
     this.syncLayers(this.layers);
+  }
+  /** Style layer ids currently on the map that render `layer`. */
+  private nativeLayerIds(layer: GeoLibreLayer): string[] {
+    const map = this.map;
+    return (this.plans.get(layer.id)?.layers ?? [])
+      .map((spec) => spec.id)
+      .filter((id) => Boolean(map?.getLayer(id)));
   }
   identifyFeatures(lngLat: [number, number], layerId?: string): IdentifiedFeature[] {
     const map = this.map;
@@ -582,27 +642,25 @@ export class MapboxEngine implements MapEngine {
       type: "FeatureCollection",
       features: layer.geojson.features.filter((f, i) => ids.has(String(f.id ?? i))),
     };
-    this.map.addSource("geolibre-mapbox-highlight", { type: "geojson", data });
+    this.map.addSource(HIGHLIGHT_SOURCE_ID, { type: "geojson", data });
     this.map.addLayer({
-      id: "geolibre-mapbox-highlight-line",
+      id: HIGHLIGHT_LAYER_IDS[0],
       type: "line",
-      source: "geolibre-mapbox-highlight",
+      source: HIGHLIGHT_SOURCE_ID,
       paint: { "line-color": "#facc15", "line-width": 4 },
     });
     this.map.addLayer({
-      id: "geolibre-mapbox-highlight-point",
+      id: HIGHLIGHT_LAYER_IDS[1],
       type: "circle",
-      source: "geolibre-mapbox-highlight",
+      source: HIGHLIGHT_SOURCE_ID,
       filter: ["==", ["geometry-type"], "Point"],
       paint: { "circle-radius": 10, "circle-color": "#facc15", "circle-opacity": 0.6 },
     });
     if (options?.fit) this.fitLayer({ ...layer, geojson: data });
   }
   clearFeatureHighlight(): void {
-    for (const id of ["geolibre-mapbox-highlight-line", "geolibre-mapbox-highlight-point"])
-      if (this.map?.getLayer(id)) this.map.removeLayer(id);
-    if (this.map?.getSource("geolibre-mapbox-highlight"))
-      this.map.removeSource("geolibre-mapbox-highlight");
+    for (const id of HIGHLIGHT_LAYER_IDS) if (this.map?.getLayer(id)) this.map.removeLayer(id);
+    if (this.map?.getSource(HIGHLIGHT_SOURCE_ID)) this.map.removeSource(HIGHLIGHT_SOURCE_ID);
   }
   startManualPlacement(lngLat: [number, number], options: ManualPlacementOptions): () => void {
     if (!this.map) return () => {};
@@ -769,6 +827,13 @@ export class MapboxEngine implements MapEngine {
     this.controls.set(id, { control, visible: true, position });
   }
   setBuiltInControlVisible(id: BuiltInMapControl, visible: boolean): boolean {
+    if (id === "layer-control") {
+      if (!this.map) return false;
+      this.layerControlVisible = visible;
+      if (visible) this.layerControlHost.add();
+      else this.layerControlHost.remove();
+      return true;
+    }
     const item = this.controls.get(id);
     if (!item || !this.map) return false;
     // Attribution is required by Mapbox; keep its native control present.
@@ -781,9 +846,15 @@ export class MapboxEngine implements MapEngine {
     return true;
   }
   getBuiltInControlPosition(id: BuiltInMapControl): maplibregl.ControlPosition {
+    if (id === "layer-control") return this.layerControlHost.getPosition();
     return this.controls.get(id)?.position ?? "top-right";
   }
   setBuiltInControlPosition(id: BuiltInMapControl, position: maplibregl.ControlPosition): boolean {
+    if (id === "layer-control") {
+      if (!this.map) return false;
+      this.layerControlHost.setPosition(position);
+      return true;
+    }
     const item = this.controls.get(id);
     if (!item || !this.map) return false;
     if (item.visible) {

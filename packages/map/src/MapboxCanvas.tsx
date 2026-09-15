@@ -70,7 +70,11 @@ export function MapboxCanvas({ accessToken, viewId, engineRef, onEngineReady }: 
           attributionControl: false,
           preserveDrawingBuffer: true,
         });
-        engine = new MapboxEngine(map, gl, accessToken);
+        engine = new MapboxEngine(map, gl, accessToken, {
+          // Split/grid panes share the primary pane's layer control; a second
+          // one would write the same store state back from another map.
+          controlVisibility: viewId ? { "layer-control": false } : undefined,
+        });
         const current = engine;
         let applying = false;
         let popup: Popup | undefined;

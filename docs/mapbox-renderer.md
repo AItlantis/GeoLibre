@@ -38,6 +38,14 @@ come from Environment variables or the basemap control's API keys panel.
   split-view cameras; Mercator/globe projection and Mapbox terrain.
 - Feature picking, selection highlighting, extent drawing, draggable placement,
   and engine-level image capture.
+- The on-map layer control (`maplibre-gl-layer-control`), with the same
+  per-layer visibility, opacity, zoom-to and style-editor round trip to the
+  store as on MapLibre. The control only needs the shared style API, so both 2D
+  engines drive it through one host (`packages/map/src/layer-control-host.ts`);
+  a `mapbox://` style cannot be fetched by the control, so the engine seeds it
+  with the loaded style's own layers to tell basemap from project layers.
+  Toggle and reposition it from **Plugins → Layer Control**, as on MapLibre.
+  Split panes never mount a second control.
 
 Mapbox is not a full replacement for MapLibre's plugin ecosystem. Plugins must
 explicitly declare `engines: ["mapbox"]` (or include it alongside other engines).
