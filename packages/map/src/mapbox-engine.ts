@@ -9,16 +9,18 @@ import type {
   StoryChapterAnimation,
   StoryChapterLocation,
 } from "@geolibre/core";
-import type {
-  MapEngine,
-  MapEngineCapabilities,
-  MapRenderSurface,
-  FlyToCamera,
-  BuiltInMapControl,
-  IdentifiedFeature,
-  ManualPlacementOptions,
-  ExtentDrawingOptions,
-  MapExtent,
+import {
+  DEFAULT_BUILT_IN_CONTROL_POSITIONS,
+  DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
+  type MapEngine,
+  type MapEngineCapabilities,
+  type MapRenderSurface,
+  type FlyToCamera,
+  type BuiltInMapControl,
+  type IdentifiedFeature,
+  type ManualPlacementOptions,
+  type ExtentDrawingOptions,
+  type MapExtent,
 } from "./map-engine";
 import {
   compileMapboxLayer,
@@ -38,6 +40,8 @@ import {
 } from "./mapbox-standard-style";
 import { arcgisOpacity } from "./arcgis-vector-style";
 import { LayerControlHost } from "./layer-control-host";
+import { ResetBearingControl } from "./reset-bearing-control";
+import { MapboxGlobeControl } from "./mapbox-globe-control";
 
 export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   styleSpec: true,
@@ -52,6 +56,27 @@ export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
 const BLANK_BACKGROUND_LAYER_ID = "geolibre-blank-background";
 const HIGHLIGHT_SOURCE_ID = "geolibre-mapbox-highlight";
 const HIGHLIGHT_LAYER_IDS = ["geolibre-mapbox-highlight-line", "geolibre-mapbox-highlight-point"];
+
+/**
+ * The built-in controls Mapbox can put a button on the map for, in the order
+ * `MapController.init` adds them: both engines stack controls by insertion
+ * within a corner, so the same order gives the same top-right cluster
+ * (fullscreen, then the compass under it, then the globe toggle). Terrain is a
+ * scene setting on Mapbox (no button, like Cesium), the layer control mounts
+ * from the shared host once the style has loaded, and the logos are not
+ * hostable: Mapbox draws its own wordmark and the Maptoolkit basemaps are
+ * MapLibre styles.
+ */
+const MAPBOX_HOSTED_CONTROL_ORDER: readonly BuiltInMapControl[] = [
+  "fullscreen",
+  "compass",
+  "navigation",
+  "geolocate",
+  "globe",
+  "scale",
+  "attribution",
+];
+const MAPBOX_HOSTED_CONTROLS: ReadonlySet<BuiltInMapControl> = new Set(MAPBOX_HOSTED_CONTROL_ORDER);
 
 export function redactMapboxError(message: string): string {
   return message
@@ -80,10 +105,19 @@ export class MapboxEngine implements MapEngine {
   private exaggeration = 1;
   private preferences: MapPreferences | null = null;
   private pluginControls = new Map<maplibregl.IControl, mapboxgl.IControl>();
-  private controls = new Map<
-    BuiltInMapControl,
-    { control: mapboxgl.IControl; visible: boolean; position: maplibregl.ControlPosition }
-  >();
+  private controlVisibility: Record<BuiltInMapControl, boolean>;
+  private controlPositions: Record<BuiltInMapControl, maplibregl.ControlPosition> = {
+    ...DEFAULT_BUILT_IN_CONTROL_POSITIONS,
+  };
+  /** The mounted built-in controls; a hidden or unsupported id has no entry. */
+  private builtInControls = new Map<BuiltInMapControl, mapboxgl.IControl>();
+  // The same compass (reset pitch & bearing) button MapLibre shows, and a
+  // globe toggle standing in for MapLibre's GlobeControl, which mapbox-gl
+  // lacks. Both are kept typed so labels and projection changes reach them.
+  private compassControl: ResetBearingControl | null = null;
+  private globeControl: MapboxGlobeControl | null = null;
+  private scaleControl: mapboxgl.ScaleControl | null = null;
+  private compassLabel: string | undefined;
   private disposers = new Set<() => void>();
   private layerControlVisible: boolean;
   // The same on-map layer control MapLibre shows, driven through the shared
@@ -132,7 +166,14 @@ export class MapboxEngine implements MapEngine {
     } = {},
   ) {
     this.map = map;
-    this.layerControlVisible = options.controlVisibility?.["layer-control"] ?? true;
+    this.controlVisibility = {
+      ...DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
+      ...options.controlVisibility,
+      // Attribution is required by Mapbox; an override cannot hide it, the
+      // same rule setBuiltInControlVisible applies later.
+      attribution: true,
+    };
+    this.layerControlVisible = this.controlVisibility["layer-control"];
     this.surface = {
       getCanvas: () => map.getCanvas(),
       getContainer: () => map.getContainer(),
@@ -146,10 +187,13 @@ export class MapboxEngine implements MapEngine {
     map.on("sourcedata", this.onSourceData);
     map.on("idle", this.flushLayers);
     map.on("styledata", this.onStyleData);
-    this.addNativeControl("navigation", new gl.NavigationControl());
-    this.addNativeControl("fullscreen", new gl.FullscreenControl());
-    this.addNativeControl("scale", new gl.ScaleControl(), "bottom-left");
-    this.addNativeControl("attribution", new gl.AttributionControl(), "bottom-right");
+    for (const id of MAPBOX_HOSTED_CONTROL_ORDER) {
+      if (this.controlVisibility[id]) this.mountBuiltInControl(id);
+    }
+    // Terrain is a scene setting here (see setBuiltInControlVisible); an
+    // override asking for it is applied now, or by styleLoaded once the style
+    // is in, since setTerrainEnabled remembers the request either way.
+    if (this.controlVisibility.terrain) this.setTerrainEnabled(true);
     if (map.isStyleLoaded()) this.styleLoaded();
   }
   getMap(): null {
@@ -213,6 +257,10 @@ export class MapboxEngine implements MapEngine {
     this.layerControlHost.destroy();
     this.map.remove();
     this.pluginControls.clear();
+    this.builtInControls.clear();
+    this.compassControl = null;
+    this.globeControl = null;
+    this.scaleControl = null;
     this.map = null;
     this.surface = null;
     this.plans.clear();
@@ -364,6 +412,10 @@ export class MapboxEngine implements MapEngine {
     );
     map.setRenderWorldCopies(p.renderWorldCopies);
     map.setProjection(p.projection);
+    // mapbox-gl announces neither change through an event the controls could
+    // watch, so tell them directly.
+    this.globeControl?.update();
+    this.scaleControl?.setUnit(p.scaleUnit);
     this.setTerrainEnabled(p.terrainEnabled);
   }
   syncLayers(layers: GeoLibreLayer[]): void {
@@ -789,10 +841,20 @@ export class MapboxEngine implements MapEngine {
   ): boolean {
     if (!this.map) return false;
     if (this.pluginControls.has(control)) return true;
-    // IControl's lifecycle is shared, but its TypeScript Map parameter is
-    // engine-specific. Only plugins declaring Mapbox support should mount;
-    // the vector importer additionally uses its store-only source bridge.
-    const adapter: mapboxgl.IControl = {
+    // Only plugins declaring Mapbox support should mount; the vector importer
+    // additionally uses its store-only source bridge.
+    const adapter = this.adaptControl(control);
+    this.map.addControl(adapter, position);
+    this.pluginControls.set(control, adapter);
+    return true;
+  }
+  /**
+   * Wrap a MapLibre-typed control for a mapbox-gl map. IControl's lifecycle is
+   * shared, but its TypeScript Map parameter is engine-specific, and the DOM
+   * conventions differ in two ways the wrapper papers over.
+   */
+  private adaptControl(control: maplibregl.IControl): mapboxgl.IControl {
+    return {
       onAdd: (map) => {
         // DOM controls locate their corner by MapLibre's CSS class names.
         // Without these aliases a top-left panel assumes top-right and opens
@@ -809,69 +871,117 @@ export class MapboxEngine implements MapEngine {
       },
       onRemove: (map) => control.onRemove(map as unknown as maplibregl.Map),
     };
-    this.map.addControl(adapter, position);
-    this.pluginControls.set(control, adapter);
-    return true;
   }
   removeControl(control: maplibregl.IControl): void {
     const adapter = this.pluginControls.get(control);
     if (adapter && this.map?.hasControl(adapter)) this.map.removeControl(adapter);
     this.pluginControls.delete(control);
   }
-  private addNativeControl(
-    id: BuiltInMapControl,
-    control: mapboxgl.IControl,
-    position: maplibregl.ControlPosition = "top-right",
-  ): void {
-    this.map?.addControl(control, position);
-    this.controls.set(id, { control, visible: true, position });
+  /** Build the native or shared control behind a built-in id, or null when Mapbox cannot host it. */
+  private createBuiltInControl(id: BuiltInMapControl): mapboxgl.IControl | null {
+    const gl = this.gl;
+    switch (id) {
+      case "navigation":
+        return new gl.NavigationControl();
+      case "fullscreen":
+        // Fullscreens the map container, as on MapLibre; the app hides the
+        // surrounding chrome while fullscreen is active.
+        return new gl.FullscreenControl();
+      case "compass": {
+        const control = new ResetBearingControl(
+          this.compassLabel === undefined ? {} : { label: this.compassLabel },
+        );
+        this.compassControl = control;
+        return this.adaptControl(control);
+      }
+      case "geolocate":
+        return new gl.GeolocateControl({
+          positionOptions: { enableHighAccuracy: true },
+          trackUserLocation: true,
+        });
+      case "globe": {
+        const control = new MapboxGlobeControl();
+        this.globeControl = control;
+        return control;
+      }
+      case "scale": {
+        const control = new gl.ScaleControl({
+          maxWidth: 120,
+          unit: this.preferences?.scaleUnit ?? "metric",
+        });
+        this.scaleControl = control;
+        return control;
+      }
+      case "attribution":
+        return new gl.AttributionControl();
+      default:
+        return null;
+    }
+  }
+  private mountBuiltInControl(id: BuiltInMapControl): void {
+    if (!this.map || this.builtInControls.has(id)) return;
+    const control = this.createBuiltInControl(id);
+    if (!control) return;
+    this.map.addControl(control, this.controlPositions[id]);
+    this.builtInControls.set(id, control);
+  }
+  private unmountBuiltInControl(id: BuiltInMapControl): void {
+    const control = this.builtInControls.get(id);
+    if (!control) return;
+    if (this.map?.hasControl(control)) this.map.removeControl(control);
+    this.builtInControls.delete(id);
+    if (id === "compass") this.compassControl = null;
+    else if (id === "globe") this.globeControl = null;
+    else if (id === "scale") this.scaleControl = null;
   }
   setBuiltInControlVisible(id: BuiltInMapControl, visible: boolean): boolean {
+    if (!this.map) return false;
     if (id === "layer-control") {
-      if (!this.map) return false;
       this.layerControlVisible = visible;
       if (visible) this.layerControlHost.add();
       else this.layerControlHost.remove();
       return true;
     }
-    const item = this.controls.get(id);
-    if (!item || !this.map) return false;
+    // Terrain has no button here; the menu and project restore still reach
+    // the scene setting, as they do on Cesium.
+    if (id === "terrain") {
+      this.controlVisibility.terrain = visible;
+      this.setTerrainEnabled(visible);
+      return true;
+    }
+    if (!MAPBOX_HOSTED_CONTROLS.has(id)) return false;
     // Attribution is required by Mapbox; keep its native control present.
     if (id === "attribution" && !visible) return false;
-    if (item.visible !== visible) {
-      if (visible) this.map.addControl(item.control, item.position);
-      else this.map.removeControl(item.control);
-      item.visible = visible;
-    }
+    this.controlVisibility[id] = visible;
+    if (visible) this.mountBuiltInControl(id);
+    else this.unmountBuiltInControl(id);
     return true;
   }
   getBuiltInControlPosition(id: BuiltInMapControl): maplibregl.ControlPosition {
     if (id === "layer-control") return this.layerControlHost.getPosition();
-    return this.controls.get(id)?.position ?? "top-right";
+    return this.controlPositions[id];
   }
   setBuiltInControlPosition(id: BuiltInMapControl, position: maplibregl.ControlPosition): boolean {
+    if (!this.map) return false;
     if (id === "layer-control") {
-      if (!this.map) return false;
       this.layerControlHost.setPosition(position);
       return true;
     }
-    const item = this.controls.get(id);
-    if (!item || !this.map) return false;
-    if (item.visible) {
-      this.map.removeControl(item.control);
-      this.map.addControl(item.control, position);
+    if (!MAPBOX_HOSTED_CONTROLS.has(id)) return false;
+    this.controlPositions[id] = position;
+    if (this.builtInControls.has(id)) {
+      // Re-mount so the control lands in its new corner (and, as on MapLibre,
+      // at the end of that corner's stack).
+      this.unmountBuiltInControl(id);
+      this.mountBuiltInControl(id);
     }
-    item.position = position;
     return true;
   }
   setCompassLabel(label: string): void {
-    const button = this.map
-      ?.getContainer()
-      .querySelector<HTMLButtonElement>(".mapboxgl-ctrl-compass");
-    if (button) {
-      button.title = label;
-      button.setAttribute("aria-label", label);
-    }
+    // Cached so a compass re-added from the Controls menu picks up the latest
+    // translation without another call.
+    this.compassLabel = label;
+    this.compassControl?.setLabel(label);
   }
   setBackgroundLabel(_label: string): void {}
   setTerrainLabel(_label: string): void {}

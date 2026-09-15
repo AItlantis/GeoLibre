@@ -24,6 +24,7 @@ function makeMap() {
   const handlers = new Map<string, Set<Handler>>();
   const calls: string[] = [];
   const controls: unknown[] = [];
+  const controlPositions = new Map<unknown, string | undefined>();
   let styleLoaded = true;
   let center: [number, number] = [0, 0];
   let zoom = 2;
@@ -36,6 +37,7 @@ function makeMap() {
     layers,
     calls,
     controls,
+    controlPositions,
     setStyleLoaded: (value: boolean) => {
       styleLoaded = value;
     },
@@ -69,11 +71,13 @@ function makeMap() {
     project: (p: [number, number]) => ({ x: p[0], y: p[1] }),
     unproject: (p: [number, number]) => ({ lng: p[0], lat: p[1] }),
     triggerRepaint: () => {},
-    addControl: (control: unknown) => {
+    addControl: (control: unknown, position?: string) => {
       controls.push(control);
+      controlPositions.set(control, position);
     },
     removeControl: (control: unknown) => {
       controls.splice(controls.indexOf(control), 1);
+      controlPositions.delete(control);
     },
     hasControl: (control: unknown) => controls.includes(control),
     getSource: (id: string) =>
@@ -152,6 +156,7 @@ function makeMap() {
     setMaxPitch: (v: number) => calls.push(`setMaxPitch:${v}`),
     setMaxBounds: (v: unknown) => calls.push(`setMaxBounds:${JSON.stringify(v ?? null)}`),
     setRenderWorldCopies: (v: boolean) => calls.push(`setRenderWorldCopies:${v}`),
+    getProjection: () => ({ name: "mercator" }),
     setProjection: (v: string) => calls.push(`setProjection:${v}`),
     setTerrain: (v: unknown) => calls.push(`setTerrain:${JSON.stringify(v)}`),
     stop: () => {},
@@ -160,13 +165,39 @@ function makeMap() {
   return map;
 }
 
-class FakeControl {}
+/** Records its constructor options and the `ScaleControl.setUnit` calls. */
+class FakeControl {
+  unit: unknown;
+  constructor(public options?: Record<string, unknown>) {
+    this.unit = options?.unit;
+  }
+  setUnit(unit: unknown) {
+    this.unit = unit;
+  }
+}
+class FakeNavigationControl extends FakeControl {}
+class FakeFullscreenControl extends FakeControl {}
+class FakeGeolocateControl extends FakeControl {}
+class FakeScaleControl extends FakeControl {}
+class FakeAttributionControl extends FakeControl {}
 const gl = {
-  NavigationControl: FakeControl,
-  FullscreenControl: FakeControl,
-  ScaleControl: FakeControl,
-  AttributionControl: FakeControl,
+  NavigationControl: FakeNavigationControl,
+  FullscreenControl: FakeFullscreenControl,
+  GeolocateControl: FakeGeolocateControl,
+  ScaleControl: FakeScaleControl,
+  AttributionControl: FakeAttributionControl,
 } as unknown as typeof mapboxgl.default;
+
+/** A readable name for each mounted control, in mount order. */
+function controlNames(map: ReturnType<typeof makeMap>): string[] {
+  return map.controls.map((control) => {
+    if (control instanceof FakeControl) return control.constructor.name.replace("Fake", "");
+    // The compass is a ResetBearingControl behind the engine's Mapbox adapter
+    // (a plain object), the globe is MapboxGlobeControl, and the layer
+    // control is the host's own adapter, also a plain object.
+    return control?.constructor?.name === "Object" ? "Adapter" : control!.constructor.name;
+  });
+}
 
 const SOURCE = "geolibre-mapbox-layer-a";
 const FILL = `${SOURCE}-geojson-fill`;
@@ -204,23 +235,158 @@ describe("MapboxEngine construction", () => {
     engine.removeControl(control);
     assert.ok(!map.controls.includes(adapter));
   });
-  it("mounts the built-in controls and takes the style's layers as the basemap", () => {
+  it("mounts MapLibre's default controls, in MapLibre's order, and takes the style's layers as the basemap", () => {
     const { engine, map } = makeEngine();
-    // Navigation, fullscreen, scale, attribution, plus the layer control that
-    // mounts once the style has loaded (the fake reports it loaded up front).
-    assert.equal(map.controls.length, 5);
+    // Fullscreen, the compass under it, then the globe toggle (MapController
+    // inserts them in this order and both engines stack by insertion), the
+    // scale bar and attribution, plus the layer control that mounts once the
+    // style has loaded (the fake reports it loaded up front). Navigation,
+    // geolocate and terrain are hidden by default, as on MapLibre.
+    assert.deepEqual(controlNames(map), [
+      "FullscreenControl",
+      "Adapter",
+      "MapboxGlobeControl",
+      "ScaleControl",
+      "AttributionControl",
+      "Adapter",
+    ]);
+    assert.deepEqual(
+      map.controls.map((control) => map.controlPositions.get(control)),
+      ["top-right", "top-right", "top-right", "bottom-left", "bottom-right", "top-right"],
+    );
     assert.deepEqual(engine.getBasemapStyleLayerIds(), ["background"]);
     assert.equal(engine.getMap(), null);
     assert.equal(engine.getMapboxMap(), map as unknown as mapboxgl.Map);
   });
+  it("mounts the same default set on a split pane, minus the layer control", () => {
+    const map = makeMap();
+    new MapboxEngine(map as unknown as mapboxgl.Map, gl, "", {
+      controlVisibility: { "layer-control": false, globe: false },
+    });
+    assert.deepEqual(controlNames(map), [
+      "FullscreenControl",
+      "Adapter",
+      "ScaleControl",
+      "AttributionControl",
+    ]);
+  });
+  it("applies constructor overrides through the same rules as the control API", () => {
+    const map = makeMap();
+    map.setStyleLoaded(false);
+    const engine = new MapboxEngine(map as unknown as mapboxgl.Map, gl, "", {
+      controlVisibility: { attribution: false, terrain: true, "layer-control": false },
+    });
+    // Attribution cannot be hidden by an override either.
+    assert.ok(controlNames(map).includes("AttributionControl"));
+    // Terrain is remembered while the style loads and applied once it is in.
+    assert.equal(engine.isTerrainEnabled(), true);
+    assert.ok(!map.calls.some((call) => call.startsWith("setTerrain:{")));
+    map.setStyleLoaded(true);
+    map.fire("style.load");
+    assert.ok(map.calls.some((call) => call.startsWith("setTerrain:{")));
+  });
   it("keeps the attribution control mounted", () => {
     const { engine, map } = makeEngine();
     assert.equal(engine.setBuiltInControlVisible("attribution", false), false);
-    assert.equal(map.controls.length, 5);
+    assert.equal(map.controls.length, 6);
     assert.equal(engine.setBuiltInControlVisible("scale", false), true);
-    assert.equal(map.controls.length, 4);
-    assert.equal(engine.setBuiltInControlVisible("scale", true), true);
     assert.equal(map.controls.length, 5);
+    assert.equal(engine.setBuiltInControlVisible("scale", true), true);
+    assert.equal(map.controls.length, 6);
+  });
+  it("shows and hides the compass, globe and navigation controls from the Controls menu", () => {
+    const { engine, map } = makeEngine();
+    assert.equal(engine.setBuiltInControlVisible("navigation", true), true);
+    assert.equal(controlNames(map).at(-1), "NavigationControl");
+    // Showing an already-visible control settles instead of stacking a copy.
+    assert.equal(engine.setBuiltInControlVisible("navigation", true), true);
+    assert.equal(controlNames(map).filter((n) => n === "NavigationControl").length, 1);
+    assert.equal(engine.setBuiltInControlVisible("navigation", false), true);
+    assert.ok(!controlNames(map).includes("NavigationControl"));
+    assert.equal(engine.setBuiltInControlVisible("globe", false), true);
+    assert.ok(!controlNames(map).includes("MapboxGlobeControl"));
+    assert.equal(engine.setBuiltInControlVisible("compass", false), true);
+    assert.equal(map.controls.length, 4);
+    assert.equal(engine.setBuiltInControlVisible("compass", true), true);
+    assert.equal(engine.setBuiltInControlVisible("globe", true), true);
+    assert.equal(engine.setBuiltInControlVisible("geolocate", true), true);
+    assert.deepEqual(controlNames(map).slice(-3), [
+      "Adapter",
+      "MapboxGlobeControl",
+      "GeolocateControl",
+    ]);
+  });
+  it("repositions a built-in control and remembers the corner while it is hidden", () => {
+    const { engine, map } = makeEngine();
+    const globe = map.controls[2];
+    assert.equal(engine.getBuiltInControlPosition("globe"), "top-right");
+    assert.equal(engine.setBuiltInControlPosition("globe", "top-left"), true);
+    assert.equal(engine.getBuiltInControlPosition("globe"), "top-left");
+    const moved = map.controls.at(-1);
+    assert.notEqual(moved, globe);
+    assert.equal(map.controlPositions.get(moved), "top-left");
+    assert.equal(map.controls.length, 6);
+    // A hidden control keeps the corner it is given for when it comes back.
+    engine.setBuiltInControlVisible("navigation", false);
+    assert.equal(engine.setBuiltInControlPosition("navigation", "bottom-right"), true);
+    engine.setBuiltInControlVisible("navigation", true);
+    assert.equal(map.controlPositions.get(map.controls.at(-1)), "bottom-right");
+  });
+  it("refuses the controls Mapbox cannot host and treats terrain as a scene setting", () => {
+    const { engine, map } = makeEngine();
+    for (const id of ["logo", "maptoolkit-logo"] as const) {
+      assert.equal(engine.setBuiltInControlVisible(id, true), false);
+      assert.equal(engine.setBuiltInControlPosition(id, "top-left"), false);
+    }
+    assert.equal(map.controls.length, 6);
+    // Terrain has no button on Mapbox (as on Cesium), but the Controls menu
+    // and project restore must still reach the scene.
+    map.calls.length = 0;
+    assert.equal(engine.setBuiltInControlVisible("terrain", true), true);
+    assert.equal(engine.isTerrainEnabled(), true);
+    assert.ok(map.calls.some((call) => call.startsWith("setTerrain:{")));
+    assert.equal(engine.setBuiltInControlVisible("terrain", false), true);
+    assert.equal(engine.isTerrainEnabled(), false);
+    assert.equal(engine.setBuiltInControlPosition("terrain", "top-left"), false);
+    assert.equal(map.controls.length, 6);
+  });
+  it("forwards the translated compass label, including to a compass re-added later", () => {
+    const { engine, map } = makeEngine();
+    const { document, window } = parseHTML("<html><body></body></html>");
+    const previous = { document: globalThis.document, window: globalThis.window };
+    Object.assign(globalThis, { document, window });
+    try {
+      const compassMap = {
+        getBearing: () => 0,
+        getPitch: () => 0,
+        on: () => {},
+        off: () => {},
+        getContainer: () => document.createElement("div"),
+      } as unknown as mapboxgl.Map;
+      const mount = (control: unknown) =>
+        (control as mapboxgl.IControl).onAdd(compassMap).querySelector("button")!;
+      engine.setCompassLabel("Réinitialiser");
+      assert.equal(mount(map.controls[1]).title, "Réinitialiser");
+      engine.setBuiltInControlVisible("compass", false);
+      engine.setBuiltInControlVisible("compass", true);
+      const button = mount(map.controls.at(-1));
+      assert.equal(button.title, "Réinitialiser");
+      assert.ok(button.closest(".geolibre-reset-bearing-ctrl.mapboxgl-ctrl"));
+    } finally {
+      Object.assign(globalThis, previous);
+    }
+  });
+  it("follows the scale-unit preference on the scale bar", () => {
+    const { engine, map } = makeEngine();
+    const scale = () => map.controls.find((c) => c instanceof FakeScaleControl) as FakeControl;
+    assert.equal(scale().options?.maxWidth, 120);
+    assert.equal(scale().unit, "metric");
+    engine.applyMapPreferences({ scaleUnit: "imperial", bounds: [0, 0, 1, 1] } as MapPreferences);
+    assert.equal(scale().unit, "imperial");
+    // A scale bar re-added later is built with the remembered unit.
+    engine.setBuiltInControlVisible("scale", false);
+    engine.setBuiltInControlVisible("scale", true);
+    assert.equal(scale().unit, "imperial");
   });
   it("detaches every listener on destroy", () => {
     const { engine, map } = makeEngine();
@@ -723,34 +889,34 @@ it("retries a Standard visibility change made while its opacity update is loadin
 describe("MapboxEngine layer control", () => {
   it("mounts the layer control once the style has loaded, unless a pane opts out", () => {
     const { map } = makeEngine();
-    assert.equal(map.controls.length, 5);
+    assert.equal(map.controls.length, 6);
     const paneMap = makeMap();
     new MapboxEngine(paneMap as unknown as mapboxgl.Map, gl, "", {
       controlVisibility: { "layer-control": false },
     });
-    assert.equal(paneMap.controls.length, 4);
+    assert.equal(paneMap.controls.length, 5);
     const lateMap = makeMap();
     lateMap.setStyleLoaded(false);
     new MapboxEngine(lateMap as unknown as mapboxgl.Map, gl);
-    assert.equal(lateMap.controls.length, 4);
+    assert.equal(lateMap.controls.length, 5);
     lateMap.setStyleLoaded(true);
     lateMap.fire("style.load");
-    assert.equal(lateMap.controls.length, 5);
+    assert.equal(lateMap.controls.length, 6);
   });
   it("hides, shows and repositions the layer control through the built-in control API", () => {
     const { engine, map } = makeEngine();
     assert.equal(engine.getBuiltInControlPosition("layer-control"), "top-right");
     assert.equal(engine.setBuiltInControlVisible("layer-control", false), true);
-    assert.equal(map.controls.length, 4);
+    assert.equal(map.controls.length, 5);
     // Hidden stays hidden across a rebuild trigger.
     engine.syncLayers([geojsonLayer()]);
-    assert.equal(map.controls.length, 4);
-    assert.equal(engine.setBuiltInControlVisible("layer-control", true), true);
     assert.equal(map.controls.length, 5);
+    assert.equal(engine.setBuiltInControlVisible("layer-control", true), true);
+    assert.equal(map.controls.length, 6);
     const before = map.controls.at(-1);
     assert.equal(engine.setBuiltInControlPosition("layer-control", "top-left"), true);
     assert.equal(engine.getBuiltInControlPosition("layer-control"), "top-left");
-    assert.equal(map.controls.length, 5);
+    assert.equal(map.controls.length, 6);
     assert.notEqual(map.controls.at(-1), before);
   });
   it("rebuilds the control only when the controllable layer set changes", () => {
@@ -766,7 +932,7 @@ describe("MapboxEngine layer control", () => {
     engine.syncLayers([geojsonLayer({ name: "Renamed" })]);
     assert.notEqual(map.controls.at(-1), withLayer);
     engine.syncLayers([]);
-    assert.equal(map.controls.length, 5);
+    assert.equal(map.controls.length, 6);
   });
   it("drops the control before a style swap and remounts it on style.load", () => {
     const { engine, map } = makeEngine();
@@ -775,9 +941,9 @@ describe("MapboxEngine layer control", () => {
     };
     engine.setResolvedStyle({ version: 8, sources: {}, layers: [] });
     assert.ok(map.calls.includes("setStyle"));
-    assert.equal(map.controls.length, 4);
-    map.fire("style.load");
     assert.equal(map.controls.length, 5);
+    map.fire("style.load");
+    assert.equal(map.controls.length, 6);
   });
   it("lists store layers, mirrors store state, and seeds the basemap group", () => {
     const { window } = parseHTML('<div id="map"><div class="mapboxgl-ctrl-top-right"></div></div>');

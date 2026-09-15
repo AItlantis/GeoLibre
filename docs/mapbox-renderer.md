@@ -38,6 +38,17 @@ come from Environment variables or the basemap control's API keys panel.
   split-view cameras; Mercator/globe projection and Mapbox terrain.
 - Feature picking, selection highlighting, extent drawing, draggable placement,
   and engine-level image capture.
+- The same default on-map controls as MapLibre, governed by the same
+  **Controls** menu: fullscreen, the reset pitch & bearing compass beneath it,
+  a globe/Mercator toggle, the scale bar (following the project's scale unit)
+  and attribution, with navigation and geolocate available but off by default.
+  Mapbox GL JS has no globe control of its own, so the engine mounts a
+  stand-in (`packages/map/src/mapbox-globe-control.ts`) that mirrors MapLibre's
+  button markup; clicking it persists the projection into project preferences
+  as on MapLibre. Terrain is a scene setting here (the Controls menu toggles
+  Mapbox terrain directly, without a button, as on Cesium). The attribution
+  control cannot be hidden, Mapbox draws its own logo, and the Maptoolkit logo
+  is MapLibre-only.
 - The on-map layer control (`maplibre-gl-layer-control`), with the same
   per-layer visibility, opacity, zoom-to and style-editor round trip to the
   store as on MapLibre. The control only needs the shared style API, so both 2D
