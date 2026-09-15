@@ -8,7 +8,8 @@ import {
   type AssistantProviderSelection,
 } from "./profiles";
 import type { AssistantProfile } from "./provider";
-import { createAssistantTools, describeLayers, type AssistantToolDeps } from "./tools";
+import { describeLayers } from "./layer-summary";
+import { createAssistantTools, type AssistantToolDeps } from "./tools";
 
 /** System prompt establishing the assistant's role, tools, and guardrails. */
 const SYSTEM_PROMPT = `You are GeoLibre's geospatial assistant. You help the user explore and analyze the data already loaded in their map by calling the provided tools.
