@@ -320,11 +320,15 @@ export class MapboxEngine implements MapEngine {
         const oldPlan = this.plans.get(layer.id);
         const sourceChanged =
           oldPlan &&
-          (oldPlan.source.type !== plan.source.type ||
+          (JSON.stringify(oldPlan.additionalSources) !== JSON.stringify(plan.additionalSources) ||
+            oldPlan.source.type !== plan.source.type ||
             (plan.source.type === "geojson" && oldPlan.source.type === "geojson"
               ? false
               : JSON.stringify(oldPlan.source) !== JSON.stringify(plan.source)));
         if (sourceChanged) this.removeLayer(layer.id);
+        for (const [id, source] of Object.entries(plan.additionalSources ?? {})) {
+          if (!map.getSource(id)) map.addSource(id, source);
+        }
         if (!map.getSource(plan.sourceId)) map.addSource(plan.sourceId, plan.source);
         else if (
           plan.source.type === "geojson" &&
@@ -371,11 +375,15 @@ export class MapboxEngine implements MapEngine {
       for (const spec of [...plan.layers].reverse())
         if (map.getLayer(spec.id)) map.removeLayer(spec.id);
       if (map.getSource(plan.sourceId)) map.removeSource(plan.sourceId);
+      for (const id of Object.keys(plan.additionalSources ?? {})) {
+        if (map.getSource(id)) map.removeSource(id);
+      }
     }
     this.plans.delete(id);
     this.previous.delete(id);
     this.errors.delete(`layer:${id}`);
     if (plan) this.errors.delete(plan.sourceId);
+    for (const id of Object.keys(plan?.additionalSources ?? {})) this.errors.delete(id);
   }
   waitAndSyncLayers(layers: GeoLibreLayer[]): void {
     this.syncLayers(layers);
@@ -678,7 +686,20 @@ export class MapboxEngine implements MapEngine {
     // engine-specific. Only plugins declaring Mapbox support should mount;
     // the vector importer additionally uses its store-only source bridge.
     const adapter: mapboxgl.IControl = {
-      onAdd: (map) => control.onAdd(map as unknown as maplibregl.Map),
+      onAdd: (map) => {
+        // DOM controls locate their corner by MapLibre's CSS class names.
+        // Without these aliases a top-left panel assumes top-right and opens
+        // outside the map, underneath the Layers sidebar.
+        for (const corner of ["top-left", "top-right", "bottom-left", "bottom-right"]) {
+          map
+            .getContainer()
+            .querySelector(`.mapboxgl-ctrl-${corner}`)
+            ?.classList.add(`maplibregl-ctrl-${corner}`);
+        }
+        const element = control.onAdd(map as unknown as maplibregl.Map);
+        element.classList.add("mapboxgl-ctrl");
+        return element;
+      },
       onRemove: (map) => control.onRemove(map as unknown as maplibregl.Map),
     };
     this.map.addControl(adapter, position);

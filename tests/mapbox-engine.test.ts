@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
+import { parseHTML } from "linkedom";
 import type * as mapboxgl from "mapbox-gl";
 import type { MapPreferences } from "@geolibre/core";
 import { MapboxEngine } from "../packages/map/src/mapbox-engine";
@@ -172,6 +173,31 @@ function makeEngine(map = makeMap()) {
 }
 
 describe("MapboxEngine construction", () => {
+  it("lets plugin panels locate their Mapbox control corner", () => {
+    const { engine, map } = makeEngine();
+    const { document } = parseHTML(
+      '<div id="map"><div class="mapboxgl-ctrl-top-left"></div></div>',
+    );
+    const container = document.getElementById("map")!;
+    map.getContainer = () => container;
+    const element = document.createElement("div");
+    const control = {
+      onAdd() {
+        // The plugin's position detector runs during its mount lifecycle.
+        assert.ok(container.querySelector(".maplibregl-ctrl-top-left"));
+        return element;
+      },
+      onRemove() {},
+    };
+    assert.equal(engine.addControl(control, "top-left"), true);
+    const adapter = map.controls.at(-1) as mapboxgl.IControl;
+    assert.equal(adapter.onAdd(map as unknown as mapboxgl.Map), element);
+    assert.ok(element.classList.contains("mapboxgl-ctrl"));
+    engine.addControl(control, "top-left");
+    assert.equal(map.controls.filter((c) => c === adapter).length, 1);
+    engine.removeControl(control);
+    assert.ok(!map.controls.includes(adapter));
+  });
   it("mounts the built-in controls and takes the style's layers as the basemap", () => {
     const { engine, map } = makeEngine();
     assert.equal(map.controls.length, 4);
@@ -536,5 +562,82 @@ describe("Mapbox shared raster basemaps", () => {
     engine.syncLayers([]);
     assert.equal(map.sources.size, 0);
     assert.equal(map.layers.length, 0);
+  });
+});
+
+describe("Mapbox ArcGIS vector tile services", () => {
+  it("preserves service styling and manages every source through updates and removal", () => {
+    const { engine, map } = makeEngine();
+    const layer = geojsonLayer({ id: "arcgis-test" });
+    layer.type = "arcgis";
+    delete layer.geojson;
+    layer.opacity = 0.5;
+    layer.source = {
+      arcgisSources: {
+        parcels: {
+          type: "vector",
+          url: "https://example.com/VectorTileServer/",
+          tiles: ["https://example.com/VectorTileServer/tile/{z}/{y}/{x}.pbf"],
+        },
+        boundaries: { type: "vector", tiles: ["https://example.com/boundaries/{z}/{x}/{y}.pbf"] },
+      },
+      arcgisLayers: [
+        {
+          id: "parcels-fill",
+          type: "fill",
+          source: "parcels",
+          "source-layer": "parcels",
+          filter: ["==", "_symbol", 0],
+          minzoom: 11,
+          maxzoom: 18,
+          paint: { "fill-color": "#ffff00", "fill-opacity": 0.8 },
+        },
+        {
+          id: "boundaries-line",
+          type: "line",
+          source: "boundaries",
+          "source-layer": "boundaries",
+          paint: { "line-color": "#ff0000" },
+        },
+      ],
+    };
+    layer.metadata = { nativeLayerIds: ["parcels-fill", "boundaries-line"] };
+    assert.equal(isMapboxSupportedLayer(layer), true);
+    engine.syncLayers([layer]);
+    assert.equal(map.sources.size, 2);
+    assert.equal(map.sources.get("parcels")?.url, undefined);
+    const fill = map.layers.find((l) => l.id === "parcels-fill")!;
+    assert.deepEqual(fill.filter, ["==", "_symbol", 0]);
+    assert.equal(fill.minzoom, 11);
+    assert.deepEqual(fill.paint, { "fill-color": "#ffff00", "fill-opacity": 0.4 });
+    engine.syncLayers([{ ...layer, visible: false }]);
+    assert.equal(
+      (map.layers.find((l) => l.id === "parcels-fill")!.layout as { visibility: string })
+        .visibility,
+      "none",
+    );
+    engine.syncLayers([]);
+    assert.equal(map.sources.size, 0);
+    assert.equal(map.layers.length, 0);
+  });
+
+  it("rejects a source whose tile templates were never resolved", () => {
+    const { engine, map } = makeEngine();
+    const layer = geojsonLayer({ id: "arcgis-no-tiles" });
+    layer.type = "arcgis";
+    delete layer.geojson;
+    layer.source = {
+      // The REST service URL alone is not a TileJSON manifest Mapbox can fetch.
+      arcgisSources: { parcels: { type: "vector", url: "https://example.com/VectorTileServer/" } },
+      arcgisLayers: [
+        { id: "parcels-fill", type: "fill", source: "parcels", "source-layer": "parcels" },
+      ],
+    };
+    layer.metadata = { nativeLayerIds: ["parcels-fill"] };
+    assert.equal(isMapboxSupportedLayer(layer), false);
+    engine.syncLayers([layer]);
+    assert.equal(map.sources.size, 0);
+    assert.equal(map.layers.length, 0);
+    assert.match(engine.getRenderStatus().errors[0] ?? "", /tile templates/);
   });
 });

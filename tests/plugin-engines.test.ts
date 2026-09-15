@@ -94,16 +94,16 @@ describe("Tier 1 built-in plugin engine support audit", () => {
   });
 
   // The STAC plugins come out of the same createStacPlugin factory, so they
-  // are audited together: the panel is engine-neutral, but footprints, the
-  // "current view" search bbox, the draw-bbox tool, and footprint click/hover
-  // all need app.getMap(), which only MapLibre provides.
-  it("declares support for MapLibre only on the STAC catalog plugins", () => {
+  // are audited together: footprints, bbox drawing and picking use the
+  // native GeoJSON APIs shared by MapLibre and Mapbox.
+  it("declares MapLibre and Mapbox support on the STAC catalog plugins", () => {
     for (const plugin of [
       maplibreStacCatalogsPlugin,
       maplibrePlanetOpenDataPlugin,
       maplibrePortolanPlugin,
     ]) {
-      assert.deepEqual(plugin.engines, ["maplibre"], `Plugin ${plugin.id} must be MapLibre-only`);
+      assert.deepEqual(plugin.engines, ["maplibre", "mapbox"]);
+      assert.equal(isPluginEngineSupported(plugin, "mapbox"), true);
       assert.equal(isPluginEngineSupported(plugin, "maplibre"), true);
       assert.equal(isPluginEngineSupported(plugin, "cesium"), false);
     }

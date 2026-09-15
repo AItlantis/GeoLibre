@@ -1718,6 +1718,16 @@ function finiteNumber(value: unknown, fallback: number): number {
 }
 
 export function openFlatGeobufAddVectorLayerPanel(app: GeoLibreAppAPI): void {
+  if (app.getMapRenderer?.() === "mapbox") {
+    // The vector importer materializes FlatGeobuf into the shared layer store.
+    // The standalone control owns MapLibre layers outside that bridge.
+    void import("./maplibre-vector")
+      .then(({ openVectorLayerPanel }) => openVectorLayerPanel(app))
+      .catch((error) => {
+        console.error("[GeoLibre] Failed to open the vector layer panel", error);
+      });
+    return;
+  }
   void openStandaloneFlatGeobufControl(app);
 }
 
