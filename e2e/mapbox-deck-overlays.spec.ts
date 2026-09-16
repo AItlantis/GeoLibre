@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { layerRow } from "./helpers";
+import { layerRow, RENDERER_SWAP_TIMEOUT } from "./helpers";
 import { DESKTOP_SETTINGS_STORAGE_KEY } from "../apps/geolibre-desktop/src/lib/storage-keys";
 
 // Deck.gl Layer, 3D Model and DuckDB on the Mapbox renderer. These draw through
@@ -100,10 +100,15 @@ async function waitForDeckLayer(page: Page, layerName: string) {
 async function switchRenderer(page: Page, name: "MapLibre" | "Mapbox") {
   await page.getByRole("button", { name: "View", exact: true }).click();
   await page.getByRole("menuitem", { name: "Rendering engine", exact: true }).hover();
-  await page.getByRole("menuitemradio", { name, exact: true }).click();
+  // The swap runs inside this click's own handler and is charged against the
+  // action budget, which the DuckDB spec outran on CI every first attempt until
+  // `retries: 1` covered for it. See `RENDERER_SWAP_TIMEOUT` (#2432).
+  await page
+    .getByRole("menuitemradio", { name, exact: true })
+    .click({ timeout: RENDERER_SWAP_TIMEOUT });
   await expect(
     page.locator(name === "Mapbox" ? ".mapboxgl-canvas" : ".maplibregl-canvas"),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: RENDERER_SWAP_TIMEOUT });
   await bindEngine(page, name === "Mapbox" ? "mapbox" : "maplibre");
 }
 
