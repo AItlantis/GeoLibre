@@ -177,6 +177,20 @@ browser against an authenticated Mapbox map):
   WebGL context — orphaned on the Mapbox canvas. The swipe itself keeps working
   against the new basemap. The same sequence on MapLibre leaves one pane, so it
   sits in the Mapbox control lifecycle rather than the plugin; tracked in #2430.
+- **GeoAgent**. Almost every tool already sits on the shared Style Spec
+  surface; four did not, and each broke differently — `add_marker` built
+  MapLibre's `Marker`/`Popup`, `set_projection` wrote `{ type }` (Mapbox takes a
+  name string), `get_map_state` read `projection.type`, and
+  `run_maplibre_script` handed user-authored code the wrong namespace. That
+  matters more here than in a control that simply fails to mount: an agent run
+  breaks mid-way, after it has already changed the map. `maplibre-gl-geoagent`
+  0.6.1 takes the engine as one option (`mapEngine`) and all four follow it, so
+  the plugin names the host's engine once (`geoagent-map-engine.ts`) and hands
+  over the whole mapbox-gl namespace — `run_maplibre_script` passes it straight
+  to the script it runs. Agent overlays reach the Layers panel as
+  plugin-owned rows the engine adopts, as on MapLibre. `set_sky` / `clear_sky`
+  stay MapLibre-only: mapbox-gl has no `setSky` (it draws sky through a style
+  layer), and the tool reports that instead of failing silently.
 - **Overture Maps**. mapbox-gl 3.30+ reads `.pmtiles` archives itself, through
   a tile provider it fetches from `api.mapbox.com` (allowlisted in the desktop
   and web CSPs), so the plugin hands `maplibre-gl-overture-maps` its `nativePmtiles`
@@ -188,10 +202,8 @@ browser against an authenticated Mapbox map):
   MapLibre. The Style panel's 3D extrusion of the buildings theme is a
   MapLibre layer-sync feature and stays MapLibre-only.
 
-Still MapLibre-only, each for a concrete reason:
-
-- **GeoAgent**: its tools call `setProjection({ type })`, `setTerrain` and
-  MapLibre `Marker` / `Popup`, so agent actions would break mid-run.
+No plugin is held back by a MapLibre-internal dependency of its own. What
+remains MapLibre-only is a map feature rather than a plugin.
 
 Two engine changes came with the port and apply to every plugin: a store
 layer added while a Mapbox source is still loading is now synced when that

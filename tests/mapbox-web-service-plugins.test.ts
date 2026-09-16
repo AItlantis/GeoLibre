@@ -354,16 +354,16 @@ describe("Web Services and service browsers on the Mapbox renderer", () => {
     assert.equal(isPluginEngineSupported(maplibreStreetViewPlugin, "maplibre"), true);
   });
 
-  it("keeps the plugins whose upstream needs MapLibre internals MapLibre-only", () => {
-    // GeoAgent's tools call setProjection({ type }) and build MapLibre
-    // Marker/Popup, so an agent run would break mid-way on Mapbox. Its module
-    // pulls the Earth Engine client in at import time, which needs a browser
-    // window, so its declaration is read off the source rather than imported.
+  it("runs GeoAgent on both 2D engines now that its tools follow the host", () => {
+    // Its four engine-specific tools (the marker, both projection tools, and
+    // the script runner) take the engine from `mapEngine`. The module pulls the
+    // Earth Engine client in at import time, which needs a browser window, so
+    // its declaration is read off the source rather than imported.
     const geoagent = readFileSync(
       new URL("../packages/plugins/src/plugins/maplibre-geoagent.ts", import.meta.url),
       "utf8",
     );
-    assert.doesNotMatch(geoagent, /engines:\s*\[[^\]]*mapbox/);
+    assert.match(geoagent, /engines:\s*\["maplibre",\s*"mapbox"\]/);
   });
 
   it("resolves the shared map to the Mapbox map when MapLibre is absent", () => {
