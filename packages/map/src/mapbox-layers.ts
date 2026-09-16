@@ -86,6 +86,13 @@ export function isMapboxPluginLayer(layer: GeoLibreLayer): boolean {
     // targets Mapbox GL as well as MapLibre; the Zarr control adds it to
     // whichever map hosts the control.
     if (layer.type === "zarr" && layer.metadata.sourceKind === "zarr-url") return true;
+    // The Time Slider dock and the Timelapse control create their own native
+    // sources and layers (registered on the mirror as `nativeLayerIds`) and
+    // forward the store's visibility/opacity to whatever adapter drew them;
+    // the mirrors themselves carry no tiles (`source: { sourceId }` and
+    // `source: { providerId }`), so the engine could not compile them anyway.
+    if (layer.metadata.sourceKind === "time-slider" || layer.metadata.sourceKind === "timelapse")
+      return true;
     if (
       layer.type === "3d-tiles" &&
       ["3d-tiles-url", "google-photorealistic-3d-tiles", "arcgis-i3s"].includes(
@@ -94,10 +101,55 @@ export function isMapboxPluginLayer(layer: GeoLibreLayer): boolean {
     )
       return true;
   }
-  return (
+  if (
     layer.type === "cog" &&
     layer.metadata.sourceKind === "maplibre-gl-raster" &&
     layer.metadata.externalNativeLayer === true
+  )
+    return true;
+  // A layer a plugin registered as its own native output (the host's
+  // `registerExternalNativeLayer`: the Mapillary coverage, the Time Slider's
+  // and Timelapse's rasters, ...) whose store record carries nothing the
+  // engine could draw itself — no GeoJSON, no tile template, no source URL.
+  // The plugin adds those style layers to whichever map hosts it, so the
+  // engine only mirrors the store's visibility and opacity onto the native ids
+  // (as MapLibre's layer-sync does) instead of failing to compile the record.
+  // Records that do carry a drawable source (the vector importer's GeoJSON,
+  // Esri Wayback's raster URL, the Web Services' tile templates) still go
+  // through the compiler, which adopts their native ids.
+  const nativeIds = layer.metadata.nativeLayerIds;
+  if (
+    layer.metadata.externalNativeLayer === true &&
+    Array.isArray(nativeIds) &&
+    nativeIds.length > 0 &&
+    !hasDrawableSource(layer)
+  )
+    return true;
+  // OpenAerialMap's search footprints carry their GeoJSON (so the Layers panel
+  // can zoom to and restyle them) but the plugin draws the fill and outline
+  // itself on whichever map hosts it; compiling the record would paint them
+  // twice.
+  return (
+    layer.type === "geojson" &&
+    layer.metadata.sourceKind === "openaerialmap-footprints" &&
+    layer.metadata.externalNativeLayer === true
+  );
+}
+
+/** Whether the store record alone gives the engine something to draw. */
+function hasDrawableSource(layer: GeoLibreLayer): boolean {
+  if (layer.geojson) return true;
+  const { url, urls, tiles, data } = layer.source as {
+    url?: unknown;
+    urls?: unknown;
+    tiles?: unknown;
+    data?: unknown;
+  };
+  return (
+    typeof url === "string" ||
+    (Array.isArray(urls) && urls.length > 0) ||
+    (Array.isArray(tiles) && tiles.length > 0) ||
+    data !== undefined
   );
 }
 
@@ -118,6 +170,9 @@ export interface CompileMapboxLayerOptions {
 }
 
 export const DEFAULT_MAPBOX_TEXT_FONT = ["Open Sans Regular"];
+
+/** Store layer types the engine draws as a raster tile source. */
+const RASTER_TILE_TYPES = new Set(["raster", "wms", "wmts", "xyz"]);
 
 /** Compile only native Mapbox sources. Never hand MapLibre protocol URLs to its workers. */
 export function compileMapboxLayer(
@@ -164,16 +219,24 @@ export function compileMapboxLayer(
       }),
     };
   }
-  // Adopt raster basemaps created by the shared control. Reusing their native
-  // IDs lets store visibility, opacity, removal and style restoration work
-  // without leaving a second, uncontrolled copy on the map.
-  const basemap =
-    layer.type === "raster" && layer.metadata?.sourceKind === "maplibre-basemap-control";
+  // Adopt raster tile layers a plugin control created natively: the shared
+  // basemap control, the Web Services panels (FEMA NFHL, NASA Earthdata, ...),
+  // Esri Wayback, the USGS LiDAR index. Reusing their native IDs lets store
+  // visibility, opacity, removal and a style-reload rebuild work without
+  // leaving a second, uncontrolled copy on the map — the contract MapLibre's
+  // layer-sync keeps for the same kinds (syncWebServiceTileRasterLayer and
+  // friends), so a control that draws on either engine reads the same ids back.
+  // The basemap kind is matched by name as well: projects saved before the
+  // control flagged its layers as external still carry the native ids.
+  const adoptNative =
+    RASTER_TILE_TYPES.has(layer.type) &&
+    (layer.metadata?.externalNativeLayer === true ||
+      layer.metadata?.sourceKind === "maplibre-basemap-control");
   const sourceId =
-    basemap && typeof layer.metadata?.sourceId === "string"
+    adoptNative && typeof layer.metadata?.sourceId === "string"
       ? layer.metadata.sourceId
       : mapboxSourceId(layer.id);
-  const nativeIds = basemap ? layer.metadata?.nativeLayerIds : undefined;
+  const nativeIds = adoptNative ? layer.metadata?.nativeLayerIds : undefined;
   const rasterId =
     Array.isArray(nativeIds) && typeof nativeIds[0] === "string"
       ? nativeIds[0]

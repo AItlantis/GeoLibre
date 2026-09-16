@@ -1315,6 +1315,13 @@ export function DesktopShell({
     // above the native-map gate below; on Cesium the plugin manager has
     // already deactivated the plugin and this only clears its layers.
     restoreDeckViz(appAPI, pluginManager.isActive(DECK_VIZ_PLUGIN_ID));
+    // The route animation owns native marker/trail layers, so rebind it to the
+    // (possibly new) map after a re-init/basemap swap without deriving
+    // open/closed state (project loads handle that via applyProjectState). It
+    // binds to either 2D engine through getStyleMap, so it sits above the
+    // native-map gate like the deck.gl overlay; on Cesium the plugin manager
+    // has already deactivated it and this only detaches the engine.
+    reattachRouteAnimation(appAPI);
     if (!engine.capabilities.nativeMapInstance) {
       void restoreLocalFileLayers();
       return;
@@ -1344,10 +1351,6 @@ export function DesktopShell({
       if (applyStacSearchLayerOrder(layerId, beforeId)) return;
       applyRasterLayerOrder(layerId, beforeId);
     });
-    // The route animation owns native marker/trail layers, so rebind it to the
-    // (possibly new) map after a re-init/basemap swap without deriving
-    // open/closed state (project loads handle that via applyProjectState).
-    reattachRouteAnimation(appAPI);
     // Rebind the directions tool to the (possibly new) map instance after a
     // map re-init, since restoreProjectState skips an already-active plugin.
     restoreDirections(appAPI, pluginManager.isActive(DIRECTIONS_PLUGIN_ID));

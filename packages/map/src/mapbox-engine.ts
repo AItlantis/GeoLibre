@@ -9,6 +9,8 @@ import type {
   StoryChapterAnimation,
   StoryChapterLocation,
 } from "@geolibre/core";
+import { DEFAULT_LAYER_STYLE } from "@geolibre/core";
+import { circlePaint, fillPaint, linePaint, rasterPaint } from "./style-mapper";
 import {
   DEFAULT_BUILT_IN_CONTROL_POSITIONS,
   DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
@@ -27,6 +29,7 @@ import {
   isMapboxPluginLayer,
   DEFAULT_MAPBOX_TEXT_FONT,
   type MapboxLayerPlan,
+  mapboxPaint,
 } from "./mapbox-layers";
 import { resolveTextFontFromStyleLayers } from "./text-font";
 import { getLayerBounds } from "./geojson-loader";
@@ -58,6 +61,7 @@ export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
 });
 
 const BLANK_BACKGROUND_LAYER_ID = "geolibre-blank-background";
+
 const HIGHLIGHT_SOURCE_ID = "geolibre-mapbox-highlight";
 const HIGHLIGHT_LAYER_IDS = ["geolibre-mapbox-highlight-line", "geolibre-mapbox-highlight-point"];
 
@@ -220,8 +224,14 @@ export class MapboxEngine implements MapEngine {
     sourceDataType?: "metadata" | "content" | "visibility" | "error";
     isSourceLoaded?: boolean;
   }) => {
-    if (event.sourceId && event.sourceDataType === "content" && event.isSourceLoaded)
+    if (event.sourceId && event.sourceDataType === "content" && event.isSourceLoaded) {
       this.errors.delete(event.sourceId);
+      // A sync deferred while this source was still loading is otherwise only
+      // retried on `idle`, which a map with an animated canvas source (the Sun
+      // plugin's night mask) or a render loop never reaches — so a layer added
+      // during any tile fetch would stay off the map for good.
+      this.flushLayers();
+    }
   };
   private styleLoaded = () => {
     const map = this.map;
@@ -436,15 +446,20 @@ export class MapboxEngine implements MapEngine {
     // with the layer panel, including after a style swap or drag reorder.
     for (const original of [...layers].reverse()) {
       try {
-        // The plugin controls own these layers and synchronizes their display
-        // settings from the store. They synchronize custom renderers separately from native sources.
+        // The plugin controls own these layers and synchronize their display
+        // settings from the store. They synchronize custom renderers separately
+        // from native sources; the ones that also draw native style layers get
+        // the store's visibility and opacity mirrored onto those, as MapLibre's
+        // layer-sync does for every external native layer.
+        // A story chapter's transient opacity applies to plugin-owned layers too.
+        const opacity = this.storyOpacities.get(original.id);
+        const layer = opacity === undefined ? original : { ...original, opacity };
         if (isMapboxPluginLayer(original)) {
           this.removeLayer(original.id);
+          this.mirrorPluginLayerState(layer);
           continue;
         }
         if (!original.visible) this.errors.delete(`layer:${original.id}`);
-        const opacity = this.storyOpacities.get(original.id);
-        const layer = opacity === undefined ? original : { ...original, opacity };
         const plan = compileMapboxLayer(layer, { textFont: this.textFont });
         const previous = this.previous.get(layer.id);
         const oldPlan = this.plans.get(layer.id);
@@ -499,6 +514,55 @@ export class MapboxEngine implements MapEngine {
     }
     this.layerControlHost.refresh();
     this.layerControlHost.syncState();
+  }
+  /**
+   * Apply a plugin-owned store layer's visibility and paint to the native
+   * style layers its plugin registered under `metadata.nativeLayerIds` (the
+   * Time Slider's and Timelapse's rasters, Mapillary's coverage lines, for
+   * instance), the way MapLibre's layer-sync (`setExternalNativeLayerPaint`)
+   * does: the whole paint object from the shared builders, so the Style
+   * panel's colour/width/radius edits land and the store opacity scales the
+   * style's own opacity instead of replacing it. Layers the plugin draws
+   * outside the style (deck.gl overlays) have no such ids, or none the style
+   * knows, and are left alone; so is paint when the control declares it owns
+   * it (`metadata.controlOwnsPaint`).
+   */
+  private mirrorPluginLayerState(layer: GeoLibreLayer): void {
+    const map = this.map;
+    const ids = layer.metadata.nativeLayerIds;
+    if (!map || !Array.isArray(ids)) return;
+    const style = { ...DEFAULT_LAYER_STYLE, ...layer.style };
+    for (const id of ids) {
+      if (typeof id !== "string") continue;
+      const native = map.getLayer(id);
+      if (!native) continue;
+      const visibility = layer.visible ? "visible" : "none";
+      if (map.getLayoutProperty(id, "visibility") !== visibility)
+        map.setLayoutProperty(id, "visibility", visibility);
+      if (layer.metadata.controlOwnsPaint === true) continue;
+      const paint =
+        native.type === "raster"
+          ? rasterPaint(style, layer.opacity)
+          : native.type === "fill"
+            ? fillPaint(style, layer.opacity)
+            : native.type === "line"
+              ? linePaint(style, layer.opacity)
+              : native.type === "circle"
+                ? circlePaint(style, layer.opacity)
+                : null;
+      if (!paint) continue;
+      for (const [property, value] of Object.entries(mapboxPaint(paint))) {
+        if (value === undefined || value === null) continue;
+        const key = property as keyof mapboxgl.AnyPaint;
+        try {
+          if (JSON.stringify(map.getPaintProperty(id, key)) !== JSON.stringify(value))
+            map.setPaintProperty(id, key, value as mapboxgl.AnyPaint[keyof mapboxgl.AnyPaint]);
+        } catch {
+          // A control's native layers can be heterogeneous; skip a paint
+          // property that does not apply to this one.
+        }
+      }
+    }
   }
   private removeLayer(id: string): void {
     const plan = this.plans.get(id),
@@ -710,7 +774,11 @@ export class MapboxEngine implements MapEngine {
       type: "circle",
       source: HIGHLIGHT_SOURCE_ID,
       filter: ["==", ["geometry-type"], "Point"],
-      paint: { "circle-radius": 10, "circle-color": "#facc15", "circle-opacity": 0.6 },
+      paint: {
+        "circle-radius": 10,
+        "circle-color": "#facc15",
+        "circle-opacity": 0.6,
+      },
     });
     if (options?.fit) this.fitLayer({ ...layer, geojson: data });
   }

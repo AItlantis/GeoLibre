@@ -72,11 +72,84 @@ come from Environment variables or the basemap control's API keys panel.
   Toggle and reposition it from **Plugins → Layer Control**, as on MapLibre.
   Split panes never mount a second control.
 
-Mapbox is not a full replacement for MapLibre's plugin ecosystem. Plugins must
-explicitly declare `engines: ["mapbox"]` (or include it alongside other engines).
-Unsupported plugins are disabled in the menu. `app.getMap()` stays MapLibre-only;
-Mapbox-aware plugins use `app.getMapboxMap()` or the renderer-neutral app methods.
-The vector import panel uses the existing store-based geometry bridge.
+## Plugins
+
+Plugins declare the renderers they support (`engines`); the Plugins menu and
+command palette grey out the rest. `app.getMap()` stays MapLibre-only, so a
+Mapbox-capable plugin reads the map through `getStyleMap(app)` (falls back to
+`app.getMapboxMap()`) and stays on the Style Spec surface both engines share —
+see [Supporting the Mapbox renderer](plugin-api.md#supporting-the-mapbox-renderer)
+for the rules, the audit that enforces them, and how plugin-drawn layers are
+adopted. The vector import panel uses the existing store-based geometry bridge.
+
+Available on Mapbox (the September 2026 plugin audit, each verified in a
+browser against an authenticated Mapbox map):
+
+- **Layer Control**, **Basemaps**, **Deck.gl Layer** and **Components** (as
+  before).
+- **Web Services** — FEMA NFHL, NASA Earthdata (GIBS), US EPA EnviroAtlas,
+  USGS National Map, USGS NLDI, Vantor, Planet Open Data, Earthdata GIS,
+  OpenAerialMap, ArcGIS Hub, Socrata, CKAN, STAC Catalogs, Portolan, Source
+  Cooperative, Natural Earth, Hugging Face, Esri Wayback, and GeoLens. The
+  docked panels mount on the Mapbox map; the raster layers their controls
+  create are adopted by the engine under the controls' own ids (one copy,
+  store visibility/opacity/removal apply, rebuilt after a basemap swap).
+  GeoLens *private* rasters need a per-request API key that only MapLibre's
+  `setTransformRequest` can inject; the panel reports that they need the
+  MapLibre renderer, while public rasters and vector data work.
+- **Gridlines** and the **DGGS** grids (H3, S2, A5, DGGRID, DGGAL, OLC,
+  Geohash, Tilecode), including cell labels and click identification. Mapbox
+  Standard's root style carries no symbol layer to borrow a font from, so
+  labels use Mapbox's `Open Sans Regular` / `Arial Unicode MS Regular` glyphs.
+- **Time Slider** for XYZ, WMS, GeoJSON and TiTiler-served COG sources. A COG
+  bound to the `gpu` / `wasm` engines (MapLibre-only tile protocols) is
+  re-added through TiTiler; a mosaic manifest is dropped with a console
+  warning. Pixel identify and time series read the COG bytes directly and are
+  unaffected.
+- **Timelapse**, including recording the Mapbox canvas to video.
+- **Elevation Profile**, **USGS LiDAR** (the 3DEP index raster is adopted
+  natively; point clouds already drew through deck.gl), and **Mapillary**
+  (coverage vector tiles are plugin-owned native layers mirrored from the
+  store).
+- **Elements** (annotations) and **Dimensions**. MapLibre's `Marker` cannot be
+  added to a mapbox-gl map, so pins, sticky notes and image cards are placed by
+  an engine-neutral marker (`annotation-marker.ts`): MapLibre's own marker on
+  MapLibre, a DOM element repositioned through `project()` on Mapbox.
+- **Route Animation** (marker, trail and arrow image through the shared style
+  API; rebinds across a renderer swap). The panel's layer picker lists inline
+  GeoJSON line layers on Mapbox; layers whose geometry only lives in a map
+  source (Add Vector Layer's GeoJSON mode) need MapLibre's `getData()`.
+- **Clouds** and **Precipitation** (store tile layers; the frame scrub goes
+  through the store on Mapbox rather than the instant `setTiles` shortcut).
+- **Atmospheric Effects** (its overlay canvases mount in the Mapbox canvas
+  container; the control container is lifted above them, as on MapLibre) and
+  **Sun** (canvas night mask, raster layer and `setLight` all apply to
+  mapbox-gl).
+
+Still MapLibre-only, each for a concrete reason:
+
+- **Street View**: the upstream control places a `maplibre-gl` `Marker`, whose
+  update path reads `map._camera.transform` and throws on a mapbox-gl map.
+- **Overture Maps**: the upstream control loads `pmtiles://` archives through
+  `maplibregl.addProtocol`, which Mapbox never sees (mapbox-gl reads `.pmtiles`
+  natively only from a plain https URL; an upstream option to emit those would
+  unlock it).
+- **GeoAgent**: its tools call `setProjection({ type })`, `setTerrain` and
+  MapLibre `Marker` / `Popup`, so agent actions would break mid-run.
+- **Swipe**: `maplibre-gl-swipe` constructs a second MapLibre `Map` as the
+  comparison pane, and the plugin mirrors COG and raster layers onto it.
+- **Geo Editor**: `@geoman-io/maplibre-geoman-free` builds MapLibre
+  `Marker` / `Popup` / `LngLatBounds` objects and reads the map's `transform`.
+- **Flight Simulator**: flies with `calculateCameraOptionsFromCameraLngLatAltRotation`
+  and `getCenterClampedToGround`, which have no mapbox-gl equivalent (a
+  `FreeCameraOptions` port is a separate job).
+
+Two engine changes came with the port and apply to every plugin: a store
+layer added while a Mapbox source is still loading is now synced when that
+source finishes (previously it waited for `idle`, which a map with an
+animated canvas source never reaches), and the shared paint builders scale a
+plugin-owned native layer's opacity by the store opacity instead of replacing
+it.
 
 The offline (local PMTiles) basemap is MapLibre-only as well: its `pmtiles://`
 source protocol is not registered with Mapbox, so a Mapbox pane whose project

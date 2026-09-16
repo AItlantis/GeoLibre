@@ -219,6 +219,7 @@ export const maplibreGeoEditorPlugin: GeoLibrePlugin = {
 
     if (!geoEditorControl) {
       geoEditorControl = new GeoEditor(getGeoEditorOptions());
+      // engine-audit-allow: getMap-mapbox (geoman is MapLibre-only; see engines)
       const map = app.getMap?.();
       if (map) {
         geomanInstance = new Geoman(map, {
@@ -843,6 +844,7 @@ function vectorSourceIdForLayer(layer: GeoLibreLayer): string | null {
 function writeBackToVectorSource(layer: GeoLibreLayer, collection: FeatureCollection): void {
   const sourceId = vectorSourceIdForLayer(layer);
   if (!sourceId) return;
+  // engine-audit-allow: getMap-mapbox (geoman is MapLibre-only; see engines)
   const source = appApi?.getMap?.()?.getSource(sourceId) as
     | { setData?: (data: FeatureCollection) => void }
     | undefined;
@@ -1287,6 +1289,7 @@ function scheduleApplySketchesMapDisplay(): void {
 }
 
 function scheduleShowGeomanDisplayLayersOnStyleData(): void {
+  // engine-audit-allow: getMap-mapbox (geoman is MapLibre-only; see engines)
   const map = appApi?.getMap?.();
   if (!map || pendingStyleDataListener) return;
 
@@ -1312,6 +1315,7 @@ function setSketchesMapLayerSuppressed(suppress: boolean): void {
 }
 
 function setSketchesMapLayersVisibility(layer: GeoLibreLayer): void {
+  // engine-audit-allow: getMap-mapbox (geoman is MapLibre-only; see engines)
   const map = appApi?.getMap?.();
   if (!map) return;
 
@@ -1332,6 +1336,7 @@ function setGeomanDisplayLayersVisibility(
   visibility: "visible" | "none",
   matches: (layer: maplibregl.LayerSpecification) => boolean = isGeomanDisplayLayer,
 ): void {
+  // engine-audit-allow: getMap-mapbox (geoman is MapLibre-only; see engines)
   const map = appApi?.getMap?.();
   if (!map) return;
   const sketchesLayer = activeEditableLayer(useAppStore.getState().layers);
@@ -1448,6 +1453,7 @@ function geoEditorTargetAnchorLayerIds(map: maplibregl.Map, layer: GeoLibreLayer
  * does not loop.
  */
 function positionGeoEditorOverlayLayers(): void {
+  // engine-audit-allow: getMap-mapbox (geoman is MapLibre-only; see engines)
   const map = appApi?.getMap?.();
   if (!map) return;
   const styleLayers = map.getStyle()?.layers;

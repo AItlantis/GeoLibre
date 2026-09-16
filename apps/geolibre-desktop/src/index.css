@@ -1092,7 +1092,11 @@ body,
   z-index: 3;
 }
 
-.maplibregl-control-container {
+/* Both 2D engines: mapbox-gl leaves its control container static, so without
+   this its corners (z-index 2) would sit under the Effects plugin's z-4 map
+   canvas and every control on a Mapbox map would be buried. */
+.maplibregl-control-container,
+.mapboxgl-control-container {
   inset: 0;
   pointer-events: none;
   position: absolute;
@@ -1152,7 +1156,8 @@ body,
  * top-right controls. Lift the controls above the comparison map. The
  * `!important` is needed to beat the Effects plugin's inline z-index.
  */
-.maplibregl-control-container {
+.maplibregl-control-container,
+.mapboxgl-control-container {
   z-index: 7 !important;
 }
 

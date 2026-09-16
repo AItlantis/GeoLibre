@@ -71,6 +71,11 @@ export const maplibreStreetViewPlugin: GeoLibrePlugin = {
   id: "maplibre-gl-streetview",
   name: "Street View",
   version: "0.4.0",
+  // MapLibre-only: the upstream control drops a maplibre-gl `Marker` on the
+  // map, and that marker's `_update` reads MapLibre's `_camera.transform`,
+  // which a mapbox-gl map does not have — verified to throw on the first map
+  // click there. Declaring Mapbox needs an upstream marker that only uses the
+  // shared surface (`project`, `getCanvasContainer`, move events).
   activate: (app: GeoLibreAppAPI) => {
     activeApp = app;
     addRuntimeEnvListener();

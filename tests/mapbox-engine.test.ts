@@ -123,6 +123,10 @@ function makeMap() {
       const layer = layers.find((l) => l.id === id)!;
       layer.layout = { ...(layer.layout as Record<string, unknown>), [key]: value };
     },
+    getPaintProperty: (id: string, key: string) =>
+      (layers.find((l) => l.id === id)?.paint as Record<string, unknown> | undefined)?.[key],
+    getLayoutProperty: (id: string, key: string) =>
+      (layers.find((l) => l.id === id)?.layout as Record<string, unknown> | undefined)?.[key],
     setFilter: (id: string) => {
       calls.push(`setFilter:${id}`);
     },
@@ -767,6 +771,170 @@ describe("Mapbox shared raster basemaps", () => {
     engine.syncLayers([]);
     assert.equal(map.sources.size, 0);
     assert.equal(map.layers.length, 0);
+  });
+});
+
+describe("Mapbox plugin-drawn native layers", () => {
+  // The Web Services panels (FEMA NFHL here) add their raster source and layer
+  // to the map themselves and mirror them into the store as external native
+  // layers. MapLibre's layer-sync rebuilds those under the control's own ids;
+  // the Mapbox engine must do the same rather than draw a second copy.
+  it("adopts a Web Services raster layer under its native ids and rebuilds it after a style reload", () => {
+    const { engine, map } = makeEngine();
+    const nativeId = "fema-wms-NFHL";
+    const source = { type: "raster", tiles: ["https://example.test/{z}/{x}/{y}"], tileSize: 256 };
+    map.addSource(nativeId, source);
+    map.addLayer({ id: nativeId, type: "raster", source: nativeId, paint: {} });
+    const layer = {
+      ...geojsonLayer({ id: nativeId }),
+      type: "wms" as const,
+      geojson: undefined,
+      source: { ...source, sourceId: nativeId },
+      metadata: {
+        externalNativeLayer: true,
+        sourceKind: "fema-wms",
+        sourceId: nativeId,
+        sourceIds: [nativeId],
+        nativeLayerIds: [nativeId],
+      },
+    };
+    engine.syncLayers([layer]);
+    assert.deepEqual([...map.sources.keys()], [nativeId]);
+    assert.deepEqual(
+      map.layers.map((l) => l.id),
+      [nativeId],
+    );
+    engine.syncLayers([{ ...layer, visible: false, opacity: 0.3 }]);
+    assert.equal((map.getLayer(nativeId)?.layout as Record<string, unknown>).visibility, "none");
+    assert.equal((map.getLayer(nativeId)?.paint as Record<string, unknown>)["raster-opacity"], 0.3);
+    // A basemap swap drops every source and layer; the engine puts the
+    // control's layer back under the same ids, as MapLibre's layer-sync does.
+    map.sources.clear();
+    map.layers.length = 0;
+    map.fire("style.load");
+    assert.deepEqual([...map.sources.keys()], [nativeId]);
+    assert.deepEqual(
+      map.layers.map((l) => l.id),
+      [nativeId],
+    );
+    engine.syncLayers([]);
+    assert.equal(map.sources.size, 0);
+    assert.equal(map.layers.length, 0);
+  });
+
+  it("mirrors store visibility and opacity onto a plugin-owned layer's native style layers", () => {
+    const { engine, map } = makeEngine();
+    // A plugin-owned kind (the engine never compiles it) whose plugin also
+    // registered a native style layer under the store layer's nativeLayerIds.
+    map.addSource("dep-index", { type: "raster", tiles: ["https://example.test/{z}/{x}/{y}"] });
+    map.addLayer({ id: "dep-index", type: "raster", source: "dep-index", paint: {} });
+    const layer = {
+      ...geojsonLayer({ id: "cloud" }),
+      type: "lidar" as const,
+      geojson: undefined,
+      source: { type: "lidar", url: "https://example.test/cloud.copc.laz" },
+      metadata: {
+        externalNativeLayer: true,
+        sourceKind: "lidar-url",
+        nativeLayerIds: ["dep-index", "not-on-the-map"],
+      },
+    };
+    engine.syncLayers([{ ...layer, visible: false, opacity: 0.5 }]);
+    assert.equal((map.getLayer("dep-index")?.layout as Record<string, unknown>).visibility, "none");
+    assert.equal(
+      (map.getLayer("dep-index")?.paint as Record<string, unknown>)["raster-opacity"],
+      0.5,
+    );
+    // Nothing of the engine's own was added for it.
+    assert.deepEqual([...map.sources.keys()], ["dep-index"]);
+    map.calls.length = 0;
+    engine.syncLayers([{ ...layer, visible: false, opacity: 0.5 }]);
+    assert.deepEqual(
+      map.calls.filter((call) => call.startsWith("set")),
+      [],
+      "an unchanged state is not re-applied",
+    );
+    map.calls.length = 0;
+    engine.syncLayers([
+      {
+        ...layer,
+        visible: true,
+        opacity: 0.8,
+        metadata: { ...layer.metadata, controlOwnsPaint: true },
+      },
+    ]);
+    assert.deepEqual(
+      map.calls.filter((call) => call.startsWith("setPaintProperty:")),
+      [],
+      "no paint setter runs for a control that owns its paint",
+    );
+    assert.equal(
+      (map.getLayer("dep-index")?.layout as Record<string, unknown>).visibility,
+      "visible",
+    );
+    assert.equal(
+      (map.getLayer("dep-index")?.paint as Record<string, unknown>)["raster-opacity"],
+      0.5,
+      "paint is left to a control that owns it",
+    );
+  });
+
+  it("scales a plugin-owned fill's own opacity by the store opacity instead of replacing it", () => {
+    const { engine, map } = makeEngine();
+    map.addSource("footprints", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+    map.addLayer({ id: "footprints-fill", type: "fill", source: "footprints", paint: {} });
+    engine.syncLayers([
+      {
+        ...geojsonLayer({ id: "oam" }),
+        opacity: 0.5,
+        style: { fillOpacity: 0.08, fillColor: "#ff0000" },
+        metadata: {
+          externalNativeLayer: true,
+          sourceKind: "openaerialmap-footprints",
+          nativeLayerIds: ["footprints-fill"],
+        },
+      },
+    ]);
+    const paint = map.getLayer("footprints-fill")?.paint as Record<string, unknown>;
+    const opacity = paint["fill-opacity"] as number;
+    assert.ok(Math.abs(opacity - 0.04) < 1e-9, `fill-opacity ${opacity}`);
+    // The whole paint object lands, not only opacity: a Style panel colour edit
+    // on a plugin-owned layer shows on Mapbox as it does on MapLibre.
+    assert.equal(paint["fill-color"], "#ff0000");
+  });
+});
+
+describe("Mapbox story opacity on plugin-owned layers", () => {
+  it("applies a story chapter's transient opacity to a plugin-owned native layer", () => {
+    const { engine, map } = makeEngine();
+    map.addSource("dep-index", { type: "raster", tiles: ["https://example.test/{z}/{x}/{y}"] });
+    map.addLayer({ id: "dep-index", type: "raster", source: "dep-index", paint: {} });
+    const layer = {
+      ...geojsonLayer({ id: "cloud" }),
+      type: "lidar" as const,
+      geojson: undefined,
+      opacity: 1,
+      source: { type: "lidar", url: "https://example.test/cloud.copc.laz" },
+      metadata: {
+        externalNativeLayer: true,
+        sourceKind: "lidar-url",
+        nativeLayerIds: ["dep-index"],
+      },
+    };
+    engine.syncLayers([layer]);
+    engine.setStoryLayerOpacity("cloud", 0.2);
+    assert.equal(
+      (map.getLayer("dep-index")?.paint as Record<string, unknown>)["raster-opacity"],
+      0.2,
+    );
+    engine.restoreLayerStyles();
+    assert.equal(
+      (map.getLayer("dep-index")?.paint as Record<string, unknown>)["raster-opacity"],
+      1,
+    );
   });
 });
 
