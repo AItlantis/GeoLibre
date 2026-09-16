@@ -1,13 +1,20 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { applyGroupEffects, useAppStore } from "@geolibre/core";
+import { applyGroupEffects, useAppStore, type MapProjection } from "@geolibre/core";
 import type { MapEngine } from "./map-engine";
-import { ArcgisEngine, bearingToRotation } from "./arcgis-engine";
+import {
+  ArcgisEngine,
+  arcgisSceneMode,
+  bearingToRotation,
+  viewPlacementState,
+} from "./arcgis-engine";
 import {
   ensureArcgisCss,
+  loadArcgisSceneSdk,
   loadArcgisSdk,
   redactArcgisError,
   type ArcgisHandle,
-  type ArcgisMapView,
+  type ArcgisSdk,
+  type ArcgisView,
 } from "./arcgis-sdk";
 
 export interface ArcgisCanvasProps {
@@ -32,6 +39,15 @@ export interface ArcgisCanvasProps {
  * construction — `Map`, `MapView`, the store subscription and the pointer
  * handlers — and hands everything after that to {@link ArcgisEngine}, the way
  * `MapboxCanvas` does for Mapbox GL JS.
+ *
+ * The SDK draws 2D and 3D through different view classes, so the view is
+ * chosen from the project's projection and terrain preferences
+ * ({@link arcgisSceneMode}) and the whole map is rebuilt when that choice
+ * changes: a globe or terrain gets a `SceneView` (whose modules load only
+ * then), a flat Mercator map a `MapView`. The camera carries over through the
+ * store. A split pane's globe toggle stays local to the pane, as on MapLibre.
+ * The outgoing view stays on screen, frozen, until the new one has drawn, so
+ * switching between 2D and 3D does not flash an empty pane.
  */
 export function ArcgisCanvas({
   apiKey,
@@ -41,6 +57,8 @@ export function ArcgisCanvas({
   closeLabel = "Close",
 }: ArcgisCanvasProps) {
   const container = useRef<HTMLDivElement>(null);
+  // Views replaced by a 2D/3D switch, kept on screen until the new view draws.
+  const retiring = useRef<{ element: HTMLElement; engine: ArcgisEngine }[]>([]);
   const readyCallback = useRef(onEngineReady);
   readyCallback.current = onEngineReady;
   // Read through a ref so a language change reaches the next popup without
@@ -48,42 +66,106 @@ export function ArcgisCanvas({
   const closeLabelRef = useRef(closeLabel);
   closeLabelRef.current = closeLabel;
   const [error, setError] = useState<string | null>(null);
+  const sharedProjection = useAppStore((s) => s.preferences.map.projection);
+  const terrainEnabled = useAppStore((s) => s.preferences.map.terrainEnabled);
+  // A split pane's toggle overrides the shared projection for that pane only.
+  const [paneProjection, setPaneProjection] = useState<MapProjection | null>(null);
+  const projection = (viewId ? paneProjection : null) ?? sharedProjection;
+  const sceneMode = arcgisSceneMode(projection, terrainEnabled);
   useEffect(() => {
     let cancelled = false;
     let engine: ArcgisEngine | undefined;
     let cleanup = () => {};
     setError(null);
+    // Each view gets its own element: the SDK owns its container's contents,
+    // and the outgoing view must keep drawing in its own until this one is up.
+    const element = document.createElement("div");
+    element.className = "absolute inset-0";
+    container.current?.prepend(element);
+    const retire = () => {
+      for (const old of retiring.current.splice(0)) {
+        old.engine.destroy();
+        old.element.remove();
+      }
+    };
     const dark = document.documentElement.classList.contains("dark");
-    void Promise.all([loadArcgisSdk(), ensureArcgisCss(dark ? "dark" : "light")])
-      .then(([sdk]) => {
-        if (cancelled || !container.current) return;
+    void Promise.all([
+      loadArcgisSdk(),
+      sceneMode === "2d" ? Promise.resolve(undefined) : loadArcgisSceneSdk(),
+      ensureArcgisCss(dark ? "dark" : "light"),
+    ])
+      .then(([sdk, scene]) => {
+        if (cancelled || !element.isConnected) return;
         sdk.config.apiKey = apiKey?.trim() || null;
         const state = useAppStore.getState();
         const pane = state.secondaryMapViews.find((p) => p.id === viewId);
         const view =
           viewId && !state.mapLayout.syncView ? (pane?.view ?? state.mapView) : state.mapView;
         const map = new sdk.Map({});
-        const mapView: ArcgisMapView = new sdk.MapView({
-          container: container.current,
+        const common = {
+          container: element,
           map,
           center: view.center,
           zoom: view.zoom,
-          rotation: bearingToRotation(view.bearing),
           // The engine mounts the built-in controls the Controls menu governs.
           ui: { components: [] },
-          // Fractional zooms are what the shared camera carries; snapping
-          // would nudge every synchronized pane to the nearest level.
-          constraints: { snapToZoom: false, rotationEnabled: true },
           // Identify goes through the engine's hit test, not the SDK popup.
           popupEnabled: false,
           highlightOptions: { color: [250, 204, 21, 1] },
-        });
+        };
+        const mapView: ArcgisView = scene
+          ? new scene.SceneView({
+              ...common,
+              viewingMode: sceneMode === "global" ? "global" : "local",
+              // The initial heading and tilt are applied by `settleView` once
+              // the view is ready; a camera needs a position the store lacks.
+              environment: {
+                atmosphereEnabled: true,
+                starsEnabled: sceneMode === "global",
+                // The default is a simulated sun at a fixed date and time,
+                // which leaves part of the globe (typically a polar region)
+                // on the night side. Virtual lighting follows the camera, so
+                // the whole visible map is lit, as on the MapLibre globe.
+                lighting: { type: "virtual" },
+              },
+            })
+          : new sdk.MapView({
+              ...common,
+              rotation: bearingToRotation(view.bearing),
+              // Fractional zooms are what the shared camera carries; snapping
+              // would nudge every synchronized pane to the nearest level.
+              constraints: { snapToZoom: false, rotationEnabled: true },
+            });
         engine = new ArcgisEngine(sdk, map, mapView, {
           hasApiKey: Boolean(apiKey?.trim()),
           controlVisibility: viewId ? { "layer-control": false } : undefined,
+          ...(scene ? { scene } : {}),
+          onProjectionToggle: (next) => {
+            if (cancelled) return;
+            if (viewId) {
+              setPaneProjection(next);
+              return;
+            }
+            // Persisted like MapLibre's globe toggle, so the project reopens in
+            // this projection; the store change rebuilds the view.
+            useAppStore.setState((s) =>
+              s.preferences.map.projection === next
+                ? s
+                : {
+                    preferences: {
+                      ...s.preferences,
+                      map: { ...s.preferences.map, projection: next },
+                    },
+                    isDirty: true,
+                  },
+            );
+          },
         });
         const current = engine;
         let applying = false;
+        // Until the initial camera has landed, `stationary` reports the view's
+        // default camera, which must not be written back to the store.
+        let settled = false;
         let selectionKey: string | null = null;
         let popupDispose: (() => void) | null = null;
         const removePopup = () => {
@@ -179,13 +261,16 @@ export function ArcgisCanvas({
           sdk.reactiveUtils.when(
             () => mapView.stationary,
             () => {
-              if (applying || cancelled || !mapView.ready) return;
+              if (applying || cancelled || !settled || !mapView.ready) return;
               const next = useAppStore.getState(),
                 camera = current.readView();
               // Shared view first (as the other canvases do), so a synchronized
               // pane never reads the changed pane against a stale `mapView`.
               if (!viewId || next.mapLayout.syncView) next.setMapView(camera, true);
               if (viewId) next.setSecondaryMapView(viewId, camera, true);
+              // A MapView reports null, which clears a value an earlier
+              // renderer (or scene) left in the status bar.
+              else next.setCameraAltitude(current.readCameraAltitude());
             },
           ),
         );
@@ -254,11 +339,40 @@ export function ArcgisCanvas({
               });
           }),
         );
-        void mapView.when().then(() => {
-          if (cancelled) return;
-          if (engineRef) engineRef.current = current;
-          readyCallback.current?.();
-        });
+        void mapView
+          .when()
+          .then(() => {
+            if (cancelled) return;
+            const latest = useAppStore.getState();
+            const pane = latest.secondaryMapViews.find((p) => p.id === viewId);
+            return current.settleView(
+              viewId && !latest.mapLayout.syncView
+                ? (pane?.view ?? latest.mapView)
+                : latest.mapView,
+            );
+          })
+          .then(() => {
+            if (cancelled) return;
+            settled = true;
+            if (!viewId) useAppStore.getState().setCameraAltitude(current.readCameraAltitude());
+            if (engineRef) engineRef.current = current;
+            readyCallback.current?.();
+            // A flat map is one click away from a globe; fetch the 3D modules
+            // while the page is idle so that first switch does not also wait
+            // on the network. A failure here is retried by the switch itself.
+            if (!scene) whenIdle(() => void loadArcgisSceneSdk().catch(() => {}));
+            return whenDrawn(sdk, mapView);
+          })
+          .then(() => {
+            if (!cancelled) retire();
+          })
+          .catch((error: unknown) => {
+            // A view that never becomes ready (a lost WebGL context, say)
+            // would otherwise leave the old view frozen over an empty pane.
+            if (cancelled) return;
+            retire();
+            setError(redactArcgisError(error instanceof Error ? error.message : String(error)));
+          });
         const status = window.setInterval(() => {
           if (cancelled) return;
           const errors = current.getRenderStatus().errors;
@@ -281,19 +395,40 @@ export function ArcgisCanvas({
         };
       })
       .catch((error: unknown) => {
-        if (!cancelled)
-          setError(redactArcgisError(error instanceof Error ? error.message : String(error)));
+        if (cancelled) return;
+        // A frozen old view would hide that the new one failed.
+        retire();
+        setError(redactArcgisError(error instanceof Error ? error.message : String(error)));
       });
     return () => {
       cancelled = true;
       cleanup();
       if (engineRef && engineRef.current === engine) engineRef.current = null;
-      engine?.destroy();
+      if (engine) {
+        // Keep the last frame visible above the next view, inert, until that
+        // view has drawn (or the canvas unmounts).
+        // Newer frames above older ones when switches overlap, all below the
+        // error banner (z-10).
+        element.style.zIndex = String(Math.min(9, retiring.current.length + 1));
+        element.style.pointerEvents = "none";
+        retiring.current.push({ element, engine });
+      } else element.remove();
     };
-  }, [apiKey, viewId, engineRef]);
+  }, [apiKey, viewId, engineRef, sceneMode]);
+  // Declared after the effect above so an unmount runs its cleanup (which
+  // queues the last view) before this flushes every queued view.
+  useEffect(
+    () => () => {
+      for (const old of retiring.current.splice(0)) {
+        old.engine.destroy();
+        old.element.remove();
+      }
+    },
+    [],
+  );
   return (
-    <div className="relative h-full w-full" data-testid="arcgis-canvas">
-      <div ref={container} className="h-full w-full" />
+    <div className="geolibre-arcgis-canvas relative h-full w-full" data-testid="arcgis-canvas">
+      <div ref={container} className="relative h-full w-full" />
       {error && (
         <div
           role="alert"
@@ -306,6 +441,57 @@ export function ArcgisCanvas({
   );
 }
 
+/** Run `task` when the page is idle (or soon, where idle callbacks are missing). */
+function whenIdle(task: () => void): void {
+  if (typeof window.requestIdleCallback === "function")
+    window.requestIdleCallback(task, { timeout: 5000 });
+  else window.setTimeout(task, 1000);
+}
+
+/**
+ * Resolve once a freshly settled view shows a map: when its basemap tiles have
+ * drawn, or after `timeoutMs`. Waiting for the whole view to stop updating
+ * held the outgoing view up for another second or so while data layers,
+ * terrain and neighbouring globe tiles streamed in, which read as a slow
+ * button; those fill in on the live view instead. A view with no basemap
+ * layers (the Blank basemap) waits for everything.
+ */
+export function whenDrawn(
+  sdk: Pick<ArcgisSdk, "reactiveUtils">,
+  view: Pick<ArcgisView, "basemapView" | "updating">,
+  timeoutMs = 3000,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let handle: ArcgisHandle | undefined;
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      handle?.remove();
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(done, timeoutMs);
+    // Two frames so the view has scheduled its first tile requests; before
+    // that nothing reads as updating over an empty canvas.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (finished) return;
+        handle = sdk.reactiveUtils.when(
+          () => {
+            const base = view.basemapView?.baseLayerViews;
+            return base && base.length > 0
+              ? base.every((layerView) => !layerView.updating)
+              : !view.updating;
+          },
+          done,
+          { initial: true, once: true },
+        );
+      }),
+    );
+  });
+}
+
 /**
  * Pin a popup element above a location and follow the view. The SDK's own
  * popup is a web component in 5.x that this pane deliberately leaves out; a
@@ -314,7 +500,7 @@ export function ArcgisCanvas({
  */
 function anchorPopup(
   sdk: Awaited<ReturnType<typeof loadArcgisSdk>>,
-  view: ArcgisMapView,
+  view: ArcgisView,
   element: HTMLElement,
   lngLat: [number, number],
 ): () => void {
@@ -335,10 +521,7 @@ function anchorPopup(
     element.style.top = `${screen.y}px`;
   };
   place();
-  const handle = sdk.reactiveUtils.watch(
-    () => [view.extent, view.rotation, view.width, view.height],
-    place,
-  );
+  const handle = sdk.reactiveUtils.watch(() => viewPlacementState(view), place);
   return () => {
     handle.remove();
     element.remove();

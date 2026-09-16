@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BLANK_BASEMAP, DEFAULT_LAYER_STYLE, type GeoLibreLayer } from "@geolibre/core";
 import {
+  ARCGIS_HEIGHT_FIELD,
   ARCGIS_ID_FIELD,
   ARCGIS_LABEL_FIELD,
   ARCGIS_SYMBOL_FIELD,
@@ -595,5 +596,195 @@ describe("ArcGIS basemap planning", () => {
       assert.ok(plan.urlTemplate.includes("{level}/{col}/{row}"));
       assert.ok(!/<[^>]+>/.test(plan.copyright));
     }
+  });
+});
+
+describe("compileArcgisLayer extrusion", () => {
+  const buildings = geojsonLayer({
+    style: {
+      ...DEFAULT_LAYER_STYLE,
+      extrusionEnabled: true,
+      extrusionColor: "#ff0000",
+      extrusionOpacity: 0.5,
+      extrusionHeightProperty: "levels",
+      extrusionHeightScale: 3,
+      extrusionBase: 2,
+    },
+    geojson: {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          id: "a",
+          properties: { levels: 4, height: 99 },
+          geometry: {
+            type: "Polygon",
+            coordinates: [
+              [
+                [0, 0],
+                [1, 0],
+                [1, 1],
+                [0, 0],
+              ],
+            ],
+          },
+        },
+        {
+          type: "Feature",
+          id: "b",
+          properties: { levels: "-1" },
+          geometry: {
+            type: "Polygon",
+            coordinates: [
+              [
+                [2, 2],
+                [3, 2],
+                [3, 3],
+                [2, 2],
+              ],
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  it("extrudes polygons by a size visual variable in a scene", () => {
+    const plan = compileArcgisLayer(buildings, { scene: true });
+    assert.equal(plan.kind, "geojson");
+    if (plan.kind !== "geojson") return;
+    const [part] = plan.parts;
+    assert.equal(part.renderer.type, "simple");
+    if (part.renderer.type !== "simple") return;
+    assert.deepEqual(part.renderer.symbol, {
+      type: "polygon-3d",
+      symbolLayers: [{ type: "extrude", material: { color: [255, 0, 0, 0.5] } }],
+    });
+    assert.deepEqual(part.renderer.visualVariables, [
+      { type: "size", field: ARCGIS_HEIGHT_FIELD, valueUnit: "meters" },
+    ]);
+    // As on MapLibre the height (property times scale) is the top and the base
+    // the bottom, so the SDK extrudes by the difference; a top below the base
+    // is flat.
+    assert.deepEqual(
+      part.features?.features.map((f) => f.properties?.[ARCGIS_HEIGHT_FIELD]),
+      [10, 0],
+    );
+    assert.deepEqual(part.elevationInfo, { mode: "relative-to-ground", offset: 2 });
+  });
+
+  it("colours and sizes by the advanced expressions", () => {
+    const plan = compileArcgisLayer(
+      {
+        ...buildings,
+        style: {
+          ...buildings.style,
+          extrusionAdvancedStyleEnabled: true,
+          extrusionHeightExpression: '["*", ["to-number", ["get", "levels"]], 10]',
+          extrusionColorExpression:
+            '["case", [">", ["to-number", ["get", "levels"]], 0], "#00ff00", "#0000ff"]',
+        },
+      },
+      { scene: true },
+    );
+    if (plan.kind !== "geojson") return assert.fail("expected a GeoJSON plan");
+    const [part] = plan.parts;
+    assert.equal(part.renderer.type, "unique-value");
+    assert.deepEqual(
+      part.features?.features.map((f) => f.properties?.[ARCGIS_HEIGHT_FIELD]),
+      [38, 0],
+    );
+    if (part.renderer.type !== "unique-value") return;
+    assert.deepEqual(
+      part.renderer.uniqueValueInfos.map(
+        (info) =>
+          (info.symbol.symbolLayers as { material: { color: number[] } }[])[0].material.color,
+      ),
+      [
+        [0, 255, 0, 0.5],
+        [0, 0, 255, 0.5],
+      ],
+    );
+  });
+
+  it("keeps categorized colours on extrusions, as MapLibre's fill-extrusion does", () => {
+    const plan = compileArcgisLayer(
+      {
+        ...buildings,
+        geojson: {
+          ...buildings.geojson!,
+          features: buildings.geojson!.features.map((f, i) => ({
+            ...f,
+            properties: { ...f.properties, kind: i ? "shop" : "home" },
+          })),
+        },
+        style: {
+          ...buildings.style,
+          vectorStyleMode: "categorized",
+          vectorStyleProperty: "kind",
+          vectorStyleStops: [
+            { value: "home", color: "#00ff00" },
+            { value: "shop", color: "#0000ff" },
+          ],
+        },
+      },
+      { scene: true },
+    );
+    if (plan.kind !== "geojson") return assert.fail("expected a GeoJSON plan");
+    const [part] = plan.parts;
+    if (part.renderer.type !== "unique-value")
+      return assert.fail("expected a unique-value renderer");
+    assert.deepEqual(
+      part.renderer.uniqueValueInfos.map(
+        (info) =>
+          (info.symbol.symbolLayers as { material: { color: number[] } }[])[0].material.color,
+      ),
+      [
+        [0, 255, 0, 0.5],
+        [0, 0, 255, 0.5],
+      ],
+    );
+  });
+
+  it("extrudes flat without a height property and reports zoom-dependent expressions", () => {
+    const flat = compileArcgisLayer(
+      {
+        ...buildings,
+        style: { ...buildings.style, extrusionHeightProperty: "" },
+      },
+      { scene: true },
+    );
+    if (flat.kind !== "geojson") return assert.fail("expected a GeoJSON plan");
+    // A `height` field in the data is not read when no property is chosen.
+    assert.deepEqual(
+      flat.parts[0].features?.features.map((f) => f.properties?.[ARCGIS_HEIGHT_FIELD]),
+      [0, 0],
+    );
+    assert.equal(flat.zoomDependent, false);
+    const zoomed = compileArcgisLayer(
+      {
+        ...buildings,
+        style: {
+          ...buildings.style,
+          extrusionAdvancedStyleEnabled: true,
+          extrusionHeightExpression: '["*", ["zoom"], 10]',
+        },
+      },
+      { scene: true, zoom: 5 },
+    );
+    if (zoomed.kind !== "geojson") return assert.fail("expected a GeoJSON plan");
+    assert.equal(zoomed.zoomDependent, true);
+    assert.equal(zoomed.parts[0].features?.features[0].properties?.[ARCGIS_HEIGHT_FIELD], 48);
+  });
+
+  it("keeps flat fills on a 2D map", () => {
+    const plan = compileArcgisLayer(buildings);
+    if (plan.kind !== "geojson") return assert.fail("expected a GeoJSON plan");
+    const [part] = plan.parts;
+    assert.equal(part.elevationInfo, undefined);
+    assert.equal(part.renderer.visualVariables, undefined);
+    if (part.renderer.type !== "simple") return assert.fail("expected a simple renderer");
+    assert.equal(part.renderer.symbol.type, "simple-fill");
+    assert.equal(part.features?.features[0].properties?.[ARCGIS_HEIGHT_FIELD], undefined);
   });
 });

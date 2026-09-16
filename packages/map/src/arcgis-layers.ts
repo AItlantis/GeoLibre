@@ -1,6 +1,8 @@
 import {
   compileLayerFilters,
   DEFAULT_LAYER_STYLE,
+  extrusionColorValue,
+  extrusionHeightValue,
   labelFieldTextField,
   normalizeHexColor,
   ruleBasedVisibilityFilter,
@@ -41,6 +43,8 @@ import { proxyWmsTiles } from "./wms-proxy";
 export const ARCGIS_ID_FIELD = "gl__id";
 export const ARCGIS_SYMBOL_FIELD = "gl__sym";
 export const ARCGIS_LABEL_FIELD = "gl__label";
+/** Extrusion height in metres, read by the 3D renderer's size visual variable. */
+export const ARCGIS_HEIGHT_FIELD = "gl__height";
 
 /** The SDK's geometry kinds a GeoJSONLayer can hold; one layer per kind. */
 export type ArcgisGeometryKind = "point" | "polyline" | "polygon";
@@ -71,12 +75,20 @@ export function isMarkerPlaceholder(symbol: unknown): symbol is ArcgisMarkerPlac
 
 /** A JSON renderer the SDK autocasts. */
 export type ArcgisRendererJson =
-  | { type: "simple"; symbol: ArcgisSymbolJson }
+  | { type: "simple"; symbol: ArcgisSymbolJson; visualVariables?: ArcgisVisualVariableJson[] }
   | {
       type: "unique-value";
       field: string;
       uniqueValueInfos: { value: string; symbol: ArcgisSymbolJson }[];
+      visualVariables?: ArcgisVisualVariableJson[];
     };
+
+/** A renderer visual variable; only the extrusion height's size variable occurs. */
+export interface ArcgisVisualVariableJson {
+  type: "size";
+  field: string;
+  valueUnit: "meters";
+}
 
 export interface ArcgisLabelingJson {
   labelExpressionInfo: { expression: string };
@@ -101,6 +113,11 @@ export interface ArcgisGeoJsonPart {
    * symbols stand in for; present only when a point part uses markers.
    */
   markerStyle?: LayerStyle;
+  /**
+   * How the SDK places the features vertically in a `SceneView`. Set on
+   * extruded polygons so the extrusion starts at the style's base height.
+   */
+  elevationInfo?: { mode: "relative-to-ground"; offset: number };
 }
 
 /** Fields every plan shares; applied to each native layer the plan produces. */
@@ -171,6 +188,12 @@ export interface CompileArcgisLayerOptions {
    * GeoJSON layer per render would be wasted work.
    */
   probe?: boolean;
+  /**
+   * Compile for a 3D `SceneView`: polygons whose style extrudes become
+   * `polygon-3d` extrusions. A flat `MapView` cannot draw 3D symbols, so the
+   * 2D compile keeps them as fills.
+   */
+  scene?: boolean;
 }
 
 /** Web Mercator scale denominator at zoom 0 for 256 px tiles at 96 dpi. */
@@ -705,14 +728,87 @@ function explodePoints(geometry: Geometry): Geometry[] {
  * Compile a GeoJSON-backed layer into one part per geometry kind present, the
  * features carrying their identity, symbol key and label text.
  */
+/**
+ * Per-feature extrusion for a 3D scene. The height and colour are the very
+ * values MapLibre paints (`extrusionHeightValue` / `extrusionColorValue` in
+ * `@geolibre/core`), evaluated per feature: so categorized, graduated and
+ * rule-based colours, the advanced expressions, and an empty height property
+ * (a flat extrusion) behave as on the 2D map. As there, the height is the top
+ * of the extrusion and the base its bottom, both in metres above the ground.
+ */
+interface ExtrusionReader {
+  base: number;
+  zoomDependent: boolean;
+  height(feature: Feature, zoom: number): number;
+  symbol(feature: Feature, zoom: number): ArcgisSymbolJson;
+}
+
+/** Compile a constant or MapLibre expression into a per-feature evaluator. */
+function featureValue(
+  value: unknown,
+  type: "number" | "color",
+): { read: (feature: Feature, zoom: number) => unknown; zoomDependent: boolean } {
+  if (!Array.isArray(value)) return { read: () => value, zoomDependent: false };
+  const compiled = createExpression(value, "expression", {
+    type,
+    "property-type": "data-driven",
+    expression: { parameters: ["zoom", "feature"] },
+  } as never);
+  if (compiled.result === "error") return { read: () => undefined, zoomDependent: false };
+  const expression = compiled.value;
+  return {
+    zoomDependent: ZOOM_OPERAND.test(JSON.stringify(value)),
+    read: (feature, zoom) => {
+      try {
+        return expression.evaluate({ zoom }, styleFeature(feature));
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+function compileExtrusion(style: LayerStyle): ExtrusionReader {
+  const base = Number.isFinite(style.extrusionBase) ? style.extrusionBase : 0;
+  const opacity = Number.isFinite(style.extrusionOpacity) ? style.extrusionOpacity : 0.8;
+  const fallbackColor = style.extrusionColor || style.fillColor || "#3b82f6";
+  const height = featureValue(extrusionHeightValue(style), "number");
+  const color = featureValue(extrusionColorValue(style), "color");
+  return {
+    base,
+    zoomDependent: height.zoomDependent || color.zoomDependent,
+    height(feature, zoom) {
+      const value = Number(height.read(feature, zoom));
+      // The SDK extrudes by a size above the base; a top below the base is flat.
+      return Math.max(0, (Number.isFinite(value) ? value : 0) - base);
+    },
+    symbol(feature, zoom) {
+      const value = color.read(feature, zoom);
+      return {
+        type: "polygon-3d",
+        symbolLayers: [
+          {
+            type: "extrude",
+            material: {
+              color: cssToArcgisColor(value == null ? fallbackColor : String(value), opacity),
+            },
+          },
+        ],
+      };
+    },
+  };
+}
+
 function compileGeoJson(
   layer: GeoLibreLayer,
   geojson: FeatureCollection,
   zoom: number,
   probe: boolean,
+  scene: boolean,
 ): { parts: ArcgisGeoJsonPart[]; zoomDependent: boolean } {
   const style: LayerStyle = { ...DEFAULT_LAYER_STYLE, ...layer.style };
   if (probe) return { parts: [], zoomDependent: false };
+  const extrusion = scene && style.extrusionEnabled ? compileExtrusion(style) : null;
   const resolver = createFeatureStyleResolver(style);
   const filter = compileFilter(layer);
   const label = compileLabelText(style);
@@ -737,7 +833,8 @@ function compileGeoJson(
     for (const geometry of explodePoints(feature.geometry)) {
       const kind = GEOMETRY_KIND[geometry.type];
       if (!kind) continue;
-      const shape = symbolForKind(kind, symbol);
+      const extruded = extrusion !== null && kind === "polygon";
+      const shape = extruded ? extrusion.symbol(feature, zoom) : symbolForKind(kind, symbol);
       const json = kind === "point" ? pointMarkerSymbol(style, feature, symbol, shape) : shape;
       const key = JSON.stringify(json);
       let part = parts.get(kind);
@@ -757,6 +854,7 @@ function compileGeoJson(
           [ARCGIS_ID_FIELD]: id,
           [ARCGIS_SYMBOL_FIELD]: entry.id,
           [ARCGIS_LABEL_FIELD]: text,
+          ...(extruded ? { [ARCGIS_HEIGHT_FIELD]: extrusion.height(feature, zoom) } : {}),
         },
       });
     }
@@ -765,19 +863,34 @@ function compileGeoJson(
   // kinds the way the 2D map stacks its fill, line and circle layers.
   const order: ArcgisGeometryKind[] = ["polygon", "polyline", "point"];
   return {
-    zoomDependent: resolver.zoomDependent || filter.zoomDependent || Boolean(label?.zoomDependent),
+    zoomDependent:
+      resolver.zoomDependent ||
+      filter.zoomDependent ||
+      Boolean(label?.zoomDependent) ||
+      Boolean(extrusion?.zoomDependent),
     parts: order
       .filter((kind) => parts.has(kind))
       .map((kind) => {
         const { features, symbols } = parts.get(kind)!;
         const entries = [...symbols.values()];
+        const extruded = extrusion !== null && kind === "polygon";
+        // The extrusion's height varies per feature; a size visual variable
+        // reads it from the baked field instead of one symbol per height.
+        const visualVariables: ArcgisVisualVariableJson[] | undefined = extruded
+          ? [{ type: "size", field: ARCGIS_HEIGHT_FIELD, valueUnit: "meters" }]
+          : undefined;
         const renderer = (
           entries.length === 1
-            ? { type: "simple", symbol: entries[0].symbol }
+            ? {
+                type: "simple",
+                symbol: entries[0].symbol,
+                ...(visualVariables && { visualVariables }),
+              }
             : {
                 type: "unique-value",
                 field: ARCGIS_SYMBOL_FIELD,
                 uniqueValueInfos: entries.map(({ id, symbol }) => ({ value: id, symbol })),
+                ...(visualVariables && { visualVariables }),
               }
         ) as ArcgisRendererJson;
         const markers = entries.some(({ symbol }) => isMarkerPlaceholder(symbol));
@@ -787,6 +900,9 @@ function compileGeoJson(
           renderer,
           ...(label ? { labelingInfo: labelingFor(kind, style, scales) } : {}),
           ...(markers ? { markerStyle: style } : {}),
+          ...(extruded
+            ? { elevationInfo: { mode: "relative-to-ground" as const, offset: extrusion.base } }
+            : {}),
         };
       }),
   };
@@ -977,7 +1093,7 @@ export function compileArcgisLayer(
     };
   }
   if (layer.geojson) {
-    const compiled = compileGeoJson(layer, layer.geojson, zoom, probe);
+    const compiled = compileGeoJson(layer, layer.geojson, zoom, probe, options.scene === true);
     return {
       ...base,
       kind: "geojson",
