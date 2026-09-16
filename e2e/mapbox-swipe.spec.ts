@@ -383,3 +383,130 @@ for (const theme of ["light", "dark"] as const) {
     }
   });
 }
+
+/**
+ * The swipe control the plugin currently has mounted, identified by a token
+ * stamped on the instance.
+ *
+ * The plugin builds a **new** `SwipeControl` on every basemap change, so a
+ * changed token is the signal that the rebuild has happened — the DOM alone
+ * cannot say, since the elements it replaces carry the same classes.
+ */
+async function swipeControlToken(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const engine = (window as any).swipeTestRef.current;
+    let control: any = null;
+    engine.pluginControls?.forEach?.((_adapter: unknown, candidate: any) => {
+      if (typeof candidate?.getComparisonMap === "function") control = candidate;
+    });
+    if (!control) return null;
+    control.__swipeToken ??= Math.random().toString(36).slice(2);
+    return control.__swipeToken as string;
+  });
+}
+
+/**
+ * The layer ids the control currently has on each side.
+ *
+ * Read off the control rather than the panel's checkboxes: the panel is
+ * collapsed while the basemap is being changed, and this is the state the
+ * rebuild actually carries from one control to the next.
+ */
+async function swipeSides(page: Page): Promise<{ left: string[]; right: string[] }> {
+  return page.evaluate(() => {
+    const engine = (window as any).swipeTestRef.current;
+    let control: any = null;
+    engine.pluginControls?.forEach?.((_adapter: unknown, candidate: any) => {
+      if (typeof candidate?.getComparisonMap === "function") control = candidate;
+    });
+    const state = control?.getState?.();
+    return { left: state?.leftLayers ?? [], right: state?.rightLayers ?? [] };
+  });
+}
+
+// Changing the basemap on this renderer used to leave the previous comparison
+// pane on the map (#2430). The control is rebuilt on the new style's
+// `style.load`, and `maplibre-gl-swipe` read `map.getStyle()` during `onAdd`
+// the way MapLibre answers it — `undefined` until the style is loaded. mapbox-gl
+// throws `Style is not done loading` there instead, and that throw escaped
+// halfway through `onAdd`: the clipped pane and its comparison map (a live
+// WebGL context) were already on the map, the control never mounted, and every
+// further basemap change stacked another pane. Fixed upstream in 0.13.2.
+test("keeps one comparison pane across basemap changes", async ({ page }, info) => {
+  test.setTimeout(240_000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+
+  await openMapboxProject(page, info.project.use.baseURL!, "light");
+
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  const item = page.getByRole("menuitem", { name: "Layer Swipe", exact: true });
+  await item.hover();
+  await page.getByRole("menuitem", { name: "Activate", exact: true }).click();
+  await expect(page.locator(".swipe-comparison-map .mapboxgl-canvas")).toBeAttached();
+
+  // Put East on the right side only, so each rebuild has a non-default
+  // assignment to carry over. Counts alone would pass on a control that came
+  // back with everything reset. The panel is built from the engine's published
+  // layer names, which land after the first completed sync.
+  const panel = page.locator(".swipe-control-panel");
+  await page.waitForFunction(
+    () =>
+      Object.keys(
+        (window as unknown as { __GEOLIBRE_LAYER_LABELS__?: Record<string, string> })
+          .__GEOLIBRE_LAYER_LABELS__ ?? {},
+      ).length > 1,
+    undefined,
+    { timeout: 30_000 },
+  );
+  await setSide(panel, "East", "left", false);
+  await setSide(panel, "East", "right", true);
+  await expect.poll(() => mainMapVisibility(page, "East")).toEqual(["none"]);
+  const sides = await swipeSides(page);
+  expect(sides.right, "East must be on the right side before the first change").toContain(
+    "geolibre-mapbox-East-geojson-fill",
+  );
+
+  // Collapse the swipe panel: it and the Basemaps panel share the top-left
+  // corner, and the picker has to be clickable.
+  await page.locator(".swipe-control-close").click();
+  await page.getByRole("button", { name: "Basemaps", exact: true }).click();
+
+  // Only a `STYLE` basemap replaces the map's style; a raster one is added as
+  // a layer and never reaches `setStyle`, so it cannot reproduce this.
+  for (const name of ["OpenFreeMap Positron", "OpenFreeMap Bright"]) {
+    const before = await swipeControlToken(page);
+    await page.getByPlaceholder("Search basemaps").fill(name.replace("OpenFreeMap ", ""));
+    await page.getByText(name, { exact: true }).click();
+
+    // The rebuild waits for `style.load`, and the pane it builds waits for the
+    // `styledata` after that. Both orphans were queued on that same event, so
+    // once any pane is up the count is final.
+    await expect.poll(() => swipeControlToken(page), { timeout: 60_000 }).not.toBe(before);
+    await expect
+      .poll(() => page.locator(".swipe-comparison-map").count(), { timeout: 60_000 })
+      .toBeGreaterThan(0);
+
+    await expect(page.locator(".swipe-comparison-map")).toHaveCount(1);
+    await expect(page.locator(".swipe-clip-container")).toHaveCount(1);
+    await expect(page.locator(".swipe-slider")).toHaveCount(1);
+    // The throw left the control unmounted, so its button went missing too.
+    await expect(page.locator(".swipe-control")).toHaveCount(1);
+
+    // And the rebuilt control carries the old one's sides. Counts alone would
+    // pass on a control that came back with everything reset, which is the
+    // other way this could go wrong: the rebuild reads `getState()` off the
+    // outgoing control and hands it to the new one's options.
+    expect(await swipeSides(page), `sides must survive the change to ${name}`).toEqual(sides);
+  }
+
+  // Every rebuild constructs and removes a comparison map, and mapbox-gl's
+  // `map.load` telemetry answers after the map that queued it is gone — its
+  // error callback has been nulled by then, so it throws `this.errorCb is not
+  // a function`. Bookkeeping that only fires because CI has no real token, and
+  // the same calls this file already forgives at the network level.
+  expect(
+    errors.filter((error) => !error.includes("errorCb is not a function")),
+    "the rebuild must not throw",
+  ).toEqual([]);
+});
