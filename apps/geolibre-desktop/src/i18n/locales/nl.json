@@ -2413,6 +2413,7 @@
       "imperial": "Knopen / voet",
       "metric": "km/u / meter",
       "bankCamera": "Horizon kantelen in bochten",
+      "bankCameraMapbox": "Mapbox GL heeft geen camerarol, dus de horizon blijft hier waterpas. Het vliegtuig helt en draait nog steeds.",
       "invertPitch": "Stampas omkeren",
       "knots": "kt",
       "kph": "km/u",

@@ -2413,6 +2413,7 @@
       "imperial": "Nœuds / pieds",
       "metric": "km/h / mètres",
       "bankCamera": "Incliner l'horizon dans les virages",
+      "bankCameraMapbox": "Mapbox GL n'a pas de roulis de caméra : l'horizon reste donc à l'horizontale ici. L'avion continue de s'incliner et de virer.",
       "invertPitch": "Inverser l'axe de tangage",
       "knots": "kt",
       "kph": "km/h",

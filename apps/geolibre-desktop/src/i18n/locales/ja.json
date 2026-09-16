@@ -2365,6 +2365,7 @@
       "imperial": "ノット / フィート",
       "metric": "km/h / メートル",
       "bankCamera": "旋回時に水平線を傾ける",
+      "bankCameraMapbox": "Mapbox GL にはカメラのロール軸がないため、ここでは水平線が傾きません。機体のバンクと旋回はこれまでどおりです。",
       "invertPitch": "ピッチ軸を反転",
       "knots": "kt",
       "kph": "km/h",

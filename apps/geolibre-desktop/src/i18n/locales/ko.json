@@ -2365,6 +2365,7 @@
       "imperial": "노트 / 피트",
       "metric": "km/h / 미터",
       "bankCamera": "선회 시 수평선 기울이기",
+      "bankCameraMapbox": "Mapbox GL에는 카메라 롤 축이 없어 여기서는 수평선이 기울지 않습니다. 기체는 그대로 뱅크하며 선회합니다.",
       "invertPitch": "피치 축 반전",
       "knots": "kt",
       "kph": "km/h",

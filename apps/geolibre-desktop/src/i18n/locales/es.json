@@ -2413,6 +2413,7 @@
       "imperial": "Nudos / pies",
       "metric": "km/h / metros",
       "bankCamera": "Inclinar el horizonte en los virajes",
+      "bankCameraMapbox": "Mapbox GL no tiene alabeo de cámara, así que aquí el horizonte se mantiene nivelado. El avión sigue inclinándose y virando.",
       "invertPitch": "Invertir el eje de cabeceo",
       "knots": "kt",
       "kph": "km/h",

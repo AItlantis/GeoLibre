@@ -2413,6 +2413,7 @@
       "imperial": "Knoten / Fuß",
       "metric": "km/h / Meter",
       "bankCamera": "Horizont in Kurven neigen",
+      "bankCameraMapbox": "Mapbox GL kennt keine Kamerarollung, daher bleibt der Horizont hier waagerecht. Das Flugzeug neigt sich und kurvt weiterhin.",
       "invertPitch": "Nickachse umkehren",
       "knots": "kn",
       "kph": "km/h",

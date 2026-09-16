@@ -2413,6 +2413,7 @@
       "imperial": "Nós / pés",
       "metric": "km/h / metros",
       "bankCamera": "Inclinar o horizonte nas curvas",
+      "bankCameraMapbox": "O Mapbox GL não tem rolagem de câmera, portanto o horizonte permanece nivelado aqui. A aeronave continua inclinando e curvando.",
       "invertPitch": "Inverter o eixo de arfagem",
       "knots": "kt",
       "kph": "km/h",

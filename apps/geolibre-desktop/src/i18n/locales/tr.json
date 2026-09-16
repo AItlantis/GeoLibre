@@ -2413,6 +2413,7 @@
       "imperial": "Knot / fit",
       "metric": "km/sa / metre",
       "bankCamera": "Dönüşlerde ufku yatır",
+      "bankCameraMapbox": "Mapbox GL'de kamera yatış ekseni yok, bu yüzden ufuk burada düz kalır. Uçak yine de yatar ve döner.",
       "invertPitch": "Yunuslama eksenini ters çevir",
       "knots": "kt",
       "kph": "km/sa",

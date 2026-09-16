@@ -2365,6 +2365,7 @@
       "imperial": "节 / 英尺",
       "metric": "公里/小时 / 米",
       "bankCamera": "转弯时倾斜地平线",
+      "bankCameraMapbox": "Mapbox GL 没有相机滚转轴，因此这里的地平线始终保持水平。飞机仍会侧倾并转弯。",
       "invertPitch": "反转俯仰轴",
       "knots": "kt",
       "kph": "km/h",

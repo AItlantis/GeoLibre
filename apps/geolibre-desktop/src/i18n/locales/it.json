@@ -2413,6 +2413,7 @@
       "imperial": "Nodi / piedi",
       "metric": "km/h / metri",
       "bankCamera": "Inclina l'orizzonte in virata",
+      "bankCameraMapbox": "Mapbox GL non ha il rollio della camera, quindi qui l'orizzonte resta livellato. L'aereo continua a inclinarsi e a virare.",
       "invertPitch": "Inverti l'asse di beccheggio",
       "knots": "kt",
       "kph": "km/h",

@@ -2365,6 +2365,7 @@
       "imperial": "Knot / kaki",
       "metric": "km/jam / meter",
       "bankCamera": "Miringkan cakrawala saat berbelok",
+      "bankCameraMapbox": "Mapbox GL tidak memiliki roll kamera, jadi cakrawala tetap datar di sini. Pesawat tetap miring dan berbelok.",
       "invertPitch": "Balik sumbu angguk",
       "knots": "kt",
       "kph": "km/jam",

@@ -2365,6 +2365,7 @@
       "imperial": "Nút/chân",
       "metric": "km/h/mét",
       "bankCamera": "Lần lượt ngân hàng đường chân trời",
+      "bankCameraMapbox": "Mapbox GL không hỗ trợ xoay camera quanh trục nhìn (roll), nên đường chân trời ở đây luôn nằm ngang. Máy bay vẫn nghiêng cánh và lượn vòng.",
       "invertPitch": "Trục sân đảo ngược",
       "knots": "kt",
       "kph": "km/h",

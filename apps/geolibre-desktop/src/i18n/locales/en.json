@@ -2416,6 +2416,7 @@
       "imperial": "Knots / feet",
       "metric": "km/h / meters",
       "bankCamera": "Bank the horizon in turns",
+      "bankCameraMapbox": "Mapbox GL has no camera roll, so the horizon stays level here. The aircraft still banks and turns.",
       "invertPitch": "Invert pitch axis",
       "knots": "kt",
       "kph": "km/h",
