@@ -9,11 +9,12 @@ import type {
   StoryChapterAnimation,
   StoryChapterLocation,
 } from "@geolibre/core";
-import { DEFAULT_LAYER_STYLE } from "@geolibre/core";
+import { DEFAULT_LAYER_STYLE, controlRendersLayer } from "@geolibre/core";
 import { circlePaint, fillPaint, linePaint, rasterPaint } from "./style-mapper";
 import {
   DEFAULT_BUILT_IN_CONTROL_POSITIONS,
   DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
+  STORY_OPACITY_PAINT_PROPERTIES,
   type MapEngine,
   type MapEngineCapabilities,
   type MapRenderSurface,
@@ -151,6 +152,11 @@ export class MapboxEngine implements MapEngine {
     getBasemapState: () => ({ visible: this.basemapVisible, opacity: this.basemapOpacity }),
   });
   private storyOpacities = new Map<string, number>();
+  // The paint a control-owned native layer carried before a story fade
+  // replaced its opacity, keyed by store layer id then native id, so
+  // `restoreLayerStyles` can hand it back: the ordinary mirror never writes
+  // paint on those layers.
+  private storyPaintBackups = new Map<string, Map<string, Map<string, unknown>>>();
   private rotating = false;
   private syncPending = false;
   private basemapPending = false;
@@ -449,6 +455,11 @@ export class MapboxEngine implements MapEngine {
     this.syncPending = false;
     const ids = new Set(layers.map((layer) => layer.id));
     for (const id of this.plans.keys()) if (!ids.has(id)) this.removeLayer(id);
+    // A control-rendered row that leaves the store mid-story gets its paint
+    // back now; a later row under the same id starts from the control's
+    // paint at that time, not from this snapshot.
+    for (const id of [...this.storyPaintBackups.keys()])
+      if (!ids.has(id)) this.restoreControlLayerPaint(id);
     for (const key of this.errors.keys())
       if (key.startsWith("layer:") && !ids.has(key.slice(6))) this.errors.delete(key);
     // Store order is topmost first. Add and move in reverse so overlays agree
@@ -548,7 +559,16 @@ export class MapboxEngine implements MapEngine {
       const visibility = layer.visible ? "visible" : "none";
       if (map.getLayoutProperty(id, "visibility") !== visibility)
         map.setLayoutProperty(id, "visibility", visibility);
-      if (layer.metadata.controlOwnsPaint === true) continue;
+      // A control that paints its own layers (`controlOwnsPaint`), or renders
+      // them outright from its own panel state (`customLayerType`, the
+      // ordering-only path on MapLibre: Overture Maps), keeps its paint; the
+      // store's opacity reaches it through the plugin's own store sync. A
+      // story chapter's transient opacity is the one exception, applied (and
+      // taken back) directly, as MapLibre's `setStoryLayerOpacity` does.
+      if (layer.metadata.controlOwnsPaint === true || controlRendersLayer(layer)) {
+        this.applyStoryOpacityToControlLayer(layer.id, id, native.type);
+        continue;
+      }
       const paint =
         native.type === "raster"
           ? rasterPaint(style, layer.opacity)
@@ -572,6 +592,60 @@ export class MapboxEngine implements MapEngine {
         }
       }
     }
+  }
+  /**
+   * Replace a control-owned native layer's opacity with the active story
+   * chapter's value, remembering the control's own paint the first time, and
+   * put that paint back once the chapter opacity is cleared.
+   */
+  private applyStoryOpacityToControlLayer(layerId: string, nativeId: string, type: string): void {
+    const map = this.map;
+    if (!map) return;
+    const story = this.storyOpacities.get(layerId);
+    const props = STORY_OPACITY_PAINT_PROPERTIES[type] ?? [];
+    const backups = this.storyPaintBackups.get(layerId);
+    const saved = backups?.get(nativeId);
+    if (story === undefined) {
+      this.restoreControlLayerPaint(layerId, nativeId);
+      return;
+    }
+    const backup = saved ?? new Map<string, unknown>();
+    for (const prop of props) {
+      const key = prop as keyof mapboxgl.AnyPaint;
+      if (!backup.has(prop)) backup.set(prop, map.getPaintProperty(nativeId, key));
+      try {
+        if (map.getPaintProperty(nativeId, key) !== story)
+          map.setPaintProperty(nativeId, key, story as never);
+      } catch {
+        // A property this native layer does not carry.
+      }
+    }
+    if (!backups) this.storyPaintBackups.set(layerId, new Map([[nativeId, backup]]));
+    else backups.set(nativeId, backup);
+  }
+  /**
+   * Hand a control-owned native layer (or all of a store layer's) the paint it
+   * carried before a story fade, and forget the snapshot.
+   */
+  private restoreControlLayerPaint(layerId: string, nativeId?: string): void {
+    const map = this.map;
+    const backups = this.storyPaintBackups.get(layerId);
+    if (!backups) return;
+    for (const [id, saved] of backups) {
+      if (nativeId !== undefined && id !== nativeId) continue;
+      if (map?.getLayer(id)) {
+        for (const [prop, value] of saved) {
+          try {
+            map.setPaintProperty(id, prop as keyof mapboxgl.AnyPaint, value as never);
+          } catch {
+            // The control may have replaced the layer meanwhile; its own paint
+            // then already applies.
+          }
+        }
+      }
+      backups.delete(id);
+    }
+    if (backups.size === 0) this.storyPaintBackups.delete(layerId);
   }
   private removeLayer(id: string): void {
     const plan = this.plans.get(id),

@@ -879,6 +879,96 @@ describe("Mapbox plugin-drawn native layers", () => {
     );
   });
 
+  it("leaves a control-rendered layer's paint alone and never compiles its archive URL", () => {
+    const { engine, map } = makeEngine();
+    // The Overture Maps control adds its own PMTiles source and styled layers;
+    // the store row mirrors them (`customLayerType`) and names the archive URL
+    // only for the record.
+    map.addSource("overture-buildings", {
+      type: "vector",
+      url: "https://tiles.example.test/2026-05-20.0/buildings.pmtiles",
+    });
+    map.addLayer({
+      id: "overture-buildings-building-fill",
+      type: "fill",
+      source: "overture-buildings",
+      "source-layer": "building",
+      paint: { "fill-color": "#4363d8", "fill-opacity": 0.8 },
+    });
+    map.calls.length = 0;
+    const layer = {
+      ...geojsonLayer({ id: "overture-maps-buildings-building" }),
+      type: "vector-tiles" as const,
+      geojson: undefined,
+      source: {
+        type: "vector",
+        sourceId: "overture-buildings",
+        url: "https://tiles.example.test/2026-05-20.0/buildings.pmtiles",
+      },
+      metadata: {
+        customLayerType: "overture-maps",
+        externalNativeLayer: true,
+        sourceKind: "overture-maps",
+        sourceId: "overture-buildings",
+        nativeLayerIds: ["overture-buildings-building-fill", "overture-buildings-building-line"],
+      },
+    };
+    engine.syncLayers([{ ...layer, visible: false, opacity: 0.3 }]);
+    assert.deepEqual([...map.sources.keys()], ["overture-buildings"], "no second source");
+    assert.equal(
+      map.layers.filter((l) => l.id === "overture-buildings-building-fill").length,
+      1,
+      "the control's fill is not drawn twice",
+    );
+    assert.equal(
+      (map.getLayer("overture-buildings-building-fill")?.layout as Record<string, unknown>)
+        .visibility,
+      "none",
+      "store visibility is mirrored",
+    );
+    assert.deepEqual(
+      map.calls.filter((call) => call.startsWith("setPaintProperty:")),
+      [],
+      "the control keeps its own color and opacity",
+    );
+    assert.deepEqual(
+      (map.getLayer("overture-buildings-building-fill")?.paint as Record<string, unknown>)[
+        "fill-color"
+      ],
+      "#4363d8",
+    );
+    // A story chapter's fade still reaches the control's layers (replacing
+    // their opacity, as on MapLibre) and hands the control's paint back when
+    // playback ends.
+    engine.syncLayers([layer]);
+    engine.setStoryLayerOpacity("overture-maps-buildings-building", 0.25);
+    const fillPaint = () =>
+      map.getLayer("overture-buildings-building-fill")?.paint as Record<string, unknown>;
+    assert.equal(fillPaint()["fill-opacity"], 0.25, "story opacity applied");
+    assert.equal(fillPaint()["fill-color"], "#4363d8", "color untouched by the fade");
+    engine.restoreLayerStyles();
+    assert.equal(fillPaint()["fill-opacity"], 0.8, "the control's opacity is restored");
+    map.calls.length = 0;
+    engine.syncLayers([layer]);
+    assert.deepEqual(
+      map.calls.filter((call) => call.startsWith("setPaintProperty:")),
+      [],
+      "nothing is re-applied once restored",
+    );
+    // A row that leaves the store mid-fade gets the control's paint back at
+    // once, and a row re-added under the same id later is not handed the old
+    // snapshot when its own fade ends.
+    engine.setStoryLayerOpacity("overture-maps-buildings-building", 0.25);
+    assert.equal(fillPaint()["fill-opacity"], 0.25);
+    engine.syncLayers([]);
+    assert.equal(fillPaint()["fill-opacity"], 0.8, "restored when the row is removed");
+    map.setPaintProperty("overture-buildings-building-fill", "fill-opacity", 0.6);
+    engine.syncLayers([layer]);
+    assert.equal(fillPaint()["fill-opacity"], 0.25, "the active fade applies to the new row");
+    engine.restoreLayerStyles();
+    assert.equal(fillPaint()["fill-opacity"], 0.6, "the control's current paint comes back");
+  });
+
   it("scales a plugin-owned fill's own opacity by the store opacity instead of replacing it", () => {
     const { engine, map } = makeEngine();
     map.addSource("footprints", {

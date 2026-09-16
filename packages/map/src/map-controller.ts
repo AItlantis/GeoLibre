@@ -86,6 +86,7 @@ import {
   type BuiltInMapControl,
   DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
   DEFAULT_BUILT_IN_CONTROL_POSITIONS,
+  STORY_OPACITY_PAINT_PROPERTIES,
   type MapEngine,
   type MapEngineCapabilities,
 } from "./map-engine";
@@ -133,20 +134,7 @@ const NON_BASEMAP_STYLE_LAYER_IDS = [
   highlightLineLayerId(),
   highlightCircleLayerId(),
 ];
-const OPACITY_PAINT_PROPERTIES: Record<string, string[]> = {
-  background: ["background-opacity"],
-  // A point's outline fades with its fill so story playback can fully hide a
-  // circle layer; without the stroke property a faded-out point still renders
-  // as a hollow ring (#934).
-  circle: ["circle-opacity", "circle-stroke-opacity"],
-  fill: ["fill-opacity"],
-  "fill-extrusion": ["fill-extrusion-opacity"],
-  heatmap: ["heatmap-opacity"],
-  hillshade: ["hillshade-exaggeration"],
-  line: ["line-opacity"],
-  raster: ["raster-opacity"],
-  symbol: ["icon-opacity", "text-opacity"],
-};
+const OPACITY_PAINT_PROPERTIES = STORY_OPACITY_PAINT_PROPERTIES;
 
 /**
  * The paint value a story fade writes for one property of one style layer.
