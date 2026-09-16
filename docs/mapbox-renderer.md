@@ -121,6 +121,16 @@ browser against an authenticated Mapbox map):
   source (Add Vector Layer's GeoJSON mode) need MapLibre's `getData()`.
 - **Clouds** and **Precipitation** (store tile layers; the frame scrub goes
   through the store on Mapbox rather than the instant `setTiles` shortcut).
+- **Geo Editor**, including Sketches, in-place geometry editing of a store
+  layer and loading map-view features into the editor. Geoman keeps its engine
+  calls behind one map adapter, and the three members that build MapLibre
+  objects (the `Marker` behind vertex handles and the cursor marker, the
+  `LngLatBounds` behind the cut tool's query box, and the promise-style
+  `loadImage` for the default marker icon) are swapped for mapbox-gl's on the
+  Mapbox map (`geo-editor-mapbox.ts`); the toolbar's rotate and
+  feature-properties popups come from `maplibre-gl-geo-editor`'s `createPopup`
+  option, fed mapbox-gl's `Popup`. Text markers use Mapbox's `Open Sans
+  Regular` glyphs when the style has no font to borrow.
 - **Atmospheric Effects** (its overlay canvases mount in the Mapbox canvas
   container; the control container is lifted above them, as on MapLibre) and
   **Sun** (canvas night mask, raster layer and `setLight` all apply to
@@ -138,8 +148,6 @@ Still MapLibre-only, each for a concrete reason:
   MapLibre `Marker` / `Popup`, so agent actions would break mid-run.
 - **Swipe**: `maplibre-gl-swipe` constructs a second MapLibre `Map` as the
   comparison pane, and the plugin mirrors COG and raster layers onto it.
-- **Geo Editor**: `@geoman-io/maplibre-geoman-free` builds MapLibre
-  `Marker` / `Popup` / `LngLatBounds` objects and reads the map's `transform`.
 - **Flight Simulator**: flies with `calculateCameraOptionsFromCameraLngLatAltRotation`
   and `getCenterClampedToGround`, which have no mapbox-gl equivalent (a
   `FreeCameraOptions` port is a separate job).

@@ -633,6 +633,14 @@ export interface GeoLibreAppAPI {
   /** Native Mapbox map, available only while Mapbox is the primary renderer. */
   getMapboxMap?: () => ReturnType<import("@geolibre/map").MapboxEngine["getMapboxMap"]>;
   /**
+   * The mapbox-gl namespace, available only while Mapbox is the primary
+   * renderer. For the rare plugin that must build Mapbox's own `Marker`,
+   * `Popup` or `LngLatBounds` on the map handed out by {@link getMapboxMap}
+   * (MapLibre's classes throw on a mapbox-gl map); everything else stays on
+   * the Style Spec surface `getStyleMap` presents.
+   */
+  getMapboxGl?: () => ReturnType<import("@geolibre/map").MapboxEngine["getMapboxGl"]> | null;
+  /**
    * The primary Cesium globe's native scene, or `null` when the primary map is
    * not a globe (or is still mounting). The globe's counterpart to
    * {@link getMap}: a plugin that declares `engines: ["maplibre", "cesium"]`

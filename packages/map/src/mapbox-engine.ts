@@ -211,6 +211,15 @@ export class MapboxEngine implements MapEngine {
   getMapboxMap(): mapboxgl.Map | null {
     return this.map;
   }
+  /**
+   * The mapbox-gl namespace the engine was built with, for an integration that
+   * has to construct Mapbox's own `Marker` / `Popup` / `LngLatBounds` on the map
+   * (MapLibre's throw there). The Mapbox counterpart of the `@cesium/engine`
+   * namespace `getCesiumScene` hands out: plugins never import mapbox-gl.
+   */
+  getMapboxGl(): typeof mapboxgl.default {
+    return this.gl;
+  }
   private onError = (event: { error: Error; sourceId?: string }) => {
     this.errors.set(event.sourceId ?? "map", redactMapboxError(event.error.message));
   };

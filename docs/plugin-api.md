@@ -1310,8 +1310,7 @@ only for the shared surface; a mapbox-gl map has none of MapLibre's extensions:
   (`capabilities.customLayers` is false on Mapbox). The terrain camera helpers
   (`calculateCameraOptionsFromCameraLngLatAltRotation`,
   `getCenterClampedToGround`) the Flight Simulator flies with. The `transform`
-  / `_camera` internals some upstream controls and
-  `@geoman-io/maplibre-geoman-free` (Geo Editor) read.
+  / `_camera` internals some upstream controls read.
 - `getProjection()` differs in shape: `{ type: "globe" }` on MapLibre,
   `{ name: "globe" }` on Mapbox; `setProjection` takes `{ type }` on MapLibre
   and a name string (or `{ name }`) on Mapbox. Read both.
@@ -1319,7 +1318,11 @@ only for the shared surface; a mapbox-gl map has none of MapLibre's extensions:
   work on a mapbox-gl map: their update path reads `map._camera.transform` and
   throws on the first move (the Street View control's marker, GeoAgent's tool
   markers). A plugin that needs markers on both engines positions a DOM element
-  through `map.project` instead, as the Elements panel does.
+  through `map.project` instead, as the Elements panel does. When an upstream
+  library insists on constructing the engine's own classes, `app.getMapboxGl()`
+  hands out the mapbox-gl namespace: the Geo Editor feeds its `Marker` /
+  `LngLatBounds` to Geoman's map adapter and its `Popup` to
+  `maplibre-gl-geo-editor`'s `createPopup` option (`geo-editor-mapbox.ts`).
 
 The same frontend audit that scans Cesium-capable plugins scans every plugin
 declaring Mapbox support, follows its relative imports, and fails on a read

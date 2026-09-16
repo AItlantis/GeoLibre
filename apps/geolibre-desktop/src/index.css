@@ -1103,6 +1103,18 @@ body,
   z-index: 2;
 }
 
+/* Popups on a Mapbox map. Every MapLibre popup (identify, the Geo Editor's
+   numerical-rotation form) sits above the Effects plugin's z-4 map canvas only
+   because maplibre-gl-components ships `.maplibregl-popup { z-index: 10 !important }`
+   globally. mapbox-gl's popup has no such lift, so with effects on it opens
+   underneath the canvas: visible through nothing and unclickable. Match the
+   MapLibre value so the two engines stack popups the same way. `!important`
+   as upstream's: mapbox-gl.css is loaded by a dynamic import after this
+   sheet, so a same-specificity rule there would otherwise win. */
+.mapboxgl-popup {
+  z-index: 10 !important;
+}
+
 /*
  * Geoman's `text_marker` mode (via the GeoEditor plugin) appends a bare
  * <textarea> into the map container with only inline position/opacity — no
@@ -3851,47 +3863,61 @@ html.dark .maplibregl-popup-anchor-right:has(.vector-control-popup) .maplibregl-
 }
 
 /* Feature-properties and numeric-rotation popups rendered on the map. Their
-   content sits in MapLibre's always-white `.maplibregl-popup-content`, so the
-   popup surface (and its anchor tip) must be themed along with the text —
-   otherwise the token-mapped text goes light-on-white in dark mode. Mirrors
-   the `.geolibre-identify-popup` treatment above. */
-.geo-editor-properties-popup .maplibregl-popup-content,
-.geo-editor-rotate-popup .maplibregl-popup-content {
+   content sits in the engine's always-white popup content box (MapLibre's
+   `.maplibregl-popup-content`, mapbox-gl's `.mapboxgl-popup-content` when the
+   Geo Editor runs on the Mapbox renderer), so the popup surface (and its
+   anchor tip) must be themed along with the text — otherwise the token-mapped
+   text goes light-on-white in dark mode. Mirrors the `.geolibre-identify-popup`
+   treatment above. */
+:is(.geo-editor-properties-popup, .geo-editor-rotate-popup)
+  :is(.maplibregl-popup-content, .mapboxgl-popup-content) {
   background: hsl(var(--popover));
   border: 1px solid hsl(var(--border));
   color: hsl(var(--popover-foreground));
 }
 
-.geo-editor-properties-popup .maplibregl-popup-close-button,
-.geo-editor-rotate-popup .maplibregl-popup-close-button {
+:is(.geo-editor-properties-popup, .geo-editor-rotate-popup)
+  :is(.maplibregl-popup-close-button, .mapboxgl-popup-close-button) {
   color: hsl(var(--muted-foreground));
 }
 
 :is(.geo-editor-properties-popup, .geo-editor-rotate-popup):is(
     .maplibregl-popup-anchor-top,
     .maplibregl-popup-anchor-top-left,
-    .maplibregl-popup-anchor-top-right
+    .maplibregl-popup-anchor-top-right,
+    .mapboxgl-popup-anchor-top,
+    .mapboxgl-popup-anchor-top-left,
+    .mapboxgl-popup-anchor-top-right
   )
-  .maplibregl-popup-tip {
+  :is(.maplibregl-popup-tip, .mapboxgl-popup-tip) {
   border-bottom-color: hsl(var(--popover));
 }
 
 :is(.geo-editor-properties-popup, .geo-editor-rotate-popup):is(
     .maplibregl-popup-anchor-bottom,
     .maplibregl-popup-anchor-bottom-left,
-    .maplibregl-popup-anchor-bottom-right
+    .maplibregl-popup-anchor-bottom-right,
+    .mapboxgl-popup-anchor-bottom,
+    .mapboxgl-popup-anchor-bottom-left,
+    .mapboxgl-popup-anchor-bottom-right
   )
-  .maplibregl-popup-tip {
+  :is(.maplibregl-popup-tip, .mapboxgl-popup-tip) {
   border-top-color: hsl(var(--popover));
 }
 
-:is(.geo-editor-properties-popup, .geo-editor-rotate-popup).maplibregl-popup-anchor-left
-  .maplibregl-popup-tip {
+:is(.geo-editor-properties-popup, .geo-editor-rotate-popup):is(
+    .maplibregl-popup-anchor-left,
+    .mapboxgl-popup-anchor-left
+  )
+  :is(.maplibregl-popup-tip, .mapboxgl-popup-tip) {
   border-right-color: hsl(var(--popover));
 }
 
-:is(.geo-editor-properties-popup, .geo-editor-rotate-popup).maplibregl-popup-anchor-right
-  .maplibregl-popup-tip {
+:is(.geo-editor-properties-popup, .geo-editor-rotate-popup):is(
+    .maplibregl-popup-anchor-right,
+    .mapboxgl-popup-anchor-right
+  )
+  :is(.maplibregl-popup-tip, .mapboxgl-popup-tip) {
   border-left-color: hsl(var(--popover));
 }
 

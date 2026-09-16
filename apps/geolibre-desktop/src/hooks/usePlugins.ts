@@ -1111,6 +1111,14 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
         ? engine.getMapboxMap()
         : null;
     },
+    getMapboxGl: () => {
+      const engine = mapControllerRef?.current;
+      return engine?.kind === "mapbox" &&
+        "getMapboxGl" in engine &&
+        typeof engine.getMapboxGl === "function"
+        ? engine.getMapboxGl()
+        : null;
+    },
     getCesiumScene: () => {
       const engine = mapControllerRef?.current;
       return engine instanceof CesiumEngine ? engine.getCesiumScene() : null;

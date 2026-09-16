@@ -32,10 +32,15 @@ import type { GeoLibreAppAPI } from "../types";
  * reads the map through `app.getMap()` alone.
  *
  * @param app - The plugin host API, or nothing while a plugin is inactive.
+ *   Anything with the same two doors works, so the host's own engine (whose
+ *   `getMap` answers null on Mapbox and whose Mapbox engine carries
+ *   `getMapboxMap`) can be passed directly.
  * @returns The MapLibre map, the Mapbox map through MapLibre's types, or `null`
  *   when neither 2D engine is mounted (a Cesium primary, or a map mid-swap).
  */
-export function getStyleMap(app: GeoLibreAppAPI | null | undefined): MapLibreMap | null {
+export function getStyleMap(
+  app: Pick<GeoLibreAppAPI, "getMap" | "getMapboxMap"> | null | undefined,
+): MapLibreMap | null {
   if (!app) return null;
   // The one read of the MapLibre-only door that is meant to be here: this is
   // the fallback the audit sends every Mapbox-capable plugin to.
