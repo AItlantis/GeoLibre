@@ -4246,7 +4246,7 @@ export function LayerPanel({
                                     void handleExportLayer(layer, "csv");
                                   }}
                                 >
-                                  CSV (attributes only)
+                                  CSV
                                 </DropdownMenuItem>
                                 {canExportPolyline && (
                                   <>
