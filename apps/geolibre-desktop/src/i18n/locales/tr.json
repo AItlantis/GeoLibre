@@ -1952,6 +1952,7 @@
     "layerCesiumOnly": "Yalnızca 3B küre tarafından çiziliyor",
     "layerMapboxUnsupported": "Mapbox motoru tarafından çizilmiyor",
     "layerArcgisUnsupported": "ArcGIS motoru tarafından çizilmiyor",
+    "layerArcgisViewUnsupported": "Bu ArcGIS görünümünde çizilmiyor",
     "resetView": "Görünümü Sıfırla",
     "scene3D": "3B küre",
     "scene2D": "2B harita",

@@ -1952,6 +1952,7 @@
     "layerCesiumOnly": "Wird nur vom 3D-Globus dargestellt",
     "layerMapboxUnsupported": "Wird vom Mapbox-Renderer nicht dargestellt",
     "layerArcgisUnsupported": "Wird vom ArcGIS-Renderer nicht dargestellt",
+    "layerArcgisViewUnsupported": "In dieser ArcGIS-Ansicht nicht dargestellt",
     "resetView": "Ansicht zurücksetzen",
     "scene3D": "3D-Globus",
     "scene2D": "2D-Karte",

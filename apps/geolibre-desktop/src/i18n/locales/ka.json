@@ -1952,6 +1952,7 @@
     "layerCesiumOnly": "ისახება მხოლოდ 3D გლობუსზე",
     "layerMapboxUnsupported": "Mapbox-ის ძრავით არ ისახება",
     "layerArcgisUnsupported": "ArcGIS-ის ძრავით არ ისახება",
+    "layerArcgisViewUnsupported": "ArcGIS-ის ამ ხედში არ ისახება",
     "resetView": "ხედის საწყისზე დაბრუნება",
     "scene3D": "3D გლობუსი",
     "scene2D": "2D რუკა",

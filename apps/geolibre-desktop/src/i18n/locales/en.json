@@ -1955,6 +1955,7 @@
     "layerCesiumOnly": "Rendered by the 3D globe only",
     "layerMapboxUnsupported": "Not rendered by the Mapbox engine",
     "layerArcgisUnsupported": "Not rendered by the ArcGIS engine",
+    "layerArcgisViewUnsupported": "Not rendered in this ArcGIS view",
     "resetView": "Reset view",
     "scene3D": "3D globe",
     "scene2D": "2D map",

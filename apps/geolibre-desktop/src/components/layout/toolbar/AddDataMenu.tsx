@@ -8,7 +8,7 @@ import {
   DropdownMenuTrigger,
 } from "@geolibre/ui";
 import { Database } from "lucide-react";
-import { useAppStore } from "@geolibre/core";
+import { useAppStore, type MapRendererKind } from "@geolibre/core";
 import { Fragment, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { AddDataKind } from "../AddDataDialog";
@@ -16,7 +16,7 @@ import { isMobile } from "../../../lib/is-mobile";
 import { masHidesDataSource } from "../../../lib/mas-build";
 import { useDesktopSettingsStore } from "../../../hooks/useDesktopSettings";
 import { useMapCapabilities } from "../../../hooks/useMapCapabilities";
-import { supportsAddDataRenderer } from "../../../lib/add-data-renderer";
+import { requiresArcgisDeckOverlay, supportsAddDataRenderer } from "../../../lib/add-data-renderer";
 import {
   DATA_SOURCE_CATALOG,
   DATA_SOURCE_SECTION_LABEL_KEYS,
@@ -40,6 +40,13 @@ interface AddDataMenuProps {
 interface AddDataItem {
   onSelect: () => void;
   disabled?: boolean;
+}
+
+function unsupportedTitleKey(renderer: MapRendererKind, id: string) {
+  if (renderer !== "arcgis") return "renderer.layerMapboxUnsupported";
+  return requiresArcgisDeckOverlay(id)
+    ? "renderer.layerArcgisViewUnsupported"
+    : "renderer.layerArcgisUnsupported";
 }
 
 /** The Add Data menu: files, web services, cloud formats, 3D layers, databases. */
@@ -88,9 +95,8 @@ export function AddDataMenu({
     georss: { onSelect: () => onSetAddDataKind("georss") },
     stac: { onSelect: addLayer.stac },
     video: { onSelect: () => onSetAddDataKind("video") },
-    // deck.gl draws through the shared MapboxOverlay, which MapLibre and Mapbox
-    // both host; there is no Cesium interop, so the builder is offered only
-    // where the engine hosts that overlay.
+    // deck.gl draws through a shared overlay on MapLibre, Mapbox and supported
+    // ArcGIS views. Offer the builder only where the engine hosts that overlay.
     "deckgl-viz": {
       onSelect: () => onSetAddDataKind("deckgl-viz"),
       disabled: !capabilities.deckOverlay,
@@ -184,7 +190,7 @@ export function AddDataMenu({
                 <DropdownMenuItem
                   key={entry.id}
                   disabled={item.disabled || !supported}
-                  title={supported ? undefined : t("renderer.layerMapboxUnsupported")}
+                  title={supported ? undefined : t(unsupportedTitleKey(renderer, entry.id))}
                   onSelect={item.onSelect}
                 >
                   {t(entry.labelKey)}

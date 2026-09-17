@@ -1952,6 +1952,7 @@
     "layerCesiumOnly": "تنها روی کرهٔ سه‌بعدی ترسیم می‌شود",
     "layerMapboxUnsupported": "با موتور Mapbox ترسیم نمی‌شود",
     "layerArcgisUnsupported": "با موتور ArcGIS ترسیم نمی‌شود",
+    "layerArcgisViewUnsupported": "در این نمای ArcGIS ترسیم نمی‌شود",
     "resetView": "بازنشانی نما",
     "scene3D": "کرهٔ سه‌بعدی",
     "scene2D": "نقشهٔ دوبعدی",

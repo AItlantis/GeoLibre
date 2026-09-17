@@ -1906,6 +1906,7 @@
     "layerCesiumOnly": "แสดงผลบนลูกโลก 3 มิติเท่านั้น",
     "layerMapboxUnsupported": "ไม่แสดงผลบนเอนจิน Mapbox",
     "layerArcgisUnsupported": "ไม่แสดงผลบนเอนจิน ArcGIS",
+    "layerArcgisViewUnsupported": "ไม่แสดงผลในมุมมอง ArcGIS นี้",
     "resetView": "รีเซ็ตมุมมอง",
     "scene3D": "ลูกโลก 3 มิติ",
     "scene2D": "แผนที่ 2 มิติ",

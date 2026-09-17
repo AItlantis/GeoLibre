@@ -1952,6 +1952,7 @@
     "layerCesiumOnly": "Alleen weergegeven door de 3D-globe",
     "layerMapboxUnsupported": "Niet weergegeven door de Mapbox-engine",
     "layerArcgisUnsupported": "Niet weergegeven door de ArcGIS-engine",
+    "layerArcgisViewUnsupported": "Niet weergegeven in deze ArcGIS-weergave",
     "resetView": "Weergave herstellen",
     "scene3D": "3D-globe",
     "scene2D": "2D-kaart",

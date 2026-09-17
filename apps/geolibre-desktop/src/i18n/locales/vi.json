@@ -1906,6 +1906,7 @@
     "layerCesiumOnly": "Chỉ được kết xuất trên quả địa cầu 3D",
     "layerMapboxUnsupported": "Không được kết xuất bởi công cụ Mapbox",
     "layerArcgisUnsupported": "Không được kết xuất bởi công cụ ArcGIS",
+    "layerArcgisViewUnsupported": "Không được kết xuất trong chế độ xem ArcGIS này",
     "resetView": "Đặt lại chế độ xem",
     "scene3D": "Quả địa cầu 3D",
     "scene2D": "Bản đồ 2D",
