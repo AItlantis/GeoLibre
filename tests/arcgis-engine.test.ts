@@ -44,6 +44,7 @@ function makeSdk() {
   const widgets: { kind: string; props: Record<string, unknown>; destroyed: boolean }[] = [];
   const goTo: unknown[] = [];
   let watchers: (() => void)[] = [];
+  const syncWatchers = new Set<() => void>();
   const layerClass = (kind: string) =>
     class {
       kind = kind;
@@ -52,7 +53,14 @@ function makeSdk() {
       title: string | null;
       type = kind;
       opacity: number;
-      visible: boolean;
+      private visibility = true;
+      get visible() {
+        return this.visibility;
+      }
+      set visible(value: boolean) {
+        this.visibility = value;
+        for (const watch of syncWatchers) watch();
+      }
       minScale: number;
       maxScale: number;
       loaded = true;
@@ -292,11 +300,28 @@ function makeSdk() {
       ScaleBar: widgetClass("ScaleBar"),
       Fullscreen: widgetClass("Fullscreen"),
       Locate: widgetClass("Locate"),
+      LayerList: widgetClass("LayerList"),
+      Expand: widgetClass("Expand"),
     },
     reactiveUtils: {
-      watch: (_get: unknown, cb: () => void) => {
-        watchers.push(cb);
-        return { remove: () => (watchers = watchers.filter((w) => w !== cb)) };
+      watch: (get: () => unknown, cb: () => void, options?: { sync?: boolean }) => {
+        let previous = get();
+        const watch = options?.sync
+          ? () => {
+              const next = get();
+              if (next === previous) return;
+              previous = next;
+              cb();
+            }
+          : cb;
+        watchers.push(watch);
+        if (options?.sync) syncWatchers.add(watch);
+        return {
+          remove: () => {
+            watchers = watchers.filter((w) => w !== watch);
+            syncWatchers.delete(watch);
+          },
+        };
       },
       when: (_get: unknown, cb: () => void) => {
         watchers.push(cb);
@@ -500,6 +525,49 @@ describe("ArcgisEngine camera conventions", () => {
 });
 
 describe("ArcgisEngine controls", () => {
+  it("bridges native layer toggles to the store without feeding store updates back", () => {
+    const changes: [string, boolean][] = [];
+    const { engine, created, fireWatchers, widgets } = makeEngine({
+      onLayerVisibilityChange: (id, visible) => changes.push([id, visible]),
+    });
+    const layer = geojsonLayer({
+      geojson: {
+        type: "FeatureCollection",
+        features: [
+          { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [0, 0] } },
+          {
+            type: "Feature",
+            properties: {},
+            geometry: {
+              type: "LineString",
+              coordinates: [
+                [0, 0],
+                [1, 1],
+              ],
+            },
+          },
+        ],
+      },
+    });
+    engine.syncLayers([layer]);
+    const native = created.find((item) => item.kind === "geojson")!;
+    assert.equal(native.listMode, "hide-children");
+    assert.equal(created.filter((item) => item.kind === "geojson")[1].listMode, "hide");
+    assert.ok(widgets.some((widget) => widget.kind === "LayerList"));
+    native.visible = false;
+    fireWatchers();
+    assert.deepEqual(changes, [[layer.id, false]]);
+    engine.syncLayers([{ ...layer, visible: false }]);
+    fireWatchers();
+    assert.equal(changes.length, 1);
+    engine.syncLayers([]);
+    native.visible = true;
+    fireWatchers();
+    assert.equal(changes.length, 1);
+    engine.destroy();
+    assert.ok(widgets.every((widget) => widget.destroyed));
+  });
+
   it("replaces the SDK's default UI with the Controls menu's default set", () => {
     const { engine, widgets, uiAdds, rawView } = makeEngine();
     assert.deepEqual(rawView.ui.components, []);
@@ -997,4 +1065,24 @@ describe("ArcgisEngine 3D scenes", () => {
       (globalThis as { document: unknown }).document = previous;
     }
   });
+});
+
+it("commits native visibility before an unrelated store sync can overwrite the toggle", () => {
+  let layer = SQUARE;
+  const changes: boolean[] = [];
+  const { engine, created } = makeEngine({
+    onLayerVisibilityChange: (_id, visible) => {
+      changes.push(visible);
+      layer = { ...layer, visible };
+      engine.syncLayers([layer]);
+    },
+  });
+  engine.syncLayers([layer]);
+  const native = created.find((item) => item.kind === "geojson")!;
+  native.visible = false;
+  // No asynchronous watcher flush between the user toggle and another update.
+  engine.syncLayers([{ ...layer, opacity: 0.4 }]);
+  assert.equal(native.visible, false);
+  assert.deepEqual(changes, [false]);
+  engine.destroy();
 });
