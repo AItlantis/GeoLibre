@@ -3,9 +3,12 @@ import {
   DEFAULT_LAYER_STYLE,
   extrusionColorValue,
   extrusionHeightValue,
+  geojsonHasZCoordinates,
+  heatmapRampColors,
   labelFieldTextField,
   normalizeHexColor,
   ruleBasedVisibilityFilter,
+  transformGeojsonElevation,
   type GeoLibreLayer,
   type LabelAnchor,
   type LayerStyle,
@@ -45,6 +48,7 @@ export const ARCGIS_SYMBOL_FIELD = "gl__sym";
 export const ARCGIS_LABEL_FIELD = "gl__label";
 /** Extrusion height in metres, read by the 3D renderer's size visual variable. */
 export const ARCGIS_HEIGHT_FIELD = "gl__height";
+export const ARCGIS_WEIGHT_FIELD = "gl__weight";
 
 /** The SDK's geometry kinds a GeoJSONLayer can hold; one layer per kind. */
 export type ArcgisGeometryKind = "point" | "polyline" | "polygon";
@@ -75,6 +79,15 @@ export function isMarkerPlaceholder(symbol: unknown): symbol is ArcgisMarkerPlac
 
 /** A JSON renderer the SDK autocasts. */
 export type ArcgisRendererJson =
+  | {
+      type: "heatmap";
+      field: string;
+      radius: string;
+      minDensity: number;
+      maxDensity: number;
+      colorStops: { ratio: number; color: number[] }[];
+      visualVariables?: never;
+    }
   | { type: "simple"; symbol: ArcgisSymbolJson; visualVariables?: ArcgisVisualVariableJson[] }
   | {
       type: "unique-value";
@@ -113,11 +126,14 @@ export interface ArcgisGeoJsonPart {
    * symbols stand in for; present only when a point part uses markers.
    */
   markerStyle?: LayerStyle;
+  patternStyle?: LayerStyle;
   /**
    * How the SDK places the features vertically in a `SceneView`. Set on
    * extruded polygons so the extrusion starts at the style's base height.
    */
-  elevationInfo?: { mode: "relative-to-ground"; offset: number };
+  elevationInfo?: { mode: "relative-to-ground" | "absolute-height"; offset: number };
+  hasZ?: boolean;
+  featureReduction?: Record<string, unknown>;
 }
 
 /** Fields every plan shares; applied to each native layer the plan produces. */
@@ -799,6 +815,37 @@ function compileExtrusion(style: LayerStyle): ExtrusionReader {
   };
 }
 
+function heatmapWeight(feature: Feature, style: LayerStyle): number {
+  const field = style.heatmapWeightProperty.trim();
+  const value = field ? Number(feature.properties?.[field] ?? 0) : 1;
+  const intensity = Number.isFinite(style.heatmapIntensity)
+    ? Math.max(0, style.heatmapIntensity)
+    : 1;
+  return (Number.isFinite(value) ? Math.max(0, value) : 0) * intensity;
+}
+
+function heatmapRenderer(style: LayerStyle, scene: boolean): ArcgisRendererJson {
+  const colors = heatmapRampColors(style);
+  const radius = Number.isFinite(style.heatmapRadius) ? Math.max(1, style.heatmapRadius) : 30;
+  return {
+    type: "heatmap",
+    field: ARCGIS_WEIGHT_FIELD,
+    // SceneView caps its kernel at 112 points (149 1/3 CSS pixels).
+    radius: `${scene ? Math.min(radius, (112 * 4) / 3) : radius}px`,
+    minDensity: 0,
+    // Esri's default density scale. Its kernel differs from MapLibre's;
+    // intensity multiplies the baked weights so zero also hides the heatmap.
+    maxDensity: 0.04,
+    colorStops: [
+      { ratio: 0, color: [0, 0, 0, 0] },
+      ...colors.map((color, index) => ({
+        ratio: (index + 1) / colors.length,
+        color: cssToArcgisColor(color),
+      })),
+    ],
+  };
+}
+
 function compileGeoJson(
   layer: GeoLibreLayer,
   geojson: FeatureCollection,
@@ -809,6 +856,15 @@ function compileGeoJson(
   const style: LayerStyle = { ...DEFAULT_LAYER_STYLE, ...layer.style };
   if (probe) return { parts: [], zoomDependent: false };
   const extrusion = scene && style.extrusionEnabled ? compileExtrusion(style) : null;
+  const elevated =
+    scene && !extrusion && style.elevation3dEnabled && geojsonHasZCoordinates(geojson, true);
+  const data = elevated
+    ? transformGeojsonElevation(
+        geojson,
+        Number.isFinite(style.elevation3dVerticalScale) ? style.elevation3dVerticalScale : 1,
+        Number.isFinite(style.elevation3dOffset) ? style.elevation3dOffset : 0,
+      )
+    : geojson;
   const resolver = createFeatureStyleResolver(style);
   const filter = compileFilter(layer);
   const label = compileLabelText(style);
@@ -824,36 +880,44 @@ function compileGeoJson(
       symbols: Map<string, { id: string; symbol: ArcgisSymbolJson | ArcgisMarkerPlaceholder }>;
     }
   >();
-  geojson.features.forEach((feature, index) => {
+  data.features.forEach((feature, index) => {
     if (!feature.geometry) return;
     if (filter.test && !filter.test(feature, zoom)) return;
     const id = String(feature.id ?? index);
-    const symbol = resolver.resolve(feature, zoom);
+    let symbol: ReturnType<typeof resolver.resolve> | undefined;
     const text = label ? label.read(feature, zoom) : "";
     for (const geometry of explodePoints(feature.geometry)) {
       const kind = GEOMETRY_KIND[geometry.type];
       if (!kind) continue;
       const extruded = extrusion !== null && kind === "polygon";
-      const shape = extruded ? extrusion.symbol(feature, zoom) : symbolForKind(kind, symbol);
-      const json = kind === "point" ? pointMarkerSymbol(style, feature, symbol, shape) : shape;
-      const key = JSON.stringify(json);
       let part = parts.get(kind);
       if (!part) {
         part = { features: [], symbols: new Map() };
         parts.set(kind, part);
       }
-      let entry = part.symbols.get(key);
-      if (!entry) {
-        entry = { id: `s${part.symbols.size}`, symbol: json };
-        part.symbols.set(key, entry);
+      let symbolId = "heatmap";
+      if (!(kind === "point" && style.pointRenderer === "heatmap")) {
+        symbol ??= resolver.resolve(feature, zoom);
+        const shape = extruded ? extrusion.symbol(feature, zoom) : symbolForKind(kind, symbol);
+        const json = kind === "point" ? pointMarkerSymbol(style, feature, symbol, shape) : shape;
+        const key = JSON.stringify(json);
+        let entry = part.symbols.get(key);
+        if (!entry) {
+          entry = { id: `s${part.symbols.size}`, symbol: json };
+          part.symbols.set(key, entry);
+        }
+        symbolId = entry.id;
       }
       part.features.push({
         type: "Feature",
         geometry,
         properties: {
           [ARCGIS_ID_FIELD]: id,
-          [ARCGIS_SYMBOL_FIELD]: entry.id,
+          [ARCGIS_SYMBOL_FIELD]: symbolId,
           [ARCGIS_LABEL_FIELD]: text,
+          ...(kind === "point" && style.pointRenderer === "heatmap"
+            ? { [ARCGIS_WEIGHT_FIELD]: heatmapWeight(feature, style) }
+            : {}),
           ...(extruded ? { [ARCGIS_HEIGHT_FIELD]: extrusion.height(feature, zoom) } : {}),
         },
       });
@@ -879,7 +943,7 @@ function compileGeoJson(
         const visualVariables: ArcgisVisualVariableJson[] | undefined = extruded
           ? [{ type: "size", field: ARCGIS_HEIGHT_FIELD, valueUnit: "meters" }]
           : undefined;
-        const renderer = (
+        let renderer = (
           entries.length === 1
             ? {
                 type: "simple",
@@ -893,15 +957,53 @@ function compileGeoJson(
                 ...(visualVariables && { visualVariables }),
               }
         ) as ArcgisRendererJson;
-        const markers = entries.some(({ symbol }) => isMarkerPlaceholder(symbol));
+        const heatmap = kind === "point" && style.pointRenderer === "heatmap";
+        if (heatmap) renderer = heatmapRenderer(style, scene);
+        const markers = !heatmap && entries.some(({ symbol }) => isMarkerPlaceholder(symbol));
         return {
           geometryType: kind,
           features: { type: "FeatureCollection", features },
           renderer,
-          ...(label ? { labelingInfo: labelingFor(kind, style, scales) } : {}),
+          ...(label && !(heatmap && scene)
+            ? { labelingInfo: labelingFor(kind, style, scales) }
+            : {}),
           ...(markers ? { markerStyle: style } : {}),
+          ...(kind === "polygon" && !scene && style.fillPattern !== "none"
+            ? { patternStyle: style }
+            : {}),
           ...(extruded
             ? { elevationInfo: { mode: "relative-to-ground" as const, offset: extrusion.base } }
+            : {}),
+          ...(elevated
+            ? { hasZ: true, elevationInfo: { mode: "absolute-height" as const, offset: 0 } }
+            : {}),
+          ...(kind === "point" && style.pointRenderer === "cluster" && !scene
+            ? {
+                featureReduction: {
+                  type: "cluster",
+                  clusterRadius: `${style.clusterRadius}px`,
+                  clusterMinSize: "32px",
+                  clusterMaxSize: "60px",
+                  // MapLibre clusters through the inclusive integer clusterMaxZoom;
+                  // the native scale cutoff is the start of the next zoom level.
+                  maxScale: zoomToScale(style.clusterMaxZoom + 1),
+                  labelingInfo: [
+                    {
+                      labelExpressionInfo: { expression: "Text($feature.cluster_count, '#,###')" },
+                      labelPlacement: "center-center",
+                      deconflictionStrategy: "none",
+                      symbol: {
+                        type: "text",
+                        color: "white",
+                        font: { size: "12px" },
+                        haloColor: "black",
+                        haloSize: "1px",
+                      },
+                    },
+                  ],
+                  popupEnabled: false,
+                },
+              }
             : {}),
         };
       }),
