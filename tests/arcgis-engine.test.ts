@@ -674,10 +674,10 @@ describe("ArcgisEngine layer sync", () => {
       name: "Archive",
       geojson: undefined,
       type: "pmtiles",
-      source: { url: "https://x/a.pmtiles" },
+      source: { url: "https://x/a.pmtiles", encoding: "mlt" },
     });
     engine.syncLayers([archive]);
-    assert.match(engine.getRenderStatus().errors.join(), /Archive: pmtiles archives/);
+    assert.match(engine.getRenderStatus().errors.join(), /Archive: ArcGIS requires MVT/);
     engine.syncLayers([{ ...archive, visible: false }]);
     assert.deepEqual(engine.getRenderStatus().errors, []);
   });
@@ -1220,5 +1220,44 @@ describe("ArcGIS custom terrain ownership", () => {
     pending.get("late")!.resolve(late);
     assert.equal(await loading, false);
     assert.equal(late.disposals, 1);
+  });
+});
+
+describe("ArcGIS archive interceptor ownership", () => {
+  const archive = () =>
+    geojsonLayer({
+      geojson: undefined,
+      type: "pmtiles",
+      source: {
+        url: "https://example.test/archive.pmtiles",
+        sourceLayers: ["buildings"],
+        type: "vector",
+      },
+    });
+  it("replaces interceptors on restyle and removes them with the layer", () => {
+    const { engine, sdk, created } = makeEngine();
+    const layer = archive();
+    engine.syncLayers([layer]);
+    assert.equal(sdk.config.request.interceptors.length, 1);
+    const old = sdk.config.request.interceptors[0];
+    const native = created.at(-1)!;
+    engine.syncLayers([{ ...layer, style: { ...layer.style, fillColor: "#ff0000" } }]);
+    assert.equal(sdk.config.request.interceptors.length, 1);
+    assert.notEqual(sdk.config.request.interceptors[0], old);
+    assert.equal(native.destroyed, true);
+    engine.syncLayers([]);
+    assert.equal(sdk.config.request.interceptors.length, 0);
+    engine.destroy();
+  });
+  it("cleans up the interceptor when adding a constructed layer fails", () => {
+    const { engine, sdk, map, created } = makeEngine();
+    map.add = () => {
+      throw new Error("SDK add failed");
+    };
+    engine.syncLayers([archive()]);
+    assert.equal(sdk.config.request.interceptors.length, 0);
+    assert.equal(created.at(-1)!.destroyed, true);
+    assert.ok(engine.getRenderStatus().errors.some((error) => error.includes("SDK add failed")));
+    engine.destroy();
   });
 });

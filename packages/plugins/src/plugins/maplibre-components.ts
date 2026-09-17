@@ -12,6 +12,8 @@ import {
 } from "@geolibre/core";
 import {
   createPMTilesArchiveLayers,
+  createArcgisPMTilesArchiveLayers,
+  readRemotePMTilesInfo,
   pmtilesIdsForSourceLayers,
   type PMTilesStoreLayerOptions,
 } from "@geolibre/map/pmtiles-layer";
@@ -1817,6 +1819,41 @@ export async function addPMTilesLayerFromUrl(
   url: string,
   options: { fit?: boolean } = {},
 ): Promise<boolean> {
+  let address: URL;
+  try {
+    address = new URL(url);
+    if (!["https:", "http:"].includes(address.protocol)) throw new Error("Unsupported protocol");
+  } catch {
+    throw new Error(
+      app.translate?.("addData.pmtiles.errorUrl", "Enter a valid HTTP(S) PMTiles URL") ??
+        "Enter a valid HTTP(S) PMTiles URL",
+    );
+  }
+  const normalizedUrl = address.href;
+  if (app.getMapRenderer?.() === "arcgis") {
+    const info = await readRemotePMTilesInfo(normalizedUrl);
+    if (info.encoding === "mlt")
+      throw new Error(
+        app.translate?.("addData.pmtiles.errorMlt", "ArcGIS requires MVT vector tiles, not MLT") ??
+          "ArcGIS requires MVT vector tiles, not MLT",
+      );
+    const encodedName = address.pathname.split("/").pop() || "PMTiles";
+    let name = encodedName;
+    try {
+      name = decodeURIComponent(encodedName);
+    } catch {
+      // A valid URL can still contain a malformed percent escape in its path.
+    }
+    const layers = createArcgisPMTilesArchiveLayers({
+      id: crypto.randomUUID(),
+      name,
+      url: normalizedUrl,
+      ...info,
+    });
+    addPMTilesArchive(layers, name);
+    if (options.fit !== false && info.bounds) app.fitBounds?.(info.bounds);
+    return true;
+  }
   const { PMTilesLayerControl: PMTilesLayerControlClass } = await getComponentsConstructors();
 
   pmtilesControl ??= createPMTilesControl(PMTilesLayerControlClass, app);
@@ -1869,9 +1906,9 @@ export async function addPMTilesLayerFromUrl(
   cameraEvents?.on("movestart", onMoveStart);
   cameraEvents?.on("moveend", onMoveEnd);
   const control = pmtilesControl;
-  const endAdd = beginProgrammaticPMTilesAdd(url);
+  const endAdd = beginProgrammaticPMTilesAdd(normalizedUrl);
   try {
-    await control.addLayer(url);
+    await control.addLayer(normalizedUrl);
   } finally {
     endAdd();
     // Preserve a host user's camera interaction that happened while the archive
