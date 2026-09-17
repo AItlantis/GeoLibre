@@ -170,7 +170,7 @@ export type ArcgisLayerPlan = ArcgisPlanBase &
       }
     | { kind: "external-deck" }
     | { kind: "geojson"; parts: ArcgisGeoJsonPart[] }
-    | { kind: "cog"; source: GeoLibreLayer; renderSignature: string }
+    | { kind: "cog" | "zarr"; source: GeoLibreLayer; renderSignature: string }
     | {
         kind: "web-tile";
         urlTemplate: string;
@@ -1168,6 +1168,35 @@ export function isArcgisSupportedLayer(layer: GeoLibreLayer, deckOverlay = true)
 
 const ARCGIS_SERVICE = /\/(FeatureServer|MapServer|ImageServer)(?:\/\d+)?\/?(?:\?|$)/i;
 
+const zarrSignatures = new WeakMap<GeoLibreLayer["source"], string>();
+const zarrManifestIds = new WeakMap<object, number>();
+let nextZarrManifestId = 0;
+
+/** Store sources and kerchunk manifests are immutable; compare manifests by identity. */
+function zarrRenderSignature(source: GeoLibreLayer["source"]): string {
+  const cached = zarrSignatures.get(source);
+  if (cached !== undefined) return cached;
+  const {
+    selector: _selector,
+    clim: _clim,
+    colormap: _colormap,
+    kerchunkRefs,
+    ...gridSource
+  } = source;
+  let refs = kerchunkRefs;
+  if (kerchunkRefs && typeof kerchunkRefs === "object") {
+    let id = zarrManifestIds.get(kerchunkRefs);
+    if (id === undefined) {
+      id = ++nextZarrManifestId;
+      zarrManifestIds.set(kerchunkRefs, id);
+    }
+    refs = ["manifest", id];
+  }
+  const signature = JSON.stringify({ ...gridSource, kerchunkRefs: refs });
+  zarrSignatures.set(source, signature);
+  return signature;
+}
+
 /**
  * Compile one store layer. Throws for a layer the SDK has no translation for,
  * naming why; the engine records that against the layer.
@@ -1192,6 +1221,17 @@ export function compileArcgisLayer(
     if (options.deckOverlay === false)
       throw new Error("deck.gl layers require a flat ArcGIS map or local scene");
     return { ...base, kind: "external-deck" };
+  }
+  if (layer.type === "zarr") {
+    if (!layer.source.url || !layer.source.variable)
+      throw new Error("Zarr requires a source and variable");
+    // Time slices refresh native tiles in place, retaining metadata and byte caches.
+    return {
+      ...base,
+      kind: "zarr",
+      source: layer,
+      renderSignature: zarrRenderSignature(layer.source),
+    };
   }
   if (layer.type === "cog") {
     if (!cogSourceUrl(layer)) throw new Error("The COG layer has no readable source");

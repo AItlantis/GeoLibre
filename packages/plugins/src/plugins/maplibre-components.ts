@@ -1,3 +1,4 @@
+import { readNativeZarrDimensions, registerZarrStore } from "@geolibre/map/zarr-source";
 import { adaptMapboxPMTilesControl } from "./mapbox-pmtiles-control";
 import {
   clearExternalNativePaintBridge,
@@ -804,6 +805,9 @@ let geoTiffRasterStoreUnsubscribe: (() => void) | null = null;
 let pmtilesStoreUnsubscribe: (() => void) | null = null;
 let stacSearchStoreUnsubscribe: (() => void) | null = null;
 let zarrStoreUnsubscribe: (() => void) | null = null;
+const arcgisZarrTemporalUnsubscribes = new Map<string, () => void>();
+const restoredArcgisZarrLayerIds = new Set<string>();
+let restoredArcgisZarrStoreUnsubscribe: (() => void) | null = null;
 let lidarStoreUnsubscribe: (() => void) | null = null;
 let splattingStoreUnsubscribe: (() => void) | null = null;
 
@@ -2358,6 +2362,21 @@ export async function addCloudNetcdfLayer(
   app: GeoLibreAppAPI,
   options: CloudNetcdfLayerOptions,
 ): Promise<void> {
+  if (app.getMapRenderer?.() === "arcgis") {
+    const refs =
+      options.refs ?? (await loadKerchunkReference(options.url, { headers: options.headers }));
+    await addNativeArcgisZarrLayer(
+      {
+        ...options,
+        store: new KerchunkReferenceStore(refs, {
+          headers: options.headers,
+          sourceUrl: options.url,
+        }),
+      },
+      refs,
+    );
+    return;
+  }
   const { ZarrLayerControl: ZarrLayerControlClass } = await getComponentsConstructors();
 
   zarrControl ??= createZarrControl(ZarrLayerControlClass);
@@ -2381,7 +2400,10 @@ export async function addCloudNetcdfLayer(
 
   const refs =
     options.refs ?? (await loadKerchunkReference(options.url, { headers: options.headers }));
-  const store = new KerchunkReferenceStore(refs, { headers: options.headers });
+  const store = new KerchunkReferenceStore(refs, {
+    headers: options.headers,
+    sourceUrl: options.url,
+  });
 
   // The control is a module-level singleton and may have been torn down (set to
   // null on plugin deactivation) during the await above.
@@ -2558,7 +2580,72 @@ export async function addZarrRasterLayer(
     throw new Error("A Zarr variable is required (pass options.variable).");
   }
 
+  if (app.getMapRenderer?.() === "arcgis")
+    return addNativeArcgisZarrLayer({ ...options, url, variable });
   return queueZarrAdd(() => addZarrLayerExclusively(app, options, url, variable));
+}
+
+async function addNativeArcgisZarrLayer(
+  options: ZarrRasterLayerOptions,
+  refs?: KerchunkRefs,
+): Promise<string> {
+  const id = crypto.randomUUID();
+  const layer = createZarrStoreLayer(id, {
+    id,
+    url: options.url,
+    variable: options.variable,
+    name: options.name,
+    selector: options.selector,
+    clim: options.clim ?? [0, 1],
+    colormap: resolveZarrColormap(options.colormap) ?? interpolateRampColors("viridis", 256),
+    opacity: options.opacity ?? 1,
+    crs: options.crs,
+    proj4: options.proj4,
+    bounds: options.bounds,
+  });
+  layer.source = {
+    ...layer.source,
+    // Local NetCDF refs inline the entire decoded raster. Keep those in the
+    // session store so saving a project cannot embed megabytes of base64 data.
+    ...(refs && !options.url.startsWith("local:") ? { kerchunkRefs: refs } : {}),
+    headers: options.headers,
+    spatialDimensions: options.spatialDimensions,
+  };
+  if (options.store) {
+    const dispose = registerZarrStore(id, options.store);
+    const unsubscribe = useAppStore.subscribe((state, previous) => {
+      if (state.layers === previous.layers) return;
+      if (!state.layers.some((layer) => layer.id === id)) {
+        dispose();
+        unsubscribe();
+      }
+    });
+  }
+  useAppStore.getState().addLayer(layer, options.beforeLayerId);
+  trackRestoredArcgisZarrLayer(id);
+  void registerZarrTemporalAdapter(id, options.url, {
+    refs,
+    headers: options.headers,
+    ...(options.readTimeAttributes ? { readAttributes: options.readTimeAttributes } : {}),
+  }).then((registered) => {
+    if (!registered) restoredArcgisZarrLayerIds.delete(id);
+  });
+  return id;
+}
+
+function trackRestoredArcgisZarrLayer(layerId: string): void {
+  restoredArcgisZarrLayerIds.add(layerId);
+  if (restoredArcgisZarrStoreUnsubscribe) return;
+  restoredArcgisZarrStoreUnsubscribe = useAppStore.subscribe((state, previous) => {
+    if (state.layers === previous.layers) return;
+    const currentIds = new Set(state.layers.map((layer) => layer.id));
+    for (const id of restoredArcgisZarrLayerIds) {
+      if (!currentIds.has(id)) restoredArcgisZarrLayerIds.delete(id);
+    }
+    if (restoredArcgisZarrLayerIds.size) return;
+    restoredArcgisZarrStoreUnsubscribe?.();
+    restoredArcgisZarrStoreUnsubscribe = null;
+  });
 }
 
 // One add at a time: see the queue comment on queueZarrAdd.
@@ -2702,9 +2789,12 @@ export async function setZarrLayerSelector(
   const instance = zarrControl?.getLayersMap().get(layerId) as
     | { setSelector?: (selector: Record<string, number | string>) => Promise<void> | void }
     | undefined;
-  if (!instance || typeof instance.setSelector !== "function") return false;
+  const native =
+    useAppStore.getState().primaryRenderer === "arcgis" &&
+    useAppStore.getState().layers.some((layer) => layer.id === layerId && layer.type === "zarr");
+  if (!native && (!instance || typeof instance.setSelector !== "function")) return false;
 
-  await instance.setSelector(selector);
+  await instance?.setSelector?.(selector);
 
   const store = useAppStore.getState();
   const layer = store.layers.find((item) => item.id === layerId);
@@ -2830,6 +2920,10 @@ const ZARR_DIMENSION_ATTEMPTS = 24;
 async function readZarrDimensionValues(
   layerId: string,
 ): Promise<Record<string, (number | string)[]> | null> {
+  if (useAppStore.getState().primaryRenderer === "arcgis") {
+    const layer = useAppStore.getState().layers.find((layer) => layer.id === layerId);
+    return layer ? readNativeZarrDimensions(layer) : null;
+  }
   for (let attempt = 0; attempt < ZARR_DIMENSION_ATTEMPTS; attempt += 1) {
     const instance = zarrControl?.getLayersMap().get(layerId) as
       | { dimensionValues?: Record<string, (number | string)[]> }
@@ -2894,15 +2988,15 @@ function registerZarrTemporalAdapter(
   layerId: string,
   url: string | undefined,
   context: ZarrTemporalContext = {},
-): void {
+): Promise<boolean> {
   const { headers, refs } = context;
   // A folder the panel opened is not something the caller could have passed
   // context for, so fall back to the reader filed under this layer's own url.
   const readAttributes =
     context.readAttributes ?? localZarrTimeAttributesReader(url ?? "") ?? undefined;
-  void (async () => {
+  return (async () => {
     const dimensionValues = await readZarrDimensionValues(layerId);
-    if (!dimensionValues) return;
+    if (!dimensionValues) return true;
     const dimension = pickTimeDimension(dimensionValues) ?? "time";
     // Either source of attributes replaces the HTTP metadata walk, which for
     // these layers would only produce a run of failed requests.
@@ -2915,19 +3009,58 @@ function registerZarrTemporalAdapter(
       ...(headers ? { headers } : {}),
       ...(attributes !== undefined ? { attributes } : {}),
     });
-    if (!axis) return;
+    if (!axis) return true;
     // The layer may have been removed while the axis was being resolved.
-    if (!zarrControl?.getLayersMap().has(layerId)) return;
+    if (!useAppStore.getState().layers.some((layer) => layer.id === layerId)) return true;
+    if (
+      useAppStore.getState().primaryRenderer !== "arcgis" &&
+      !zarrControl?.getLayersMap().has(layerId)
+    )
+      return true;
     registerTemporalLayer(layerId, {
       dimension: axis.dimension,
       getTimeValues: () => axis.values,
       setTime: async (date) => {
         const index = nearestTimeIndex(axis.values, date.getTime());
         if (index < 0) return;
-        await setZarrLayerSelector(layerId, { [axis.dimension]: index });
+        const current = useAppStore.getState().layers.find((layer) => layer.id === layerId);
+        await setZarrLayerSelector(layerId, {
+          ...((current?.source.selector as Record<string, number | string>) ?? {}),
+          [axis.dimension]: index,
+        });
       },
     });
-  })();
+    if (useAppStore.getState().primaryRenderer === "arcgis") {
+      // Native layers have no Zarr control to own their temporal cleanup.
+      arcgisZarrTemporalUnsubscribes.get(layerId)?.();
+      const unsubscribe = useAppStore.subscribe((state, previous) => {
+        if (state.layers === previous.layers) return;
+        if (state.layers.some((layer) => layer.id === layerId)) return;
+        unregisterTemporalLayer(layerId);
+        unsubscribe();
+        arcgisZarrTemporalUnsubscribes.delete(layerId);
+      });
+      arcgisZarrTemporalUnsubscribes.set(layerId, unsubscribe);
+    }
+    return true;
+  })().catch((error) => {
+    console.warn("[zarr] Could not register the time axis", error);
+    return false;
+  });
+}
+
+export function restoreArcgisZarrLayers(): void {
+  for (const layer of useAppStore.getState().layers) {
+    if (layer.type !== "zarr") continue;
+    if (restoredArcgisZarrLayerIds.has(layer.id)) continue;
+    trackRestoredArcgisZarrLayer(layer.id);
+    void registerZarrTemporalAdapter(layer.id, String(layer.source.url), {
+      headers: layer.source.headers as Record<string, string> | undefined,
+      refs: layer.source.kerchunkRefs as KerchunkRefs | undefined,
+    }).then((registered) => {
+      if (!registered) restoredArcgisZarrLayerIds.delete(layer.id);
+    });
+  }
 }
 
 // The control takes an explicit list of hex colors; the public option also

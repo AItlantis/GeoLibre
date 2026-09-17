@@ -1,3 +1,4 @@
+import { createArcgisZarrLayer } from "./arcgis-zarr";
 import { createArcgisArchiveLayer } from "./arcgis-tile-archives";
 import { createArcgisCogLayer, loadCogTiler } from "./arcgis-cog-imagery";
 import { cachingCogTiler, cogSourceUrl } from "./cog-imagery";
@@ -958,6 +959,11 @@ export class ArcgisEngine implements MapEngine {
           );
         else this.errors.delete(`filter:${layer.id}`);
         for (const native of entry.layers) {
+          if (plan.kind === "zarr") {
+            const zarr = native as import("./arcgis-zarr").ArcgisZarrLayer;
+            zarr.setSelector((plan.source.source.selector ?? {}) as Record<string, unknown>);
+            zarr.setStyle(plan.source.source);
+          }
           native.visible = plan.visible;
           native.opacity = plan.opacity;
           native.minScale = plan.minScale;
@@ -1006,6 +1012,11 @@ export class ArcgisEngine implements MapEngine {
         }
       : {};
     switch (plan.kind) {
+      case "zarr": {
+        const bridge = createArcgisZarrLayer(this.sdk, plan.source, common);
+        disposers.push(bridge.dispose);
+        return [bridge.layer];
+      }
       case "archive": {
         const bridge = createArcgisArchiveLayer(this.sdk, plan, common);
         disposers.push(bridge.dispose);
@@ -2116,7 +2127,7 @@ function stripSyntheticFields(attributes: Record<string, unknown>): Record<strin
  */
 function planSignature(plan: ArcgisLayerPlan, layer: GeoLibreLayer): string {
   const { visible: _v, opacity: _o, minScale: _mn, maxScale: _mx, ...rest } = plan;
-  if (rest.kind === "cog") {
+  if (rest.kind === "cog" || rest.kind === "zarr") {
     const { source: _source, ...signature } = rest;
     return JSON.stringify(signature);
   }
