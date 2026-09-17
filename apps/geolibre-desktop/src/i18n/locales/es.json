@@ -974,6 +974,9 @@
     "zarr": {
       "errorUrl": "Introduzca una URL HTTP o HTTPS válida de Zarr.",
       "errorColorLimits": "El límite máximo de color debe ser mayor que el mínimo."
+    },
+    "raster": {
+      "errorSource": "Introduzca una URL GeoTIFF o elija un archivo."
     }
   },
   "offline": {
@@ -7992,5 +7995,10 @@
     "catalogHuc12pp": "Puntos de vertido HUC12",
     "catalogNmwdiSt": "Estaciones hídricas de Nuevo México",
     "catalogFlowlines": "Líneas de flujo NHDPlus"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "Utilice una URL tileset.json de 3D Tiles en esta vista de ArcGIS. Las teselas Google Photorealistic e I3S requieren otro motor de renderizado."
+    }
   }
 }

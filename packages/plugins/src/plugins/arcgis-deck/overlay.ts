@@ -5,6 +5,7 @@ import { arcgisModuleUrl } from "@geolibre/map/arcgis-sdk";
 import { initializeResources, render, finalizeResources, type RenderResources } from "./commons.js";
 
 type ArcgisView = NonNullable<ReturnType<ArcgisEngine["getView"]>>;
+type DeckPickingInfo = Parameters<NonNullable<DeckProps["onHover"]>>[0];
 type NativeLayer = ArcgisView["map"]["layers"] extends { toArray(): (infer L)[] } ? L : never;
 type Subclass<T> = {
   createSubclass(definition: Record<string, unknown>): new (props: Record<string, unknown>) => T;
@@ -26,6 +27,10 @@ export class ArcgisDeckOverlay {
   private layerView: LayerView | null = null;
   private generation = 0;
   private disposed = false;
+  private events: { remove(): void }[] = [];
+  private hoverFrame: number | null = null;
+  private hoverInfo: DeckPickingInfo | null = null;
+  private pendingHover: (() => void) | null = null;
   private props: DeckProps;
   private sceneRenderer: SceneDeckRenderer | null = null;
 
@@ -42,14 +47,77 @@ export class ArcgisDeckOverlay {
   private mountPromise: Promise<void> | null = null;
   mount(): Promise<void> {
     return (this.mountPromise ??= this.attach().catch((error) => {
+      this.clearEvents();
       this.mountPromise = null;
       throw error;
     }));
   }
   private async attach(): Promise<void> {
     if (this.disposed || this.native) return;
+    if (this.view.type === "3d" && this.view.viewingMode !== "local") return;
+    // Deck uses an offscreen canvas, so ArcGIS owns pointer delivery.
+    for (const [eventType, callback] of [
+      ["click", "onClick"],
+      ["pointer-move", "onHover"],
+    ] as const) {
+      if (!this.view.on) continue;
+      this.events.push(
+        this.view.on(eventType, (event) => {
+          const pick = () => {
+            const info = this.getDeck()?.pickObject({ x: event.x, y: event.y });
+            if (!info) {
+              if (callback === "onClick") {
+                const emptyInfo: DeckPickingInfo = {
+                  color: null,
+                  picked: false,
+                  object: null,
+                  index: -1,
+                  layer: null,
+                  x: event.x,
+                  y: event.y,
+                  pixel: [event.x, event.y],
+                  pixelRatio:
+                    (
+                      this.resources ?? this.sceneRenderer?.resources
+                    )?.model.device.canvasContext?.cssToDeviceRatio() ?? 1,
+                };
+                this.props.onClick?.(emptyInfo, event as never);
+                return;
+              }
+              if (!this.hoverInfo) return;
+              this.clearHover(event);
+              return;
+            }
+            if (callback === "onHover") {
+              if (
+                this.hoverInfo &&
+                (this.hoverInfo.layer !== info.layer ||
+                  this.hoverInfo.object !== info.object ||
+                  this.hoverInfo.index !== info.index)
+              )
+                this.clearHover(event);
+              this.hoverInfo = info;
+            }
+            const handled = info.layer?.props[callback]?.(info, event as never);
+            if (!handled) this.props[callback]?.(info, event as never);
+          };
+          if (eventType === "click") {
+            pick();
+          } else {
+            this.pendingHover = pick;
+            if (this.hoverFrame === null) {
+              this.hoverFrame = requestAnimationFrame(() => {
+                this.hoverFrame = null;
+                const latest = this.pendingHover;
+                this.pendingHover = null;
+                if (!this.disposed) latest?.();
+              });
+            }
+          }
+        }),
+      );
+    }
     if (this.view.type === "3d") {
-      if (this.view.viewingMode !== "local") return;
       const [module, { default: factory }] = await Promise.all([
         this.loadModule("views/3d/webgl/RenderNode"),
         import("./deck-renderer.js"),
@@ -136,9 +204,31 @@ export class ArcgisDeckOverlay {
     this.layerView?.requestRender();
   }
 
+  getDeck() {
+    return this.resources?.deck ?? this.sceneRenderer?.resources?.deck ?? null;
+  }
+
+  private clearHover(event: unknown): void {
+    if (!this.hoverInfo) return;
+    const cleared = { ...this.hoverInfo, picked: false, object: null, index: -1 };
+    this.hoverInfo = null;
+    const handled = cleared.layer?.props.onHover?.(cleared, event as never);
+    if (!handled) this.props.onHover?.(cleared, event as never);
+  }
+
+  private clearEvents(): void {
+    for (const event of this.events) event.remove();
+    this.events = [];
+    if (this.hoverFrame !== null) cancelAnimationFrame(this.hoverFrame);
+    this.hoverFrame = null;
+    this.pendingHover = null;
+    this.hoverInfo = null;
+  }
+
   finalize(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearEvents();
     this.generation++;
     this.sceneRenderer?.dispose();
     this.sceneRenderer = null;

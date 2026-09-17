@@ -1016,6 +1016,9 @@
     "zarr": {
       "errorUrl": "Введите корректный URL Zarr по протоколу HTTP или HTTPS.",
       "errorColorLimits": "Верхний предел цвета должен быть больше нижнего."
+    },
+    "raster": {
+      "errorSource": "Введите URL GeoTIFF или выберите файл."
     }
   },
   "offline": {
@@ -8166,5 +8169,10 @@
     "catalogHuc12pp": "Замыкающие створы HUC12",
     "catalogNmwdiSt": "Водные пункты Нью-Мексико",
     "catalogFlowlines": "Водотоки NHDPlus"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "В этом виде ArcGIS используйте URL tileset.json для 3D Tiles. Для тайлов Google Photorealistic и I3S нужен другой движок отрисовки."
+    }
   }
 }

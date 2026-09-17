@@ -1058,6 +1058,9 @@
     "zarr": {
       "errorUrl": "أدخل عنوان URL صالحًا لـ Zarr عبر HTTP أو HTTPS.",
       "errorColorLimits": "يجب أن يكون الحد الأقصى للألوان أكبر من الحد الأدنى."
+    },
+    "raster": {
+      "errorSource": "أدخل رابط GeoTIFF أو اختر ملفًا."
     }
   },
   "offline": {
@@ -8339,5 +8342,10 @@
     "catalogHuc12pp": "نقاط المصب HUC12",
     "catalogNmwdiSt": "مواقع المياه في نيومكسيكو",
     "catalogFlowlines": "خطوط مجاري NHDPlus"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "استخدم رابط tileset.json لبيانات 3D Tiles في عرض ArcGIS هذا. تتطلب بلاطات Google Photorealistic وI3S محرك عرض آخر."
+    }
   }
 }

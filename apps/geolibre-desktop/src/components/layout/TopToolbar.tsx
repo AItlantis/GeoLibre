@@ -1404,7 +1404,10 @@ export function TopToolbar({
   // command palette so each panel opens identically from both.
   const addLayer: AddLayerHandlers = {
     vector: () => openVectorLayerPanel(appApi),
-    raster: () => openRasterLayerPanel(appApi),
+    raster: () =>
+      appApi.getMapRenderer?.() === "arcgis"
+        ? openAddDataKind("raster")
+        : openRasterLayerPanel(appApi),
     stac: () => {
       if (isActive(STAC_PLUGIN_ID)) openRightPanel(STAC_PLUGIN_ID);
       else toggle(STAC_PLUGIN_ID, appApi);
@@ -2112,13 +2115,25 @@ export function TopToolbar({
           commands.filter(
             (command) =>
               !command.id.startsWith("add.") ||
-              (addDataReady && supportsAddDataRenderer(command.id.slice(4), primaryRenderer)),
+              (addDataReady &&
+                supportsAddDataRenderer(
+                  command.id.slice(4),
+                  primaryRenderer,
+                  capabilities.deckOverlay,
+                )),
           ),
           deploymentCapabilities,
         ),
         appPrivileges,
       ),
-    [commands, deploymentCapabilities, appPrivileges, primaryRenderer, addDataReady],
+    [
+      commands,
+      deploymentCapabilities,
+      appPrivileges,
+      primaryRenderer,
+      addDataReady,
+      capabilities.deckOverlay,
+    ],
   );
   const shortcutCommands = useMemo(
     () =>

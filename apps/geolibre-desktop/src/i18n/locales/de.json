@@ -974,6 +974,9 @@
     "zarr": {
       "errorUrl": "Geben Sie eine gültige HTTP- oder HTTPS-URL für Zarr ein.",
       "errorColorLimits": "Der obere Farbgrenzwert muss größer als der untere sein."
+    },
+    "raster": {
+      "errorSource": "Geben Sie eine GeoTIFF-URL ein oder wählen Sie eine Datei."
     }
   },
   "offline": {
@@ -7992,5 +7995,10 @@
     "catalogHuc12pp": "HUC12-Abflusspunkte",
     "catalogNmwdiSt": "Wassermessstellen in New Mexico",
     "catalogFlowlines": "NHDPlus-Gewässerlinien"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "Verwenden Sie in dieser ArcGIS-Ansicht eine 3D-Tiles-URL für tileset.json. Google Photorealistic- und I3S-Kacheln benötigen eine andere Render-Engine."
+    }
   }
 }

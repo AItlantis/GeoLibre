@@ -974,6 +974,9 @@
     "zarr": {
       "errorUrl": "Saisissez une URL HTTP ou HTTPS valide de Zarr.",
       "errorColorLimits": "La limite maximale de couleur doit être supérieure à la limite minimale."
+    },
+    "raster": {
+      "errorSource": "Saisissez une URL GeoTIFF ou choisissez un fichier."
     }
   },
   "offline": {
@@ -7992,5 +7995,10 @@
     "catalogHuc12pp": "Exutoires HUC12",
     "catalogNmwdiSt": "Stations hydrologiques du Nouveau-Mexique",
     "catalogFlowlines": "Tronçons hydrographiques NHDPlus"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "Utilisez une URL tileset.json de 3D Tiles dans cette vue ArcGIS. Les tuiles Google Photorealistic et I3S nécessitent un autre moteur de rendu."
+    }
   }
 }

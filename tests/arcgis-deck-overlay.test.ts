@@ -99,6 +99,97 @@ it("retries a failed CDN mount on the same view", async () => {
   overlay.finalize();
 });
 
+it("coalesces hover picks per frame and cancels queued work on disposal", async () => {
+  const f = fixture();
+  const handlers = new Map<string, (event: { x: number; y: number }) => void>();
+  Object.assign(f.view, {
+    on: (type: string, handler: (event: { x: number; y: number }) => void) => {
+      handlers.set(type, handler);
+      return { remove: () => handlers.delete(type) };
+    },
+  });
+  const oldRequest = globalThis.requestAnimationFrame;
+  const oldCancel = globalThis.cancelAnimationFrame;
+  const frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 0;
+  globalThis.requestAnimationFrame = (callback) => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  };
+  globalThis.cancelAnimationFrame = (id) => {
+    frames.delete(id);
+  };
+  const hoverStates: boolean[] = [];
+  const layer = {
+    props: { onHover: (info: { picked: boolean }) => hoverStates.push(info.picked) },
+  };
+  const pickedObjects = [{ id: 1 }, { id: 2 }];
+  const clickStates: Array<{
+    color: Uint8Array | null;
+    picked: boolean;
+    pixel?: [number, number];
+    pixelRatio: number;
+  }> = [];
+  const overlay = new ArcgisDeckOverlay(
+    f.view,
+    { onClick: (info) => clickStates.push(info) },
+    async () => f.module,
+  );
+  const picks: { x: number; y: number }[] = [];
+  overlay.getDeck = () =>
+    ({
+      pickObject: (point: { x: number; y: number }) => {
+        picks.push(point);
+        if (point.x === 99) return { picked: true, object: pickedObjects[0], index: 0, layer };
+        if (point.x === 100) return { picked: true, object: pickedObjects[1], index: 1, layer };
+        return null;
+      },
+    }) as unknown as ReturnType<typeof overlay.getDeck>;
+  try {
+    await overlay.mount();
+    for (let x = 0; x < 100; x++) handlers.get("pointer-move")!({ x, y: 2 });
+    assert.equal(picks.length, 0);
+    assert.equal(frames.size, 1);
+    handlers.get("click")!({ x: 7, y: 8 });
+    assert.deepEqual(picks, [{ x: 7, y: 8 }]);
+    assert.deepEqual(clickStates, [
+      {
+        color: null,
+        picked: false,
+        object: null,
+        index: -1,
+        layer: null,
+        x: 7,
+        y: 8,
+        pixel: [7, 8],
+        pixelRatio: 1,
+      },
+    ]);
+    const frame = [...frames.values()][0];
+    frames.clear();
+    frame(0);
+    assert.deepEqual(picks[1], { x: 99, y: 2 });
+    assert.deepEqual(hoverStates, [true]);
+    handlers.get("pointer-move")!({ x: 100, y: 2 });
+    const leaveFrame = [...frames.values()][0];
+    frames.clear();
+    leaveFrame(0);
+    assert.deepEqual(hoverStates, [true, false, true]);
+    handlers.get("pointer-move")!({ x: 101, y: 2 });
+    const clearFrame = [...frames.values()][0];
+    frames.clear();
+    clearFrame(0);
+    assert.deepEqual(hoverStates, [true, false, true, false]);
+    handlers.get("pointer-move")!({ x: 102, y: 2 });
+    overlay.finalize();
+    assert.equal(frames.size, 0);
+    assert.equal(handlers.size, 0);
+  } finally {
+    overlay.finalize();
+    globalThis.requestAnimationFrame = oldRequest;
+    globalThis.cancelAnimationFrame = oldCancel;
+  }
+});
 it("measures scene camera distance relative to the focal elevation", async () => {
   const { getCameraDistance } =
     await import("../packages/plugins/src/plugins/arcgis-deck/deck-renderer.js");

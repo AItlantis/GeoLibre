@@ -147,6 +147,7 @@ export function ArcgisCanvas({
             });
         engine = new ArcgisEngine(sdk, map, mapView, {
           deckOverlay: !viewId,
+          domControls: !viewId,
           hasApiKey: Boolean(apiKey?.trim()),
           onTerrainSourceChange: (source, band) => {
             if (!cancelled) {

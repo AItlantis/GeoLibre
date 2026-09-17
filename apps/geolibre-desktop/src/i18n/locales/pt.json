@@ -974,6 +974,9 @@
     "zarr": {
       "errorUrl": "Digite uma URL HTTP ou HTTPS válida de Zarr.",
       "errorColorLimits": "O limite máximo de cor deve ser maior que o mínimo."
+    },
+    "raster": {
+      "errorSource": "Insira uma URL GeoTIFF ou escolha um arquivo."
     }
   },
   "offline": {
@@ -7992,5 +7995,10 @@
     "catalogHuc12pp": "Pontos de escoamento HUC12",
     "catalogNmwdiSt": "Estações hídricas do Novo México",
     "catalogFlowlines": "Linhas de fluxo NHDPlus"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "Use uma URL tileset.json de 3D Tiles nesta visualização do ArcGIS. Os blocos Google Photorealistic e I3S exigem outro renderizador."
+    }
   }
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
+import type { Map as MapLibreMap } from "maplibre-gl";
 import {
   BLANK_BASEMAP,
   DEFAULT_LAYER_STYLE,
@@ -593,9 +594,9 @@ describe("ArcgisEngine controls", () => {
     assert.equal(engine.setBuiltInControlPosition("scale", "bottom-right"), true);
     assert.equal(engine.getBuiltInControlPosition("scale"), "bottom-right");
     assert.equal(uiAdds.at(-1)?.position, "bottom-right");
-    // Plugin IControls have no host here.
+    // Missing controls are rejected before consulting the plugin control host.
     assert.equal(engine.addControl(), false);
-    assert.equal(engine.capabilities.domControls, false);
+    assert.equal(engine.capabilities.domControls, true);
   });
   it("forwards the scale unit and compass label to the widgets", () => {
     const { engine, widgets } = makeEngine();
@@ -835,15 +836,23 @@ describe("ArcgisEngine picking and highlight", () => {
     assert.deepEqual(feature.properties, { OBJECTID: 7, NAME: "Parcel" });
     assert.equal(feature.geometry?.type, "Polygon");
   });
-  it("returns nothing from a hit test that outlives the engine", async () => {
+  it("keeps synchronous control results when a native hit test outlives the engine", async () => {
+    const { setArcgisControlPicker } = await import("../packages/map/src/arcgis-control-adapters");
     const { engine, setHitResults } = makeEngine();
+    const external = {
+      layerId: "query",
+      featureId: "12",
+      properties: { NAME: "station" },
+      geometry: null,
+    };
+    setArcgisControlPicker(engine.getView()!, () => [external]);
     engine.syncLayers([SQUARE]);
     setHitResults([
       { type: "graphic", graphic: { attributes: { [ARCGIS_ID_FIELD]: "sq" }, layer: null } },
     ]);
     const pending = engine.identifyFeaturesAt({ x: 0.5, y: 0.5 });
     engine.destroy();
-    assert.deepEqual(await pending, []);
+    assert.deepEqual(await pending, [external]);
   });
   it("draws the selection as a graphics layer on top and clears it", () => {
     const { engine, layers } = makeEngine();
@@ -1120,6 +1129,24 @@ describe("ArcgisEngine native style plans", () => {
   });
 });
 
+it("identifies adapted controls when no native SDK layer is present and clears them on teardown", async () => {
+  const { setArcgisControlPicker } = await import("../packages/map/src/arcgis-control-adapters");
+  const { engine } = makeEngine();
+  const feature = {
+    layerId: "query",
+    featureId: "12",
+    properties: { NAME: "station" },
+    geometry: null,
+  };
+  setArcgisControlPicker(engine.getView()!, (_point, layerId) =>
+    !layerId || layerId === "query" ? [feature] : [],
+  );
+  assert.deepEqual(await engine.identifyFeaturesAt({ x: 1, y: 2 }, "query"), [feature]);
+  assert.deepEqual(await engine.identifyFeaturesAt({ x: 1, y: 2 }, "other"), []);
+  engine.destroy();
+  assert.deepEqual(await engine.identifyFeaturesAt({ x: 1, y: 2 }, "query"), []);
+});
+
 it("commits native visibility before an unrelated store sync can overwrite the toggle", () => {
   let layer = SQUARE;
   const changes: boolean[] = [];
@@ -1294,4 +1321,82 @@ describe("ArcGIS archive interceptor ownership", () => {
     assert.ok(engine.getRenderStatus().errors.some((error) => error.includes("SDK add failed")));
     engine.destroy();
   });
+});
+
+it("hosts DOM controls with instant jumps, navigation events and complete cleanup", () => {
+  const { document, HTMLElement } = parseHTML("<html><body></body></html>").window;
+  const previous = { document: globalThis.document, HTMLElement: globalThis.HTMLElement };
+  Object.assign(globalThis, { document, HTMLElement });
+  const { engine, rawView, goTo, uiAdds, fireWatchers } = makeEngine();
+  rawView.container = document.body;
+  const builtInCount = uiAdds.length;
+  let facade!: MapLibreMap;
+  let removed = 0;
+  const control = {
+    onAdd(map: MapLibreMap) {
+      facade = map;
+      return document.createElement("div");
+    },
+    onRemove() {
+      removed++;
+    },
+  };
+  try {
+    assert.equal(engine.addControl(control, "bottom-right"), true);
+    assert.equal(engine.addControl(control, "bottom-right"), true);
+    assert.equal(uiAdds.length, builtInCount + 1);
+    assert.equal(uiAdds.at(-1)!.position, "bottom-right");
+    assert.ok(
+      (uiAdds.at(-1)!.component as HTMLElement).classList.contains("maplibregl-ctrl-bottom-right"),
+    );
+    assert.equal(facade.hasControl(control), true);
+    facade.jumpTo({ center: { lng: 3, lat: 4 }, zoom: 9 });
+    assert.deepEqual(goTo.at(-1), {
+      target: { center: [3, 4], zoom: 9, rotation: 0 },
+      options: { animate: false },
+    });
+    facade.easeTo({ zoom: 10 });
+    assert.equal((goTo.at(-1) as { options: { duration: number } }).options.duration, 500);
+    const events: string[] = [];
+    for (const event of ["movestart", "moveend", "idle", "remove"])
+      facade.on(event, () => events.push(event));
+    rawView.stationary = false;
+    fireWatchers();
+    rawView.stationary = true;
+    fireWatchers();
+    assert.deepEqual(events, ["movestart", "moveend", "idle"]);
+    engine.removeControl(control);
+    assert.equal(facade.hasControl(control), false);
+    assert.equal(removed, 1);
+    assert.equal(uiAdds.length, builtInCount);
+    let failedCleanup = 0;
+    const broken = {
+      onAdd(): HTMLElement {
+        throw new Error("Control initialization failed");
+      },
+      onRemove() {
+        failedCleanup++;
+      },
+    };
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      assert.equal(engine.addControl(broken), false);
+      assert.equal(failedCleanup, 1);
+      assert.equal(facade.hasControl(broken), false);
+      assert.equal(uiAdds.length, builtInCount);
+    } finally {
+      console.warn = warn;
+    }
+    engine.addControl(control);
+    engine.destroy();
+    assert.equal(removed, 2);
+    assert.equal(uiAdds.length, builtInCount);
+    assert.deepEqual(events, ["movestart", "moveend", "idle", "remove"]);
+    fireWatchers();
+    assert.equal(events.length, 4, "destroy removes the SDK event subscriptions");
+  } finally {
+    engine.destroy();
+    Object.assign(globalThis, previous);
+  }
 });

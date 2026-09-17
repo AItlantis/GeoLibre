@@ -101,9 +101,9 @@ describe("ArcGIS project and plugin boundaries", () => {
     assert.equal(supportsAddDataRenderer("pmtiles", "arcgis"), true);
     assert.equal(supportsAddDataRenderer("deckgl-viz", "arcgis"), true);
     assert.equal(supportsAddDataRenderer("gltf-model", "arcgis"), true);
-    // The Vector and Raster panels are MapLibre controls with nowhere to mount.
-    assert.equal(supportsAddDataRenderer("vector", "arcgis"), false);
-    assert.equal(supportsAddDataRenderer("raster", "arcgis"), false);
+    // Vector uses the store bridge; raster uses the host importer.
+    assert.equal(supportsAddDataRenderer("vector", "arcgis"), true);
+    assert.equal(supportsAddDataRenderer("raster", "arcgis"), true);
     assert.equal(supportsAddDataRenderer("xyz", "arcgis"), true);
     assert.equal(supportsAddDataRenderer("flatgeobuf", "arcgis"), true);
     assert.equal(supportsAddDataRenderer("arcgis", "arcgis"), true);
@@ -317,4 +317,13 @@ describe("ArcGIS view swap", () => {
       await whenDrawn(reactive() as never, stuck as never, 20);
     });
   });
+});
+
+it("keeps the Add Data palette and menu off deck-only sources in ArcGIS global views", () => {
+  for (const id of ["deckgl-viz", "gltf-model", "lidar", "duckdb", "3d-tiles"]) {
+    assert.equal(supportsAddDataRenderer(id, "arcgis", false), false);
+    assert.equal(supportsAddDataRenderer(id, "arcgis", true), true);
+  }
+  assert.equal(supportsAddDataRenderer("vector", "arcgis", false), true);
+  assert.equal(supportsAddDataRenderer("zarr", "arcgis", false), true);
 });

@@ -974,6 +974,9 @@
     "zarr": {
       "errorUrl": "Geçerli bir HTTP veya HTTPS Zarr URL’si girin.",
       "errorColorLimits": "En yüksek renk sınırı en düşük sınırdan büyük olmalıdır."
+    },
+    "raster": {
+      "errorSource": "Bir GeoTIFF URL’si girin veya dosya seçin."
     }
   },
   "offline": {
@@ -7992,5 +7995,10 @@
     "catalogHuc12pp": "HUC12 çıkış noktaları",
     "catalogNmwdiSt": "New Mexico su istasyonları",
     "catalogFlowlines": "NHDPlus akış hatları"
+  },
+  "plugin": {
+    "3d-tiles": {
+      "arcgisSourceUnsupported": "Bu ArcGIS görünümünde bir 3D Tiles tileset.json URL’si kullanın. Google Photorealistic ve I3S karoları başka bir işleme motoru gerektirir."
+    }
   }
 }
