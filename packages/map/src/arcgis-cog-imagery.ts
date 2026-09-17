@@ -1,20 +1,10 @@
 import type { GeoLibreLayer } from "@geolibre/core";
 import { cogRenderOptions, cogSourceUrl, rasterState, type CogTilerModule } from "./cog-imagery";
-import type { ArcgisLayer, ArcgisSdk } from "./arcgis-sdk";
+import type { ArcgisRasterLayer, ArcgisSdk } from "./arcgis-sdk";
 import type { CogSource } from "cog-tiler-wasm";
 
 // A style rebuild reuses the source; weak keys release statistics when its reader is forgotten.
 const sourceStatistics = new WeakMap<CogSource, ReturnType<CogSource["statistics"]>>();
-
-export interface ArcgisRasterLayer extends ArcgisLayer {
-  addResolvingPromise(promise: Promise<unknown>): void;
-  fetchTile(
-    level: number,
-    row: number,
-    column: number,
-    options?: { signal?: AbortSignal },
-  ): Promise<HTMLCanvasElement>;
-}
 
 /** Open the existing COG tiler lazily, without importing the ArcGIS npm package. */
 export async function loadCogTiler(): Promise<CogTilerModule> {
