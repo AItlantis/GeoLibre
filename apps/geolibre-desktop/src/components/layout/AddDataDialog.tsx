@@ -28,6 +28,7 @@ import { PolylineSource } from "./add-data/sources/PolylineSource";
 import { PostgresSource } from "./add-data/sources/PostgresSource";
 import { VideoSource } from "./add-data/sources/VideoSource";
 import { WfsSource } from "./add-data/sources/WfsSource";
+import { WcsSource } from "./add-data/sources/WcsSource";
 import { WmsSource } from "./add-data/sources/WmsSource";
 import { CswSource } from "./add-data/sources/CswSource";
 import { WmtsSource } from "./add-data/sources/WmtsSource";
@@ -93,6 +94,8 @@ function renderSource(
       return <CzmlSource initialUrl={initialUrl} />;
     case "kml":
       return <KmlSource initialUrl={initialUrl} />;
+    case "wcs":
+      return <WcsSource initialUrl={initialUrl} />;
     case "wms":
       return <WmsSource initialUrl={initialUrl} initialLayers={initialLayer} />;
     case "csw":

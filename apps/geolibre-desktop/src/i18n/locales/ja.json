@@ -357,6 +357,10 @@
       "kml": {
         "label": "KML / KMZ",
         "description": "元のスタイル、オーバーレイ、ネットワークリンクを保持して KML または KMZ を地球儀に読み込みます。"
+      },
+      "wcs": {
+        "description": "WCS 1.0.0サービスから数値GeoTIFFのサブセットを読み込みます。",
+        "label": "WCSレイヤー"
       }
     },
     "shared": {
@@ -956,6 +960,27 @@
     },
     "raster": {
       "errorSource": "GeoTIFF の URL を入力するか、ファイルを選択してください。"
+    },
+    "wcs": {
+      "coverage": "カバレッジ",
+      "retrieve": "カバレッジを取得",
+      "select": "カバレッジを選択",
+      "extent": "カバレッジの範囲を使用",
+      "width": "幅（ピクセル）",
+      "height": "高さ（ピクセル）",
+      "hint": "指定したピクセル数でEPSG:4326のGeoTIFFをダウンロードします。値はリサンプリングされる場合があります。ダウンロードしたデータを保持するにはラスターを保存してください。",
+      "errors": {
+        "xml": "サービスが無効なXMLを返しました。",
+        "version": "このデータソースにはWCS 1.0.0が必要です。サービスが未対応の応答を返しました。",
+        "empty": "一致するカバレッジはありません。",
+        "format": "カバレッジはGeoTIFF出力を提供していません。",
+        "crs": "カバレッジはリクエストと出力の両方でEPSG:4326をサポートする必要があります。",
+        "size": "1〜4096ピクセルの寸法を選択してください。ダウンロードは128 MBまでです。",
+        "metadata": "サービスが GeoLibre で読み込める量を超えるメタデータを返しました。メタデータの応答は 32 MB までです。",
+        "response": "サービスが有効なGeoTIFFを返しませんでした。",
+        "bounds": "有効な範囲を入力してください: 西/東は−180〜180、南/北は−90〜90で、西<東かつ南<北とします。",
+        "url": "WCSサービスのURLを入力してください。"
+      }
     }
   },
   "offline": {
@@ -2525,7 +2550,8 @@
       "czml": "CZML動的3Dシーン",
       "gltfModel": "3Dモデル (glTF)",
       "postgres": "PostgreSQLレイヤー",
-      "iceberg": "Apache Iceberg レイヤー"
+      "iceberg": "Apache Iceberg レイヤー",
+      "wcs": "WCSレイヤー"
     },
     "conversion": {
       "vectorToVector": "ベクターからベクターへ",

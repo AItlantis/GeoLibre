@@ -359,6 +359,10 @@
       "kml": {
         "label": "KML / KMZ",
         "description": "Carga KML o KMZ con estilos nativos, superposiciones y enlaces de red en el globo."
+      },
+      "wcs": {
+        "description": "Cargar un subconjunto GeoTIFF numérico de un servicio WCS 1.0.0.",
+        "label": "Capa WCS"
       }
     },
     "shared": {
@@ -977,6 +981,27 @@
     },
     "raster": {
       "errorSource": "Introduzca una URL GeoTIFF o elija un archivo."
+    },
+    "wcs": {
+      "coverage": "Cobertura",
+      "retrieve": "Obtener coberturas",
+      "select": "Seleccionar una cobertura",
+      "extent": "Usar extensión de la cobertura",
+      "width": "Ancho (píxeles)",
+      "height": "Alto (píxeles)",
+      "hint": "Descarga un GeoTIFF en EPSG:4326 con las dimensiones seleccionadas. Los valores pueden remuestrearse. Guarde el ráster para conservar los datos descargados.",
+      "errors": {
+        "xml": "El servicio devolvió XML no válido.",
+        "version": "Esta fuente requiere WCS 1.0.0. El servicio devolvió una respuesta no compatible.",
+        "empty": "No hay coberturas coincidentes disponibles.",
+        "format": "La cobertura no anuncia salida GeoTIFF.",
+        "crs": "La cobertura debe admitir EPSG:4326 para solicitudes y salida.",
+        "size": "Elija dimensiones de 1 a 4096 píxeles. Las descargas se limitan a 128 MB.",
+        "metadata": "El servicio devolvió más metadatos de los que GeoLibre puede cargar. Las respuestas de metadatos se limitan a 32 MB.",
+        "response": "El servicio no devolvió un GeoTIFF válido.",
+        "bounds": "Introduzca un cuadro válido: oeste/este entre -180 y 180, sur/norte entre -90 y 90, con oeste < este y sur < norte.",
+        "url": "Introduzca una URL de servicio WCS."
+      }
     }
   },
   "offline": {
@@ -2573,7 +2598,8 @@
       "czml": "Escena 3D dinámica CZML",
       "gltfModel": "Modelo 3D (glTF)",
       "postgres": "Capa de PostgreSQL",
-      "iceberg": "Capa Apache Iceberg"
+      "iceberg": "Capa Apache Iceberg",
+      "wcs": "Capa WCS"
     },
     "conversion": {
       "vectorToVector": "Vectorial a vectorial",
