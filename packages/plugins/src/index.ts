@@ -303,8 +303,10 @@ export { colormapColors, normalizeRampColor, warmColormapColors } from "./plugin
 export { setTerrainMeasureBodyNames, setTerrainMeasureLabels } from "./plugins/terrain-measure";
 export {
   addVectorLayerFromUrl,
+  addVectorFileToMap,
   closeVectorLayerPanel,
   getVectorLayerPropertyValues,
+  getVectorLayerGeoJSON,
   materializeEmbeddableVectorLayers,
   openVectorLayerPanel,
   reloadVectorControlLayer,
