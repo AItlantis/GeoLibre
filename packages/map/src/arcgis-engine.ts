@@ -489,7 +489,7 @@ export class ArcgisEngine implements MapEngine {
       },
       unproject: (p) => {
         const point = this.view?.toMap({ x: p[0], y: p[1] });
-        return point ? { lng: point.longitude, lat: point.latitude } : { lng: 0, lat: 0 };
+        return point ? { lng: point.longitude, lat: point.latitude } : null;
       },
       redraw: () => {},
     };

@@ -475,6 +475,11 @@ describe("ArcgisEngine camera conventions", () => {
     engine.applyView({ center: [1, 2], zoom: 7, bearing: 45, pitch: 0 });
     assert.equal(goTo.length, 1);
   });
+  it("returns no coordinate for a screen point that has no map location", () => {
+    const { engine, rawView } = makeSceneEngine();
+    rawView.toMap = () => null;
+    assert.equal(engine.getRenderSurface()?.unproject([10, 20]), null);
+  });
   it("clamps saved views against the project preferences before the jump", () => {
     const { engine, goTo } = makeEngine();
     engine.applyMapPreferences({
@@ -1350,6 +1355,9 @@ it("hosts DOM controls with instant jumps, navigation events and complete cleanu
       (uiAdds.at(-1)!.component as HTMLElement).classList.contains("maplibregl-ctrl-bottom-right"),
     );
     assert.equal(facade.hasControl(control), true);
+    assert.deepEqual(facade.unproject([3, 4]).toArray(), [3, 4]);
+    rawView.toMap = () => null;
+    assert.deepEqual(facade.unproject([3, 4]).toArray(), engine.readView().center);
     facade.jumpTo({ center: { lng: 3, lat: 4 }, zoom: 9 });
     assert.deepEqual(goTo.at(-1), {
       target: { center: [3, 4], zoom: 9, rotation: 0 },
