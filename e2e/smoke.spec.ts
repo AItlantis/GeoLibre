@@ -56,5 +56,38 @@ test("Identify owns the MapLibre cursor across the whole interactive surface", a
   await expect(canvasContainer).toHaveCSS("cursor", "grab");
 });
 
+test("keeps every toolbar menu on one scrollable row on small screens", async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 720 });
+  await waitForMap(page);
+
+  // The menu bar stays a single row and scrolls horizontally instead of
+  // wrapping onto a second row.
+  const header = page.locator("header").first();
+  const box = await header.boundingBox();
+  expect(box?.height).toBeLessThan(56);
+  expect(await header.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+
+  for (const menu of [
+    "Project",
+    "Edit",
+    "View",
+    "Add Data",
+    "Processing",
+    "Controls",
+    "Plugins",
+    "Help",
+  ]) {
+    const trigger = page.getByRole("button", { name: menu, exact: true });
+    await expect(trigger).toBeVisible();
+    await trigger.scrollIntoViewIfNeeded();
+    await expect(trigger).toBeInViewport();
+  }
+
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  const renderingEngine = page.getByRole("menuitem", { name: "Rendering engine" });
+  await expect(renderingEngine).toBeVisible();
+  await expect(renderingEngine).toBeInViewport();
+});
+
 // The accessibility gate now lives in its own multi-screen suite (a11y.spec.ts,
 // added with the #272 accessibility pass).
