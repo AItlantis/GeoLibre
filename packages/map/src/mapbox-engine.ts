@@ -916,6 +916,22 @@ export class MapboxEngine implements MapEngine {
       ];
     });
   }
+  /** Resolve the top rendered feature at a screen point to GeoLibre's stable id. */
+  featureIdAtPoint(layerId: string, point: { x: number; y: number }): string | null {
+    const map = this.map;
+    if (!map?.isStyleLoaded()) return null;
+    const layer = this.layers.find((candidate) => candidate.id === layerId);
+    const queryIds = layer ? this.nativeLayerIds(layer) : [];
+    if (!queryIds.length) return null;
+    const [feature] = map.queryRenderedFeatures(
+      [
+        [point.x - 4, point.y - 4],
+        [point.x + 4, point.y + 4],
+      ],
+      { layers: queryIds },
+    );
+    return feature ? this.featureIdForLayer(layerId, feature.id) : null;
+  }
   /**
    * Resolve a queried feature's id to the app's `String(feature.id ?? index)`
    * identity. GeoJSON sources are compiled with `generateId`, so Mapbox reports
