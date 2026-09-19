@@ -10,7 +10,12 @@ import type {
   StoryChapterAnimation,
   StoryChapterLocation,
 } from "@geolibre/core";
-import { DEFAULT_LAYER_STYLE, controlRendersLayer } from "@geolibre/core";
+import {
+  DEFAULT_LAYER_STYLE,
+  controlRendersLayer,
+  geojsonHasZCoordinates,
+  styleValue,
+} from "@geolibre/core";
 import { circlePaint, fillPaint, linePaint, rasterPaint } from "./style-mapper";
 import {
   DEFAULT_BUILT_IN_CONTROL_POSITIONS,
@@ -21,6 +26,7 @@ import {
   type MapRenderSurface,
   type FlyToCamera,
   type BuiltInMapControl,
+  type CameraIdleEvent,
   type IdentifiedFeature,
   type ManualPlacementOptions,
   type ExtentDrawingOptions,
@@ -72,7 +78,20 @@ export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
 const BLANK_BACKGROUND_LAYER_ID = "geolibre-blank-background";
 
 const HIGHLIGHT_SOURCE_ID = "geolibre-mapbox-highlight";
-const HIGHLIGHT_LAYER_IDS = ["geolibre-mapbox-highlight-line", "geolibre-mapbox-highlight-point"];
+const HIGHLIGHT_LAYER_IDS = [
+  "geolibre-mapbox-highlight-fill",
+  "geolibre-mapbox-highlight-line",
+  "geolibre-mapbox-highlight-point",
+];
+
+/** App-owned overlays that must remain above project layers after every sync. */
+function isOverlayLayerId(id: string): boolean {
+  return (
+    HIGHLIGHT_LAYER_IDS.includes(id) ||
+    id.startsWith("geolibre-mapbox-extent-") ||
+    id.startsWith("geolibre-search-")
+  );
+}
 
 /**
  * The built-in controls Mapbox can put a button on the map for, in the order
@@ -161,7 +180,10 @@ export class MapboxEngine implements MapEngine {
     // which is a better basemap answer than a second fetch would give.
     getBasemapStyleUrl: () => null,
     getBasemapLayerIds: () => this.getBasemapStyleLayerIds(),
-    getBasemapState: () => ({ visible: this.basemapVisible, opacity: this.basemapOpacity }),
+    getBasemapState: () => ({
+      visible: this.basemapVisible,
+      opacity: this.basemapOpacity,
+    }),
   });
   private storyOpacities = new Map<string, number>();
   // The paint a control-owned native layer carried before a story fade
@@ -169,7 +191,10 @@ export class MapboxEngine implements MapEngine {
   // `restoreLayerStyles` can hand it back: the ordinary mirror never writes
   // paint on those layers.
   private storyPaintBackups = new Map<string, Map<string, Map<string, unknown>>>();
-  private rotating = false;
+  private storyCameraToken = 0;
+  private pendingStoryRotate:
+    | ((event: mapboxgl.MapEventOf<"moveend"> & { storyCameraToken?: number }) => void)
+    | null = null;
   private syncPending = false;
   private basemapPending = false;
   private flushLayers = () => {
@@ -401,25 +426,48 @@ export class MapboxEngine implements MapEngine {
     this.map?.flyTo({ duration: 800, ...camera });
   }
   flyToView(location: StoryChapterLocation): void {
-    this.flyTo(location);
+    const map = this.map;
+    if (!map) return;
+    // A fresh token, so this preview's moveend can't satisfy a chapter's
+    // pending rotate-on-settle listener, which is detached as superseded.
+    const token = ++this.storyCameraToken;
+    if (this.pendingStoryRotate) {
+      map.off("moveend", this.pendingStoryRotate);
+      this.pendingStoryRotate = null;
+    }
+    map.flyTo(location, { storyCameraToken: token });
   }
   applyStoryChapterCamera(
     location: StoryChapterLocation,
     animation: StoryChapterAnimation = "flyTo",
     rotate = false,
   ): void {
-    this.stopCamera();
-    this.map?.[animation]({ ...location, duration: 800 });
-    if (rotate && this.map) {
-      this.rotating = true;
-      this.map.once("moveend", this.rotate);
+    const map = this.map;
+    if (!map) return;
+    const token = ++this.storyCameraToken;
+    if (this.pendingStoryRotate) {
+      map.off("moveend", this.pendingStoryRotate);
+      this.pendingStoryRotate = null;
     }
+    if (!rotate) {
+      map[animation]({ ...location, duration: 800 }, { storyCameraToken: token });
+      return;
+    }
+    const onMoveEnd = (event: mapboxgl.MapEventOf<"moveend"> & { storyCameraToken?: number }) => {
+      if (event.storyCameraToken !== token) return;
+      map.off("moveend", onMoveEnd);
+      if (this.pendingStoryRotate === onMoveEnd) this.pendingStoryRotate = null;
+      if (this.storyCameraToken !== token || !this.map) return;
+      this.map.rotateTo(this.map.getBearing() + 180, {
+        duration: 30000,
+        easing: (time) => time,
+      });
+    };
+    // Listen before moving: jumpTo fires its moveend synchronously.
+    this.pendingStoryRotate = onMoveEnd;
+    map.on("moveend", onMoveEnd);
+    map[animation]({ ...location, duration: 800 }, { storyCameraToken: token });
   }
-  private rotate = () => {
-    if (!this.rotating || !this.map) return;
-    this.map.once("moveend", this.rotate);
-    this.map.easeTo({ bearing: this.map.getBearing() + 120, duration: 20000, easing: (t) => t });
-  };
   zoomIn(): void {
     this.map?.zoomIn();
   }
@@ -507,6 +555,11 @@ export class MapboxEngine implements MapEngine {
       if (!ids.has(id)) this.restoreControlLayerPaint(id);
     for (const key of this.errors.keys())
       if (key.startsWith("layer:") && !ids.has(key.slice(6))) this.errors.delete(key);
+    // The app-owned overlays are never touched by this loop, so the anchor that
+    // keeps project layers beneath them is resolved once per sync.
+    const beforeOverlay = map
+      .getStyle()
+      ?.layers?.find((candidate) => isOverlayLayerId(candidate.id))?.id;
     // Store order is topmost first. Add and move in reverse so overlays agree
     // with the layer panel, including after a style swap or drag reorder.
     for (const original of [...layers].reverse()) {
@@ -525,6 +578,19 @@ export class MapboxEngine implements MapEngine {
           continue;
         }
         if (!original.visible) this.errors.delete(`layer:${original.id}`);
+        // A Z-aware deck.gl overlay owns this representation on both GL
+        // engines. Compiling the same GeoJSON into flat Mapbox layers would
+        // draw every feature twice.
+        if (
+          original.type === "geojson" &&
+          original.geojson &&
+          styleValue(original.style, "elevation3dEnabled") === true &&
+          geojsonHasZCoordinates(original.geojson)
+        ) {
+          this.removeLayer(original.id);
+          this.errors.delete(`layer:${original.id}`);
+          continue;
+        }
         const plan = compileMapboxLayer(layer, { textFont: this.textFont });
         const previous = this.previous.get(layer.id);
         const oldPlan = this.plans.get(layer.id);
@@ -563,7 +629,7 @@ export class MapboxEngine implements MapEngine {
             if ("filter" in spec) map.setFilter(spec.id, spec.filter ?? null);
             map.setLayerZoomRange(spec.id, spec.minzoom ?? 0, spec.maxzoom ?? 24);
           }
-          map.moveLayer(spec.id);
+          map.moveLayer(spec.id, beforeOverlay);
         }
         this.plans.set(layer.id, plan);
         this.previous.set(layer.id, original);
@@ -798,7 +864,9 @@ export class MapboxEngine implements MapEngine {
       .then(apply)
       .catch((error: unknown) => {
         if (this.map && request === this.styleRequest)
-          this.onError({ error: error instanceof Error ? error : new Error(String(error)) });
+          this.onError({
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
       });
   }
   getBasemapStyleLayerIds(): string[] {
@@ -880,6 +948,12 @@ export class MapboxEngine implements MapEngine {
     this.syncLayers(this.layers);
   }
   restoreLayerStyles(): void {
+    this.storyCameraToken++;
+    if (this.pendingStoryRotate) {
+      this.map?.off("moveend", this.pendingStoryRotate);
+      this.pendingStoryRotate = null;
+    }
+    this.map?.stop();
     this.storyOpacities.clear();
     this.syncLayers(this.layers);
   }
@@ -962,12 +1036,19 @@ export class MapboxEngine implements MapEngine {
     this.map.addSource(HIGHLIGHT_SOURCE_ID, { type: "geojson", data });
     this.map.addLayer({
       id: HIGHLIGHT_LAYER_IDS[0],
+      type: "fill",
+      source: HIGHLIGHT_SOURCE_ID,
+      filter: ["==", ["geometry-type"], "Polygon"],
+      paint: { "fill-color": "#facc15", "fill-opacity": 0.25 },
+    });
+    this.map.addLayer({
+      id: HIGHLIGHT_LAYER_IDS[1],
       type: "line",
       source: HIGHLIGHT_SOURCE_ID,
       paint: { "line-color": "#facc15", "line-width": 4 },
     });
     this.map.addLayer({
-      id: HIGHLIGHT_LAYER_IDS[1],
+      id: HIGHLIGHT_LAYER_IDS[2],
       type: "circle",
       source: HIGHLIGHT_SOURCE_ID,
       filter: ["==", ["geometry-type"], "Point"],
@@ -1095,16 +1176,21 @@ export class MapboxEngine implements MapEngine {
       map?.off("move", listener);
     };
   }
-  onCameraIdle(listener: () => void): () => void {
+  onCameraIdle(listener: (event?: CameraIdleEvent) => void): () => void {
     const map = this.map;
-    map?.on("moveend", listener);
+    const onMoveEnd = (event: mapboxgl.MapEventOf<"moveend"> & { storyCameraToken?: number }) =>
+      listener({ storyCamera: event?.storyCameraToken !== undefined });
+    map?.on("moveend", onMoveEnd);
     return () => {
-      map?.off("moveend", listener);
+      map?.off("moveend", onMoveEnd);
     };
   }
   stopCamera(): void {
-    this.rotating = false;
-    this.map?.off("moveend", this.rotate);
+    this.storyCameraToken++;
+    if (this.pendingStoryRotate) {
+      this.map?.off("moveend", this.pendingStoryRotate);
+      this.pendingStoryRotate = null;
+    }
     this.map?.stop();
   }
   suspendNavigation(): () => void {
