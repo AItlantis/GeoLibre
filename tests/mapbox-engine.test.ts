@@ -4,7 +4,7 @@ import { parseHTML } from "linkedom";
 import type * as mapboxgl from "mapbox-gl";
 import type { Geometry } from "geojson";
 import { useAppStore, type MapPreferences } from "@geolibre/core";
-import { MapboxEngine } from "../packages/map/src/mapbox-engine";
+import { MapboxEngine, redactMapboxError } from "../packages/map/src/mapbox-engine";
 import { isMapboxSupportedLayer } from "../packages/map/src/mapbox-layers";
 import { geojsonLayer } from "./helpers/layer-fixtures";
 
@@ -844,9 +844,130 @@ describe("MapboxEngine.syncLayers", () => {
     map.fire("error", {
       error: new Error("https://api.mapbox.com/x?access_token=pk.secret failed"),
     });
-    assert.deepEqual(engine.getRenderStatus().errors, [
-      "https://api.mapbox.com/x?access_token=[redacted] failed",
-    ]);
+    assert.deepEqual(engine.getRenderStatus().errors, ["https://api.mapbox.com/x failed"]);
+  });
+
+  it("redacts common credential formats from diagnostic text", () => {
+    const redacted = redactMapboxError(
+      'https://user:password@example.com/data?api_key=url-secret&sig=azure-secret&sv=version&public=ok Authorization: Bearer bearer-secret Basic basic-secret {"token":"json-secret","apiKey":"key-secret"}',
+    );
+
+    assert.equal(
+      redacted,
+      'https://example.com/data?public=ok Authorization: Bearer [redacted] Basic [redacted] {"token":"[redacted]","apiKey":"[redacted]"}',
+    );
+  });
+
+  it("ignores aborted renderer requests", () => {
+    const diagnosticMap = makeMap();
+    const diagnostics: Array<{ message: string }> = [];
+    const diagnosticEngine = new MapboxEngine(diagnosticMap as unknown as mapboxgl.Map, gl, "", {
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+    const error = new Error("The operation was aborted");
+    error.name = "AbortError";
+
+    diagnosticMap.fire("error", { error, sourceId: "roads" });
+
+    assert.deepEqual(diagnosticEngine.getRenderStatus().errors, []);
+    assert.deepEqual(diagnostics, []);
+  });
+
+  it("reports renderer errors to Diagnostics once with structured context", () => {
+    const diagnosticMap = makeMap();
+    const diagnostics: Array<{
+      message: string;
+      detail?: string;
+      source?: string;
+      status?: number;
+      url?: string;
+    }> = [];
+    new MapboxEngine(diagnosticMap as unknown as mapboxgl.Map, gl, "", {
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+    const error = Object.assign(new Error("Tile pk.secret failed"), {
+      status: 404,
+      resource: "https://api.mapbox.com/tiles/2/1/0.png?access_token=pk.secret",
+    });
+
+    diagnosticMap.fire("error", { error, sourceId: "roads" });
+    diagnosticMap.fire("error", {
+      error: Object.assign(new Error("Another tile failed"), {
+        status: 404,
+        resource: "https://api.mapbox.com/tiles/2/1/1.png?access_token=pk.secret",
+      }),
+      sourceId: "roads",
+    });
+
+    assert.equal(diagnostics.length, 1, "one broken source reports once per failure episode");
+    assert.deepEqual(diagnostics[0], {
+      message: "Tile [redacted] failed",
+      detail:
+        '{\n  "source": "roads",\n  "status": 404,\n  "url": "https://api.mapbox.com/tiles/2/1/0.png",\n  "error": "Tile [redacted] failed"\n}',
+      source: "roads",
+      status: 404,
+      url: "https://api.mapbox.com/tiles/2/1/0.png",
+    });
+  });
+
+  it("groups a sourceless tile burst without hiding a later resource failure", () => {
+    const diagnosticMap = makeMap();
+    const diagnostics: Array<{ message: string }> = [];
+    new MapboxEngine(diagnosticMap as unknown as mapboxgl.Map, gl, "", {
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    diagnosticMap.fire("error", {
+      error: Object.assign(new Error("tile zero failed"), {
+        resource: "https://tiles.example.com/4/2/0.png",
+      }),
+    });
+    diagnosticMap.fire("error", {
+      error: Object.assign(new Error("tile one failed"), {
+        resource: "https://tiles.example.com/4/2/1.png",
+      }),
+    });
+    diagnosticMap.fire("error", {
+      error: Object.assign(new Error("retina tile zero failed"), {
+        resource: "https://tiles.example.com/4/2/0@2x.png",
+      }),
+    });
+    diagnosticMap.fire("error", {
+      error: Object.assign(new Error("retina tile one failed"), {
+        resource: "https://tiles.example.com/4/2/1@2x.png",
+      }),
+    });
+    diagnosticMap.fire("error", {
+      error: Object.assign(new Error("sprite failed"), {
+        resource: "https://tiles.example.com/styles/main/sprite.json",
+      }),
+    });
+
+    assert.deepEqual(
+      diagnostics.map((event) => event.message),
+      ["tile zero failed", "retina tile zero failed", "sprite failed"],
+    );
+  });
+
+  it("reports a repeatedly failing layer once until it recovers", () => {
+    const diagnosticMap = makeMap();
+    const diagnostics: Array<{ message: string }> = [];
+    const diagnosticEngine = new MapboxEngine(diagnosticMap as unknown as mapboxgl.Map, gl, "", {
+      onDiagnostic: (event) => diagnostics.push(event),
+    });
+    const layer = geojsonLayer({
+      id: "broken-cog",
+      name: "Broken COG",
+      type: "cog",
+      source: { type: "raster", url: "cog://tiles/broken.tif" },
+      geojson: undefined,
+    });
+
+    diagnosticEngine.syncLayers([layer]);
+    diagnosticEngine.syncLayers([layer]);
+
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0].message, /^Broken COG: /);
   });
 
   it("labels with the font the loaded basemap style uses", () => {

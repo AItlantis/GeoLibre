@@ -1,5 +1,6 @@
 import { showGlSearchResult } from "./gl-search-result";
 import type * as mapboxgl from "mapbox-gl";
+import type { MapDiagnosticEvent } from "./map-diagnostic";
 import type * as maplibregl from "maplibre-gl";
 import type { FeatureCollection, Point, Polygon } from "geojson";
 import type {
@@ -14,6 +15,7 @@ import {
   DEFAULT_LAYER_STYLE,
   controlRendersLayer,
   geojsonHasZCoordinates,
+  redactUrlCredentials,
   styleValue,
 } from "@geolibre/core";
 import { circlePaint, fillPaint, linePaint, rasterPaint } from "./style-mapper";
@@ -116,8 +118,26 @@ const MAPBOX_HOSTED_CONTROLS: ReadonlySet<BuiltInMapControl> = new Set(MAPBOX_HO
 
 export function redactMapboxError(message: string): string {
   return message
-    .replace(/([?&]access_token=)[^&\s"']+/gi, "$1[redacted]")
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, redactUrlCredentials)
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1 [redacted]")
+    .replace(
+      /(["'](?:access_?token|api_?key|token|authorization)["']\s*:\s*["'])[^"']*(["'])/gi,
+      "$1[redacted]$2",
+    )
     .replace(/\b(?:pk|sk)\.[\w.-]+/g, "[redacted]");
+}
+
+function diagnosticResourceKey(url: string | undefined, message: string): string {
+  if (!url) return `map:${redactMapboxError(message)}`;
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname
+      .replace(/\/(?:-?\d+(?:\.\d+)?)(?=[/.@]|$)/g, "/{n}")
+      .replace(/\/\d+-\d+(?=\.|$)/g, "/{range}");
+    return `map:${parsed.origin}${path}`;
+  } catch {
+    return `map:${redactMapboxError(url)}`;
+  }
 }
 
 /** Mapbox owns its own native objects; getMap deliberately remains MapLibre-only. */
@@ -192,6 +212,8 @@ export class MapboxEngine implements MapEngine {
   // paint on those layers.
   private storyPaintBackups = new Map<string, Map<string, Map<string, unknown>>>();
   private storyCameraToken = 0;
+  private onDiagnostic?: (event: MapDiagnosticEvent) => void;
+  private reportedDiagnosticKeys = new Set<string>();
   private pendingStoryRotate:
     | ((event: mapboxgl.MapEventOf<"moveend"> & { storyCameraToken?: number }) => void)
     | null = null;
@@ -225,9 +247,12 @@ export class MapboxEngine implements MapEngine {
        * the swipe panel listing raw ids. Secondary panes pass `false`.
        */
       ownsLayerLabels?: boolean;
+      /** Report renderer failures through the app's Diagnostics panel. */
+      onDiagnostic?: (event: MapDiagnosticEvent) => void;
     } = {},
   ) {
     this.map = map;
+    this.onDiagnostic = options.onDiagnostic;
     this.ownsLayerLabels = options.ownsLayerLabels ?? true;
     this.controlVisibility = {
       ...DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
@@ -293,8 +318,48 @@ export class MapboxEngine implements MapEngine {
   getMapboxAccessToken(): string | null {
     return this.accessToken || null;
   }
-  private onError = (event: { error: Error; sourceId?: string }) => {
-    this.errors.set(event.sourceId ?? "map", redactMapboxError(event.error.message));
+  private clearError(key: string): void {
+    this.errors.delete(key);
+    this.reportedDiagnosticKeys.delete(key);
+    this.reportedDiagnosticKeys.delete(`source:${key}`);
+  }
+  private recordError(key: string, event: MapDiagnosticEvent, diagnosticKey = key): void {
+    const message = redactMapboxError(event.message);
+    this.errors.set(key, message);
+    if (this.reportedDiagnosticKeys.has(diagnosticKey)) return;
+    this.reportedDiagnosticKeys.add(diagnosticKey);
+    this.onDiagnostic?.({
+      ...event,
+      message,
+      ...(event.detail ? { detail: redactMapboxError(event.detail) } : {}),
+      ...(event.url ? { url: redactMapboxError(event.url) } : {}),
+    });
+  }
+  private onError = (event: {
+    error: Error & { status?: number; url?: string; resource?: string };
+    sourceId?: string;
+    status?: number;
+    url?: string;
+  }) => {
+    // Cancelled tile/style fetches are already captured as informational
+    // network events. Treating them as renderer failures would double-count
+    // normal panning, style swaps, and layer removal.
+    if (event.error.name === "AbortError") return;
+    const source = event.sourceId;
+    const status = event.status ?? event.error.status;
+    const url = event.url ?? event.error.url ?? event.error.resource;
+    const message = event.error.message || "Mapbox reported an error.";
+    this.recordError(
+      source ?? "map",
+      {
+        message,
+        detail: JSON.stringify({ source, status, url, error: event.error.message }, null, 2),
+        source,
+        status,
+        url,
+      },
+      source ? `source:${source}` : diagnosticResourceKey(url, message),
+    );
   };
   /**
    * A source error is stored under the source id and must not outlive the
@@ -307,7 +372,7 @@ export class MapboxEngine implements MapEngine {
     isSourceLoaded?: boolean;
   }) => {
     if (event.sourceId && event.sourceDataType === "content" && event.isSourceLoaded) {
-      this.errors.delete(event.sourceId);
+      this.clearError(event.sourceId);
       // A sync deferred while this source was still loading is otherwise only
       // retried on `idle`, which a map with an animated canvas source (the Sun
       // plugin's night mask) or a render loop never reaches — so a layer added
@@ -321,6 +386,7 @@ export class MapboxEngine implements MapEngine {
     this.plans.clear();
     this.previous.clear();
     this.errors.clear();
+    this.reportedDiagnosticKeys.clear();
     this.basemap = structuredClone(map.getStyle()?.layers ?? []);
     this.textFont = resolveTextFontFromStyleLayers(
       this.basemap as { type: string; layout?: Record<string, unknown> }[],
@@ -554,7 +620,7 @@ export class MapboxEngine implements MapEngine {
     for (const id of [...this.storyPaintBackups.keys()])
       if (!ids.has(id)) this.restoreControlLayerPaint(id);
     for (const key of this.errors.keys())
-      if (key.startsWith("layer:") && !ids.has(key.slice(6))) this.errors.delete(key);
+      if (key.startsWith("layer:") && !ids.has(key.slice(6))) this.clearError(key);
     // The app-owned overlays are never touched by this loop, so the anchor that
     // keeps project layers beneath them is resolved once per sync.
     const beforeOverlay = map
@@ -577,7 +643,7 @@ export class MapboxEngine implements MapEngine {
           this.mirrorPluginLayerState(layer);
           continue;
         }
-        if (!original.visible) this.errors.delete(`layer:${original.id}`);
+        if (!original.visible) this.clearError(`layer:${original.id}`);
         // A Z-aware deck.gl overlay owns this representation on both GL
         // engines. Compiling the same GeoJSON into flat Mapbox layers would
         // draw every feature twice.
@@ -588,7 +654,7 @@ export class MapboxEngine implements MapEngine {
           geojsonHasZCoordinates(original.geojson)
         ) {
           this.removeLayer(original.id);
-          this.errors.delete(`layer:${original.id}`);
+          this.clearError(`layer:${original.id}`);
           continue;
         }
         const plan = compileMapboxLayer(layer, { textFont: this.textFont });
@@ -633,14 +699,17 @@ export class MapboxEngine implements MapEngine {
         }
         this.plans.set(layer.id, plan);
         this.previous.set(layer.id, original);
-        this.errors.delete(`layer:${layer.id}`);
+        this.clearError(`layer:${layer.id}`);
       } catch (error) {
-        this.removeLayer(original.id);
-        if (original.visible)
-          this.errors.set(
-            `layer:${original.id}`,
-            `${original.name}: ${redactMapboxError(String(error))}`,
-          );
+        this.removeLayer(original.id, { preserveError: true });
+        if (original.visible) {
+          const message = `${original.name}: ${redactMapboxError(String(error))}`;
+          this.recordError(`layer:${original.id}`, {
+            message,
+            detail: `Mapbox could not compile or synchronize layer ${original.id}.`,
+            source: original.name,
+          });
+        }
       }
     }
     this.publishLayerDisplayNames(layers);
@@ -811,7 +880,7 @@ export class MapboxEngine implements MapEngine {
     }
     if (backups.size === 0) this.storyPaintBackups.delete(layerId);
   }
-  private removeLayer(id: string): void {
+  private removeLayer(id: string, options: { preserveError?: boolean } = {}): void {
     const plan = this.plans.get(id),
       map = this.map;
     if (map && plan) {
@@ -824,9 +893,9 @@ export class MapboxEngine implements MapEngine {
     }
     this.plans.delete(id);
     this.previous.delete(id);
-    this.errors.delete(`layer:${id}`);
-    if (plan) this.errors.delete(plan.sourceId);
-    for (const id of Object.keys(plan?.additionalSources ?? {})) this.errors.delete(id);
+    if (!options.preserveError) this.clearError(`layer:${id}`);
+    if (plan) this.clearError(plan.sourceId);
+    for (const id of Object.keys(plan?.additionalSources ?? {})) this.clearError(id);
   }
   waitAndSyncLayers(layers: GeoLibreLayer[]): void {
     this.syncLayers(layers);
@@ -847,6 +916,7 @@ export class MapboxEngine implements MapEngine {
     const apply = (prepared: string | mapboxgl.StyleSpecification) => {
       if (!this.map || request !== this.styleRequest) return;
       this.errors.clear();
+      this.reportedDiagnosticKeys.clear();
       this.plans.clear();
       this.previous.clear();
       this.layerControlHost.remove();
