@@ -121,6 +121,13 @@ export function MapboxCanvas({
           onDiagnostic: (event) => diagnosticCallback.current?.(event),
         });
         const current = engine;
+        const setIdentifyCursor = (active: boolean) => {
+          // Mapbox's grab cursor belongs to the interactive canvas container,
+          // not the canvas itself. Use its supported crosshair mode so every
+          // map surface agrees while Identify owns pointer clicks.
+          map.getContainer().classList.toggle("mapboxgl-crosshair", active);
+          map.getCanvas().style.cursor = active ? "crosshair" : "";
+        };
         const featureSelection: FeatureSelectionState = {
           active: { current: false },
           cancel: { current: null },
@@ -132,8 +139,7 @@ export function MapboxCanvas({
               featureIdAtPoint: (layer, point) => current.featureIdAtPoint(layer.id, point),
               onDiagnostic: (event) => diagnosticCallback.current?.(event),
               onEnd: () => {
-                if (!cancelled && useAppStore.getState().identifyLayerId)
-                  map.getCanvas().style.cursor = "crosshair";
+                if (!cancelled) setIdentifyCursor(Boolean(useAppStore.getState().identifyLayerId));
               },
             });
         // Arm the global-listener cleanup before any engine/store setup that
@@ -291,7 +297,7 @@ export function MapboxCanvas({
               removeIdentifyPopup();
               if (next.identifyLayerId) featureSelection.cancel.current?.();
               if (!featureSelection.active.current)
-                map.getCanvas().style.cursor = next.identifyLayerId ? "crosshair" : "";
+                setIdentifyCursor(Boolean(next.identifyLayerId));
             }
             if (
               !viewId &&
