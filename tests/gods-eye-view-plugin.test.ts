@@ -3,7 +3,12 @@ import { afterEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
 import { useAppStore } from "@geolibre/core";
 import {
+  GODS_EYE_VIEW_CABLES_FLAG,
+  GODS_EYE_VIEW_DAMS_FLAG,
+  GODS_EYE_VIEW_DATACENTERS_FLAG,
   GODS_EYE_VIEW_DENSE_SATELLITES_FLAG,
+  GODS_EYE_VIEW_OSM_INFRASTRUCTURE_FLAG,
+  GODS_EYE_VIEW_RADIO_FLAG,
   godsEyeViewPlugin,
   reattachGodsEyeView,
 } from "../packages/plugins/src/plugins/gods-eye-view";
@@ -90,6 +95,7 @@ function makeGlobe(startingMultiplier = 0) {
   const panel = document.getElementById("panel") as unknown as HTMLElement;
   const app = {
     getMap: () => null,
+    getViewBounds: () => [-122.5, 37.7, -122.4, 37.8] as [number, number, number, number],
     getCesiumScene: () => {
       handles += 1;
       return {
@@ -168,6 +174,69 @@ function stubFeeds(): { calls: () => string[]; restore: () => void } {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (url.includes("radio-browser.info")) {
+      return new Response(
+        JSON.stringify([{ stationuuid: "radio-1", name: "Radio", geo_long: 10, geo_lat: 20 }]),
+        { status: 200 },
+      );
+    }
+    if (url.includes("datacenters.geojsonl")) {
+      return new Response(
+        JSON.stringify({
+          type: "Feature",
+          id: "dc-1",
+          geometry: { type: "Point", coordinates: [10, 20] },
+          properties: { name: "Datacenter" },
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("/dams/")) {
+      return new Response(
+        JSON.stringify({
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              id: "dam-1",
+              geometry: { type: "Point", coordinates: [10, 20] },
+              properties: { name: "Dam" },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("telegeography_submarine_cables")) {
+      return new Response(
+        JSON.stringify({
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              id: "cable-1",
+              geometry: {
+                type: "LineString",
+                coordinates: [
+                  [10, 20],
+                  [11, 21],
+                ],
+              },
+              properties: { name: "Cable" },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("tiles.geolibre.app/overpass")) {
+      return new Response(
+        JSON.stringify({
+          elements: [{ type: "node", id: 1, lon: 10, lat: 20, tags: { man_made: "tower" } }],
+        }),
+        { status: 200 },
+      );
+    }
     return new Response(TLE_TEXT, { status: 200, headers: { "content-type": "text/plain" } });
   }) as typeof fetch;
   return {
@@ -190,6 +259,65 @@ describe("God's Eye View availability", () => {
 });
 
 describe("God's Eye View feed refresh", () => {
+  it("dispatches every Tier A feed with identity and attribution", async () => {
+    const net = stubFeeds();
+    const globe = makeGlobe();
+    try {
+      useAppStore.setState({ layers: [] });
+      godsEyeViewPlugin.applyProjectState?.(globe.app, {
+        earthquakes: true,
+        satellites: true,
+        radio: true,
+        datacenters: true,
+        dams: true,
+        cables: true,
+        osmInfrastructure: true,
+      });
+      godsEyeViewPlugin.activate?.(globe.app);
+      for (let i = 0; i < 20; i++) await flush();
+
+      const layers = useAppStore.getState().layers;
+      assert.deepEqual(layers.map((layer) => layer.metadata.godsEyeViewFeed).sort(), [
+        "cables",
+        "dams",
+        "datacenters",
+        "earthquakes",
+        "osmInfrastructure",
+        "radio",
+        "satellites",
+      ]);
+      for (const layer of layers) assert.ok(layer.source.attribution, layer.name);
+      const flags = [
+        GODS_EYE_VIEW_RADIO_FLAG,
+        GODS_EYE_VIEW_DATACENTERS_FLAG,
+        GODS_EYE_VIEW_DAMS_FLAG,
+        GODS_EYE_VIEW_CABLES_FLAG,
+        GODS_EYE_VIEW_OSM_INFRASTRUCTURE_FLAG,
+      ];
+      for (const flag of flags) {
+        assert.ok(
+          layers.some((layer) => layer.metadata[flag] === true),
+          flag,
+        );
+      }
+      const calls = net.calls().join("\n");
+      for (const source of [
+        "radio-browser.info",
+        "datacenters.geojsonl",
+        "/dams/",
+        "telegeography_submarine_cables",
+        "tiles.geolibre.app/overpass",
+      ]) {
+        assert.ok(calls.includes(source), source);
+      }
+    } finally {
+      godsEyeViewPlugin.deactivate?.(globe.app);
+      godsEyeViewPlugin.applyProjectState?.(globe.app, {});
+      useAppStore.setState({ layers: [] });
+      net.restore();
+    }
+  });
+
   it("publishes the dense shell as a separate queryable layer", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL | Request) => {
@@ -371,6 +499,7 @@ describe("God's Eye View feed refresh", () => {
       // positions and push the snapshot toward its ceiling.
       for (const layer of useAppStore.getState().layers) {
         assert.equal(layer.metadata.transientGeojson, true, layer.name);
+        assert.equal(layer.metadata.transientCzml, true, layer.name);
         assert.ok(layer.geojson, "the live layer still carries its table");
       }
 
@@ -423,6 +552,11 @@ describe("God's Eye View clock speed", () => {
       assert.deepEqual(godsEyeViewPlugin.getProjectState?.(), {
         earthquakes: true,
         satellites: true,
+        radio: false,
+        datacenters: false,
+        dams: false,
+        cables: false,
+        osmInfrastructure: false,
         dense: false,
         // Real time, not the 60x the feeds used to hard-code: at 60x the ISS
         // laps the planet in ninety seconds, which reads as an animation

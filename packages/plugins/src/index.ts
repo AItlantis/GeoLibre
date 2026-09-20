@@ -916,6 +916,11 @@ export {
   GODS_EYE_VIEW_PLUGIN_ID,
   GODS_EYE_VIEW_EARTHQUAKES_FLAG,
   GODS_EYE_VIEW_SATELLITES_FLAG,
+  GODS_EYE_VIEW_RADIO_FLAG,
+  GODS_EYE_VIEW_DATACENTERS_FLAG,
+  GODS_EYE_VIEW_DAMS_FLAG,
+  GODS_EYE_VIEW_CABLES_FLAG,
+  GODS_EYE_VIEW_OSM_INFRASTRUCTURE_FLAG,
 } from "./plugins/gods-eye-view";
 export {
   buildCelestrakTleUrl,
@@ -936,6 +941,22 @@ export {
   type TleRecord,
   type UsgsFeatureCollection,
 } from "./plugins/gods-eye-view-feeds";
+export {
+  DATACENTERS_URL,
+  DAMS_URL,
+  RADIO_BROWSER_STATIONS_URL,
+  SUBMARINE_CABLES_URL,
+  fetchDamsCzml,
+  fetchDatacentersCzml,
+  fetchOsmInfrastructureCzml,
+  fetchRadioBrowserCzml,
+  fetchSubmarineCablesCzml,
+  infrastructureQueryBounds,
+  osmInfrastructureToCzml,
+  radioBrowserStationsToCzml,
+  submarineCablesToCzml,
+  type GodsEyeViewFeedPayload,
+} from "./plugins/gods-eye-view-catalog-feeds";
 export {
   maplibreTimeSliderPlugin,
   TIME_SLIDER_PLUGIN_ID,
