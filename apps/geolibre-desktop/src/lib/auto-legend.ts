@@ -15,6 +15,7 @@
  */
 import {
   effectiveVectorRules,
+  heatmapRampColors,
   isHexColor,
   proportionalSizeRange,
   styleValue,
@@ -30,9 +31,11 @@ import {
 import { isRasterLike, layerSwatchShape, type LayerSwatchShape } from "./layer-swatch";
 import {
   diagramSwatches,
+  geometryGeneratorLegendParts,
   isVectorStyledLayer,
   NON_LEGEND_TYPES,
   pointMarkerSwatch,
+  type GeometryGeneratorLegendLabels,
 } from "./print-legend";
 import type { LegendMarker } from "./print-layout";
 import { savedRasterAttributeTable } from "./raster-attribute-table";
@@ -48,19 +51,6 @@ export const MAX_LEGEND_ROWS = 100;
 
 /** Colors sampled per gradient bar. */
 const GRADIENT_SAMPLES = 6;
-
-/**
- * The map's heatmap ramp colors (mirrors `HEATMAP_COLOR_RAMP` in
- * `@geolibre/map`'s style-mapper, minus the fully-transparent zero stop so the
- * bar starts visible).
- */
-export const HEATMAP_RAMP_COLORS: readonly string[] = [
-  "rgb(103,169,207)",
-  "rgb(209,229,240)",
-  "rgb(253,219,199)",
-  "rgb(239,138,98)",
-  "rgb(178,24,43)",
-];
 
 /** One row (class / rule / size step / custom item) under a legend entry. */
 export interface AutoLegendRow {
@@ -130,6 +120,8 @@ export interface AutoLegendOptions {
    * `colormapColors` from `@geolibre/plugins`); null falls back to grayscale.
    */
   resolveColormapColors?: (name: string) => readonly string[] | null;
+  /** Localized names for derived centroid / polygon legend rows. */
+  geometryGeneratorLabels?: Partial<GeometryGeneratorLegendLabels>;
 }
 
 /** Prefix for standalone custom-section ids (not tied to a layer). */
@@ -654,6 +646,7 @@ function vectorParts(
   layer: GeoLibreLayer,
   shape: LayerSwatchShape,
   locale: string | undefined,
+  geometryGeneratorLabels: Partial<GeometryGeneratorLegendLabels> | undefined,
 ): {
   rows: RawRow[];
   gradient: AutoLegendGradient | null;
@@ -668,12 +661,28 @@ function vectorParts(
     color: swatch.color,
     shape: "square" as const,
   }));
+  const generated = geometryGeneratorLegendParts(layer, {
+    labels: geometryGeneratorLabels,
+    formatValue: (value) => formatLegendNumber(value, locale),
+  });
+  const generatorRows: RawRow[] = generated
+    ? generated.swatches.map((swatch, index) => ({
+        label: generated.fieldLabel ? (swatch.label ?? "") : generated.label,
+        color: swatch.color,
+        shape: generated.shape,
+        ...(swatch.size !== undefined ? { size: swatch.size } : {}),
+        ...(index === 0 && generated.fieldLabel
+          ? { caption: `${generated.label} · ${generated.fieldLabel}` }
+          : {}),
+      }))
+    : [];
 
   // A density heatmap renders no per-feature symbols: the entry is the ramp.
   if (shape === "circle" && styleValue(style, "pointRenderer") === "heatmap") {
+    const colors = heatmapRampColors(style);
     return {
-      rows: diagrams,
-      gradient: { colors: [...HEATMAP_RAMP_COLORS], minLabel: null, maxLabel: null },
+      rows: [...diagrams, ...generatorRows],
+      gradient: { colors: ["rgba(0,0,0,0)", ...colors], minLabel: null, maxLabel: null },
       headerSwatch: null,
     };
   }
@@ -713,6 +722,7 @@ function vectorParts(
             )
           : []),
         ...diagrams,
+        ...generatorRows,
       ],
       gradient: null,
       headerSwatch: null,
@@ -736,6 +746,7 @@ function vectorParts(
               )
             : []),
           ...diagrams,
+          ...generatorRows,
         ],
         gradient: null,
         headerSwatch: null,
@@ -759,6 +770,7 @@ function vectorParts(
               )
             : []),
           ...diagrams,
+          ...generatorRows,
         ],
         gradient: parts.gradient,
         headerSwatch: null,
@@ -784,7 +796,12 @@ function vectorParts(
     ? { color: marker.color, marker: marker.marker }
     : { color: styleValue(style, "fillColor") || NEUTRAL };
   const fieldLabel = sizeRange ? sizeRange.property : undefined;
-  return { rows: [...sizeRows, ...diagrams], gradient: null, headerSwatch, fieldLabel };
+  return {
+    rows: [...sizeRows, ...diagrams, ...generatorRows],
+    gradient: null,
+    headerSwatch,
+    fieldLabel,
+  };
 }
 
 /**
@@ -866,7 +883,7 @@ export function buildAutoLegend(
       gradient = parts.gradient;
       fieldLabel = parts.fieldLabel;
     } else {
-      const parts = vectorParts(layer, shape, locale);
+      const parts = vectorParts(layer, shape, locale, options.geometryGeneratorLabels);
       rows = parts.rows;
       gradient = parts.gradient;
       headerSwatch = parts.headerSwatch;

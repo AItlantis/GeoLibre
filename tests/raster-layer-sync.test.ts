@@ -11,12 +11,14 @@ import {
   rendersNativeMapLibreLayer,
   runWithRasterStoreSyncSuspended,
   savedRasterState,
+  setTransientRasterVisibility,
   syncRasterLayersToStore,
   syncRasterLayersToStoreWithOptions,
   unwireRasterStoreSync,
   wireRasterStoreSync,
   type RasterSyncableControl,
 } from "../packages/plugins/src/plugins/raster-layer-sync";
+import { STAC_ASSET_ACCESS_METADATA_KEY } from "../packages/plugins/src/plugins/stac-signing";
 
 function rasterState(patch: Partial<RasterLayerState> = {}): RasterLayerState {
   return {
@@ -352,6 +354,50 @@ describe("syncRasterLayersToStore", () => {
     } finally {
       rememberLocalRasterPath("raster-1", undefined);
     }
+  });
+
+  it("keeps STAC access metadata across repeated syncs", () => {
+    const access = {
+      catalogUrl: "https://planetarycomputer.microsoft.com/api/stac/v1/",
+      collectionId: "private-cog",
+      href: "https://example.blob.core.windows.net/private-cog/data.tif",
+    };
+    const signedSource = {
+      kind: "url" as const,
+      url: `${access.href}?sp=r&sig=old`,
+    };
+    syncRasterLayersToStore(fakeControl([rasterInfo({ source: signedSource })]).control);
+    const layer = useAppStore.getState().layers[0];
+    useAppStore.getState().updateLayer(layer.id, {
+      metadata: { ...layer.metadata, [STAC_ASSET_ACCESS_METADATA_KEY]: access },
+    });
+
+    syncRasterLayersToStore(
+      fakeControl([rasterInfo({ source: signedSource, state: rasterState({ opacity: 0.4 }) })])
+        .control,
+    );
+
+    assert.deepEqual(
+      useAppStore.getState().layers[0].metadata[STAC_ASSET_ACCESS_METADATA_KEY],
+      access,
+    );
+    assert.equal(useAppStore.getState().layers[0].source.url, access.href);
+    assert.equal(useAppStore.getState().layers[0].sourcePath, access.href);
+
+    syncRasterLayersToStore(
+      fakeControl([
+        rasterInfo({
+          source: {
+            kind: "url",
+            url: "https://example.blob.core.windows.net/private-cog/different.tif",
+          },
+        }),
+      ]).control,
+    );
+    assert.equal(
+      useAppStore.getState().layers[0].metadata[STAC_ASSET_ACCESS_METADATA_KEY],
+      undefined,
+    );
   });
 
   it("removes store layers whose rasters are gone", () => {
@@ -784,6 +830,61 @@ describe("removeRasterStoreLayers", () => {
     assert.equal(layers.length, 1);
     assert.equal(layers[0].id, "unrelated");
     assert.deepEqual(calls, []);
+  });
+});
+
+// Layer Swipe hides a right-only raster on the main map through the control
+// without touching the store, and marks the id transient so the control's
+// report of that hide is not mirrored back as a user edit (which would burn
+// the swipe's temporary state into the saved project).
+describe("transient raster visibility", () => {
+  beforeEach(() => {
+    useAppStore.setState({ layers: [] });
+  });
+
+  afterEach(() => {
+    setTransientRasterVisibility("raster-1", false);
+    unwireRasterStoreSync();
+    useAppStore.setState({ layers: [] });
+  });
+
+  it("keeps the store's visibility when a transient hide is reported back", () => {
+    syncRasterLayersToStore(fakeControl([rasterInfo()]).control);
+    setTransientRasterVisibility("raster-1", true);
+
+    syncRasterLayersToStore(
+      fakeControl([rasterInfo({ state: rasterState({ visible: false }) })]).control,
+    );
+
+    assert.equal(useAppStore.getState().layers[0].visible, true);
+  });
+
+  it("mirrors a real visibility change once the mark is cleared", () => {
+    syncRasterLayersToStore(fakeControl([rasterInfo()]).control);
+    setTransientRasterVisibility("raster-1", true);
+    setTransientRasterVisibility("raster-1", false);
+
+    syncRasterLayersToStore(
+      fakeControl([rasterInfo({ state: rasterState({ visible: false }) })]).control,
+    );
+
+    assert.equal(useAppStore.getState().layers[0].visible, false);
+  });
+
+  it("forgets the mark when the control drops the raster", () => {
+    syncRasterLayersToStore(fakeControl([rasterInfo()]).control);
+    setTransientRasterVisibility("raster-1", true);
+
+    // The raster is removed (its store layer goes with it), so the mark cannot
+    // apply to anything; a later raster reusing the id must not inherit it and
+    // have its genuine visibility changes discarded.
+    syncRasterLayersToStore(fakeControl([]).control);
+    syncRasterLayersToStore(fakeControl([rasterInfo()]).control);
+    syncRasterLayersToStore(
+      fakeControl([rasterInfo({ state: rasterState({ visible: false }) })]).control,
+    );
+
+    assert.equal(useAppStore.getState().layers[0].visible, false);
   });
 });
 

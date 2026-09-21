@@ -2,12 +2,36 @@
 
 import { DEFAULT_LAYER_STYLE, type GeoLibreLayer, useAppStore } from "@geolibre/core";
 import type { HostedLayer, VectorTileLayer } from "@esri/maplibre-arcgis";
-import type { Feature, FeatureCollection } from "geojson";
-import type maplibregl from "maplibre-gl";
+import type { Feature, FeatureCollection, MultiPolygon, Position } from "geojson";
+import type * as maplibregl from "maplibre-gl";
 import type { GeoLibreAppAPI } from "../types";
+import {
+  arcGISEditCapabilities,
+  arcGISObjectId,
+  identifyArcGISFeatures,
+  planArcGISEdits,
+  reconcileArcGISRefresh,
+  sameArcGISFeatures,
+  type ArcGISEditInfo,
+} from "./arcgis-edits";
+import { getGeometryEditTargetLayerId } from "./maplibre-geo-editor";
+
+let arcGISFetchOverride: typeof globalThis.fetch | null = null;
+
+/** Install the desktop HTTP transport for ArcGIS REST requests; null restores browser fetch. */
+export function setArcGISFetch(fetchImpl: typeof globalThis.fetch | null): void {
+  arcGISFetchOverride = fetchImpl;
+}
+
+/** Resolve at request time so restored layers and refreshes use the installed transport. */
+function arcGISFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return (arcGISFetchOverride ?? globalThis.fetch)(input, init);
+}
 
 export type ArcGISLayerType = "feature" | "vector-tile" | "map-service" | "image-service";
 export type ArcGISSourceType = "url" | "portal-item";
+
+const MAX_ARCGIS_RING_REPAIR_PARTS = 64;
 
 /**
  * Every {@link ArcGISLayerType}, as a runtime list so a stored value (a saved
@@ -43,6 +67,8 @@ export function parseArcGISLayerType(
  */
 export const ARCGIS_MAP_SERVICE_SOURCE_KIND = "arcgis-map-service";
 export const ARCGIS_IMAGE_SERVICE_SOURCE_KIND = "arcgis-image-service";
+export const ARCGIS_MAP_SERVICE_URL_ERROR = "Enter an ArcGIS MapServer URL.";
+export const ARCGIS_IMAGE_SERVICE_URL_ERROR = "Enter an ArcGIS ImageServer URL.";
 
 /** Tile size requested from `/export` and `/exportImage`, in pixels. */
 const ARCGIS_EXPORT_TILE_SIZE = 256;
@@ -151,7 +177,7 @@ export interface ArcGISLayerOptions {
   zoomTo?: boolean;
 }
 
-interface ArcGISFeatureLayerInfo {
+interface ArcGISFeatureLayerInfo extends ArcGISEditInfo {
   advancedQueryCapabilities?: {
     supportsOrderBy?: boolean;
     supportsPagination?: boolean;
@@ -184,10 +210,27 @@ interface ArcGISServiceInfo {
  */
 interface ArcGISImageProducingServiceInfo extends ArcGISServiceInfo {
   copyrightText?: string;
+  layers?: Array<{
+    defaultVisibility?: boolean;
+    id?: number;
+    subLayerIds?: number[] | null;
+  }>;
   mapName?: string;
   name?: string;
   singleFusedMapCache?: boolean;
   tileInfo?: ArcGISTileInfo;
+}
+
+/** One selectable layer advertised by an ArcGIS MapServer. */
+export interface ArcGISMapServiceSublayer {
+  id: number;
+  name: string;
+}
+
+/** One raster function advertised by an ArcGIS ImageServer. */
+export interface ArcGISImageServiceRasterFunction {
+  description: string;
+  name: string;
 }
 
 interface ArcGISTileInfo {
@@ -275,19 +318,24 @@ export async function addArcGISLayer(
     return addArcGISImageServiceLayer(app, options, input);
   }
 
+  // Deliberately MapLibre-only: the SDK's runtime layer is added natively here,
+  // while the store layer below carries the same sources and styles for the
+  // other engines (Mapbox compiles them itself, see arcgisVectorStyle).
+  // engine-audit-allow: getMap-mapbox
   const map = app.getMap?.();
-  if (!map) {
-    throw new Error("The map is not ready.");
-  }
 
   const arcgis = await import("@esri/maplibre-arcgis");
   const hostedLayer = await createArcGISHostedLayer(arcgis, options, input);
   const id = createArcGISLayerId();
   const sourceIds = prefixArcGISSourceIds(hostedLayer, id);
-  const nativeLayerIds = prefixArcGISStyleLayerIds(hostedLayer, id);
+  // Snapshot the SDK style once it carries the prefixed source ids: the getters
+  // return fresh frozen copies on every read, so one snapshot feeds both the
+  // map and the store without assuming a stable order between reads.
+  const { sources, layers: styleLayers } = snapshotArcGISStyle(hostedLayer, id);
+  const nativeLayerIds = styleLayers.map((spec) => spec.id);
   const bounds = await resolveArcGISLayerBounds(input, options, hostedLayer);
 
-  addArcGISRuntimeLayerToMap(hostedLayer, map);
+  if (map) addArcGISRuntimeLayerToMap(sources, styleLayers, map);
   ensureArcGISStoreCleanup();
   arcgisLayerInstances.set(id, hostedLayer);
 
@@ -299,10 +347,81 @@ export async function addArcGISLayer(
     bounds,
     sourceIds,
   });
+  // Keep the resolved sources and style layers with the data so a second
+  // renderer (including the Cesium drape) can rebuild them without a control.
+  layer.source.arcgisSources = sources;
+  layer.source.arcgisLayers = styleLayers;
   const store = useAppStore.getState();
   store.addLayer(layer, options.beforeLayerId);
   if (bounds && options.zoomTo !== false) app.fitBounds?.(bounds);
   return id;
+}
+
+/**
+ * Retrieve the named layer catalog exposed by an ArcGIS MapServer.
+ *
+ * Group layers are included because ArcGIS accepts their ids in the dynamic
+ * export `layers=show:` parameter and selecting one is a convenient way to
+ * draw all of its descendants.
+ */
+export async function fetchArcGISMapServiceSublayers(params: {
+  url: string;
+  token?: string;
+  signal?: AbortSignal;
+}): Promise<ArcGISMapServiceSublayer[]> {
+  const { serviceUrl } = resolveArcGISImageServiceUrl(params.url, "map-service");
+  const json = await fetchArcGISJson<{ layers?: unknown[] }>(
+    serviceUrl,
+    { layerType: "map-service", sourceType: "url", token: params.token },
+    undefined,
+    params.signal,
+  );
+  return Array.isArray(json.layers)
+    ? json.layers.filter(
+        (layer): layer is ArcGISMapServiceSublayer =>
+          typeof layer === "object" &&
+          layer !== null &&
+          Number.isSafeInteger((layer as Partial<ArcGISMapServiceSublayer>).id) &&
+          ((layer as Partial<ArcGISMapServiceSublayer>).id ?? -1) >= 0 &&
+          typeof (layer as Partial<ArcGISMapServiceSublayer>).name === "string",
+      )
+    : [];
+}
+
+/**
+ * Retrieve the named raster functions advertised by an ArcGIS ImageServer.
+ *
+ * @param params - ImageServer URL and optional request credentials/cancellation.
+ * @returns The service's valid named raster functions in advertised order.
+ */
+export async function fetchArcGISImageServiceRasterFunctions(params: {
+  url: string;
+  token?: string;
+  signal?: AbortSignal;
+}): Promise<ArcGISImageServiceRasterFunction[]> {
+  const { serviceUrl } = resolveArcGISImageServiceUrl(params.url, "image-service");
+  const json = await fetchArcGISJson<{ rasterFunctionInfos?: unknown[] }>(
+    serviceUrl,
+    { layerType: "image-service", sourceType: "url", token: params.token },
+    undefined,
+    params.signal,
+  );
+  if (!Array.isArray(json.rasterFunctionInfos)) return [];
+
+  const rasterFunctions: ArcGISImageServiceRasterFunction[] = [];
+  const names = new Set<string>();
+  for (const rasterFunction of json.rasterFunctionInfos) {
+    if (typeof rasterFunction !== "object" || rasterFunction === null) continue;
+    const candidate = rasterFunction as Partial<ArcGISImageServiceRasterFunction>;
+    const name = typeof candidate.name === "string" ? candidate.name.trim() : undefined;
+    if (!name || names.has(name)) continue;
+    names.add(name);
+    rasterFunctions.push({
+      name,
+      description: typeof candidate.description === "string" ? candidate.description.trim() : "",
+    });
+  }
+  return rasterFunctions;
 }
 
 function ensureArcGISStoreCleanup(): void {
@@ -351,25 +470,39 @@ function prefixArcGISSourceIds(hostedLayer: ArcGISRuntimeLayer, layerId: string)
   });
 }
 
-function prefixArcGISStyleLayerIds(hostedLayer: ArcGISRuntimeLayer, layerId: string): string[] {
-  const mutableLayers = hostedLayer.layers as maplibregl.LayerSpecification[];
-  return mutableLayers.map((styleLayer, index) => {
-    const nextLayerId = `${layerId}-layer-${index}-${sanitizeIdPart(styleLayer.id)}`;
-    styleLayer.id = nextLayerId;
-    return nextLayerId;
-  });
+function snapshotArcGISStyle(
+  hostedLayer: ArcGISRuntimeLayer,
+  layerId: string,
+): {
+  sources: Record<string, maplibregl.SourceSpecification>;
+  layers: maplibregl.LayerSpecification[];
+} {
+  // The SDK getters return frozen copies, so the prefixed ids go on our own
+  // mutable clone rather than back onto the runtime layer.
+  return {
+    sources: structuredClone(hostedLayer.sources),
+    layers: hostedLayer.layers.map((styleLayer, index) => ({
+      ...structuredClone(styleLayer),
+      id: `${layerId}-layer-${index}-${sanitizeIdPart(styleLayer.id)}`,
+    })),
+  };
 }
 
-function addArcGISRuntimeLayerToMap(hostedLayer: ArcGISRuntimeLayer, map: maplibregl.Map): void {
-  for (const [sourceId, source] of Object.entries(hostedLayer.sources)) {
+function addArcGISRuntimeLayerToMap(
+  sources: Record<string, maplibregl.SourceSpecification>,
+  layers: maplibregl.LayerSpecification[],
+  map: maplibregl.Map,
+): void {
+  // The map gets its own copies so it cannot mutate what the store persists.
+  for (const [sourceId, source] of Object.entries(sources)) {
     if (!map.getSource(sourceId)) {
-      map.addSource(sourceId, source);
+      map.addSource(sourceId, structuredClone(source));
     }
   }
 
-  for (const layer of hostedLayer.layers) {
-    if (!map.getLayer(layer.id)) {
-      map.addLayer(layer);
+  for (const spec of layers) {
+    if (!map.getLayer(spec.id)) {
+      map.addLayer(structuredClone(spec));
     }
   }
 }
@@ -415,12 +548,18 @@ async function addArcGISFeatureLayerAsGeoJson(
   const name =
     options.name?.trim() || layerInfo.name || layerNameFromArcGISInput(layerUrl, "ArcGIS Layer");
   const store = useAppStore.getState();
-  const map = app.getMap?.();
   // Headless/API consumers have no viewport to query, so retain the complete
   // paged download for them. The interactive app takes the bounded path below.
+  // A globe- or Mapbox-primary app has no MapLibre map either, so it takes the
+  // same path: a complete download rather than a silently unfiltered viewport
+  // query. (engine-audit-allow: getMap-mapbox)
+  const map = app.getMap?.();
   const initialData: FeatureCollection = map
     ? { type: "FeatureCollection", features: [] }
-    : await fetchArcGISFeaturePages(queryUrl, options, layerInfo);
+    : identifyArcGISFeatures(
+        await fetchArcGISFeaturePages(queryUrl, options, layerInfo),
+        layerInfo.objectIdField,
+      );
   // Add the layer before downloading features. Large services must not hold the
   // Add Data dialog open while hundreds of thousands of records are fetched.
   const id = store.addGeoJsonLayer(name, initialData, refreshUrl, options.beforeLayerId ?? null);
@@ -440,9 +579,16 @@ async function addArcGISFeatureLayerAsGeoJson(
       maxFeatures: options.maxFeatures,
       pageSize: options.pageSize,
     },
-    metadata: { sourceKind: ARCGIS_FEATURE_SOURCE_KIND, viewportLoading: Boolean(map) },
+    metadata: {
+      sourceKind: ARCGIS_FEATURE_SOURCE_KIND,
+      viewportLoading: Boolean(map),
+      arcgisEditBaseline: structuredClone(initialData),
+      arcgisEditInfo: layerInfo,
+    },
   });
 
+  arcgisEditOptions.set(id, { ...options, onProgress: undefined });
+  ensureArcGISFeatureLoaderCleanup();
   const bounds = arcgisExtentToBounds(layerInfo.extent);
   if (bounds && options.zoomTo !== false) app.fitBounds?.(bounds);
   if (map) startArcGISViewportLoader(id, map, queryUrl, options, () => Promise.resolve(layerInfo));
@@ -489,6 +635,7 @@ function startArcGISViewportLoader(
    * a layer that is perfectly healthy).
    */
   const load = async (): Promise<FeatureCollection> => {
+    if (arcGISLayerHasPendingEdits(layerId)) return currentArcGISLayerGeojson(layerId);
     abort?.abort();
     const controller = new AbortController();
     abort = controller;
@@ -501,6 +648,12 @@ function startArcGISViewportLoader(
       if (sequence !== requestSequence) return currentArcGISLayerGeojson(layerId);
       throw error;
     }
+    // engine-audit-allow: getMap-bounds — this loader needs more than the
+    // extent (it binds `moveend` and reads `isMoving` below), and the plugin
+    // API has no camera-idle hook to answer those on the globe, so it cannot
+    // move to `app.getViewBounds()`. It only runs with a MapLibre map: without
+    // one the layer took the complete paged download above instead, so a null
+    // `getMap()` is a documented branch here, not a silent no-op.
     const envelopes = arcgisViewportEnvelopes(map.getBounds());
     // One bucket per envelope, so a viewport split across the antimeridian
     // publishes both halves together instead of each replacing the other.
@@ -518,11 +671,21 @@ function startArcGISViewportLoader(
     const publish = (): void => {
       if (
         sequence !== requestSequence ||
+        arcGISLayerHasPendingEdits(layerId) ||
         !useAppStore.getState().layers.some((l) => l.id === layerId)
       ) {
         return;
       }
-      useAppStore.getState().updateLayer(layerId, { geojson: collect() });
+      const data = identifyArcGISFeatures(collect(), layerInfo.objectIdField);
+      const current = useAppStore.getState().layers.find((l) => l.id === layerId)!;
+      useAppStore.getState().updateLayer(layerId, {
+        geojson: data,
+        metadata: {
+          ...current.metadata,
+          arcgisEditBaseline: structuredClone(data),
+          arcgisEditInfo: layerInfo,
+        },
+      });
       // Clear as soon as the service answers at all, not when the whole walk
       // finishes: a dense extent pages for tens of seconds, and leaving a stale
       // "zoom in" on screen while its features stream in reads as a live error.
@@ -563,9 +726,9 @@ function startArcGISViewportLoader(
     // One half failing still leaves the other's features on the map; the error
     // says the view is incomplete rather than pretending it is whole.
     const failed = results.find((result) => result.status === "rejected");
-    if (failed) throw failed.reason;
+    if (failed && !arcGISLayerHasPendingEdits(layerId)) throw failed.reason;
     reportArcGISViewportError(layerId, null);
-    return collect();
+    return currentArcGISLayerGeojson(layerId);
   };
 
   const move = (): void => {
@@ -621,6 +784,9 @@ export function reloadArcGISViewportLayer(layerId: string): Promise<FeatureColle
  * @param app - The host app API, for the map the loaders bind to.
  */
 export function restoreArcGISViewportLayers(app: GeoLibreAppAPI): void {
+  // Viewport loaders only exist on MapLibre (the other engines hold the
+  // complete download, see addArcGISFeatureLayer).
+  // engine-audit-allow: getMap-mapbox
   const map = app.getMap?.();
   if (!map) return;
   for (const layer of useAppStore.getState().layers) {
@@ -677,10 +843,11 @@ export function restoreArcGISViewportLayers(app: GeoLibreAppAPI): void {
  */
 function ensureArcGISFeatureLoaderCleanup(): void {
   arcgisFeatureLoaderUnsubscribe ??= useAppStore.subscribe((state, previous) => {
-    if (arcgisFeatureLoaders.size === 0) return;
+    if (arcgisFeatureLoaders.size === 0 && arcgisEditOptions.size === 0) return;
     for (const layer of previous.layers) {
       if (!state.layers.some((current) => current.id === layer.id)) {
         stopArcGISViewportLoader(layer.id);
+        arcgisEditOptions.delete(layer.id);
       }
     }
   });
@@ -912,7 +1079,11 @@ async function addArcGISImageServiceLayer(
         token,
       });
 
-  const bounds = arcgisExtentToBounds(info.fullExtent ?? info.initialExtent ?? info.extent);
+  const bounds =
+    arcgisExtentToBounds(info.fullExtent ?? info.initialExtent ?? info.extent) ??
+    (options.layerType === "map-service"
+      ? await resolveArcGISMapServiceBounds(serviceUrl, info, options, sublayers)
+      : undefined);
   const attribution = info.copyrightText?.trim() || undefined;
   const id = createArcGISLayerId();
   const layer: GeoLibreLayer = {
@@ -959,6 +1130,68 @@ async function addArcGISImageServiceLayer(
 }
 
 /**
+ * Ask selected MapServer layers to project their data extents to WGS84.
+ *
+ * ArcGIS services frequently publish in a local projected CRS whose WKID is
+ * not built into the browser. The server already owns the datum transform, so
+ * `/query?returnExtentOnly=true&outSR=4326` is both more reliable and much
+ * cheaper than downloading features merely to derive a camera target.
+ */
+async function resolveArcGISMapServiceBounds(
+  serviceUrl: string,
+  info: ArcGISImageProducingServiceInfo,
+  options: ArcGISLayerOptions,
+  sublayers: string | undefined,
+): Promise<[number, number, number, number] | undefined> {
+  const requestedIds = sublayers?.split(",").map(Number);
+  const ids =
+    requestedIds ??
+    (info.layers ?? [])
+      .filter(
+        (layer) =>
+          layer.defaultVisibility !== false &&
+          (!Array.isArray(layer.subLayerIds) || layer.subLayerIds.length === 0),
+      )
+      .map((layer) => layer.id)
+      .filter((id): id is number => Number.isSafeInteger(id) && (id ?? -1) >= 0);
+  if (ids.length === 0) return undefined;
+
+  const extents: Array<[number, number, number, number]> = [];
+  // Keep request pressure modest for public ArcGIS servers with many layers.
+  for (let index = 0; index < ids.length; index += 6) {
+    const batch = await Promise.allSettled(
+      ids.slice(index, index + 6).map(async (id) => {
+        const queryUrl = appendArcGISParams(`${serviceUrl}/${id}/query`, {
+          f: "json",
+          outSR: "4326",
+          returnExtentOnly: "true",
+          where: "1=1",
+        });
+        const result = await fetchArcGISJson<{ extent?: ArcGISExtent }>(
+          queryUrl,
+          options,
+          undefined,
+        );
+        return arcgisExtentToBounds(result.extent);
+      }),
+    );
+    for (const result of batch) {
+      if (result.status === "fulfilled" && result.value) extents.push(result.value);
+    }
+  }
+  if (extents.length === 0) return undefined;
+  return extents.reduce<[number, number, number, number]>(
+    (union, bounds) => [
+      Math.min(union[0], bounds[0]),
+      Math.min(union[1], bounds[1]),
+      Math.max(union[2], bounds[2]),
+      Math.max(union[3], bounds[3]),
+    ],
+    [...extents[0]],
+  );
+}
+
+/**
  * Validate a MapServer/ImageServer URL and split off a trailing sublayer id.
  *
  * `/export` and `/exportImage` live on the service root, so a URL that points at
@@ -979,14 +1212,14 @@ function resolveArcGISImageServiceUrl(
   const url = trimTrailingSlash(stripArcGISUrlQuery(input));
   if (layerType === "image-service") {
     if (!/\/ImageServer$/i.test(url)) {
-      throw new Error("Enter an ArcGIS ImageServer URL.");
+      throw new Error(ARCGIS_IMAGE_SERVICE_URL_ERROR);
     }
     return { serviceUrl: url };
   }
 
   const match = /^(.*\/MapServer)(?:\/(\d+))?$/i.exec(url);
   if (!match) {
-    throw new Error("Enter an ArcGIS MapServer URL.");
+    throw new Error(ARCGIS_MAP_SERVICE_URL_ERROR);
   }
   return { serviceUrl: match[1], ...(match[2] ? { sublayers: match[2] } : {}) };
 }
@@ -1177,12 +1410,16 @@ function arcgisTileScheme(info: ArcGISImageProducingServiceInfo): ArcGISTileSche
  * @returns The re-downloaded features.
  */
 export async function refreshArcGISFeatureLayer(params: {
+  layerId?: string;
   maxFeatures?: number;
   pageSize?: number;
   queryUrl: string;
 }): Promise<FeatureCollection> {
+  if (params.layerId && arcGISLayerHasPendingEdits(params.layerId))
+    return currentArcGISLayerGeojson(params.layerId);
   const queryUrl = trimTrailingSlash(params.queryUrl).replace(/\/query$/i, "");
   const options: ArcGISLayerOptions = {
+    ...(params.layerId ? arcgisEditOptions.get(params.layerId) : undefined),
     layerType: "feature",
     maxFeatures: params.maxFeatures,
     pageSize: params.pageSize,
@@ -1191,7 +1428,25 @@ export async function refreshArcGISFeatureLayer(params: {
   // Re-read the metadata rather than trusting a stored copy: `maxRecordCount`
   // and the paging capabilities are the service's to change between sessions.
   const layerInfo = await fetchArcGISJson<ArcGISFeatureLayerInfo>(queryUrl, options, undefined);
-  return fetchArcGISFeaturePages(`${queryUrl}/query`, options, layerInfo);
+  const data = identifyArcGISFeatures(
+    await fetchArcGISFeaturePages(`${queryUrl}/query`, options, layerInfo),
+    layerInfo.objectIdField,
+  );
+  if (params.layerId) {
+    if (arcGISLayerHasPendingEdits(params.layerId))
+      return currentArcGISLayerGeojson(params.layerId);
+    const layer = useAppStore.getState().layers.find((l) => l.id === params.layerId);
+    if (layer)
+      useAppStore.getState().updateLayer(layer.id, {
+        geojson: data,
+        metadata: {
+          ...layer.metadata,
+          arcgisEditInfo: layerInfo,
+          arcgisEditBaseline: structuredClone(data),
+        },
+      });
+  }
+  return data;
 }
 
 /**
@@ -1355,7 +1610,7 @@ async function fetchArcGISFeatureCount(
   params: Record<string, string | undefined>,
 ): Promise<number | null> {
   try {
-    const response = await fetch(
+    const response = await arcGISFetch(
       appendArcGISParams(queryUrl, {
         ...params,
         f: "json",
@@ -1502,7 +1757,7 @@ async function fetchArcGISObjectIds(
   plan: ArcGISPagingPlan,
 ): Promise<{ field: string; objectIds: number[] } | null> {
   try {
-    const response = await fetch(
+    const response = await arcGISFetch(
       appendArcGISParams(plan.queryUrl, {
         ...plan.params,
         f: "json",
@@ -1646,7 +1901,7 @@ async function fetchArcGISGeoJson(
   url: string,
   signal?: AbortSignal,
 ): Promise<FeatureCollection & { exceededTransferLimit: boolean }> {
-  const response = await fetch(url, { signal });
+  const response = await arcGISFetch(url, { signal });
   if (!response.ok) {
     throw new ArcGISQueryError(`ArcGIS feature query failed with ${response.status}.`, {
       status: response.status,
@@ -1680,6 +1935,7 @@ async function fetchArcGISGeoJson(
   if (json.type !== "FeatureCollection" || !Array.isArray(json.features)) {
     throw new Error("The ArcGIS feature layer did not return GeoJSON features.");
   }
+  const features = json.features.map(repairArcGISNestedPolygonRings);
   // ArcGIS caps a single query at the service's maxRecordCount and flags the
   // shortfall with `exceededTransferLimit`. In `f=geojson` output that flag is
   // not always where the `f=json` output puts it — some servers only nest it
@@ -1688,10 +1944,190 @@ async function fetchArcGISGeoJson(
   // genuinely last one.
   return {
     ...json,
+    features,
     exceededTransferLimit: Boolean(
       json.exceededTransferLimit || json.properties?.exceededTransferLimit,
     ),
   };
+}
+
+/**
+ * Reassemble rings that ArcGIS exported as separate one-ring polygons.
+ *
+ * ArcGIS determines shell/hole membership from its own winding convention. If
+ * a service contains rings wound the other way around, `f=geojson` can emit a
+ * MultiPolygon whose nested rings are all independent polygons. MapLibre then
+ * fills the intended holes. This guarded containment heuristic is limited to
+ * small all-one-ring exports; ordinary polygons, structured multipolygons,
+ * large multipart features, and boundary-touching rings pass through
+ * unchanged rather than risk destructive reclassification.
+ */
+function repairArcGISNestedPolygonRings(feature: Feature): Feature {
+  const geometry = feature.geometry;
+  if (
+    geometry?.type !== "MultiPolygon" ||
+    geometry.coordinates.length < 2 ||
+    geometry.coordinates.length > MAX_ARCGIS_RING_REPAIR_PARTS ||
+    geometry.coordinates.some((polygon) => polygon.length !== 1)
+  ) {
+    return feature;
+  }
+
+  const rings = geometry.coordinates.map(([ring]) => ({
+    area: signedRingArea(ring),
+    bounds: ringBounds(ring),
+    depth: 0,
+    parent: -1,
+    ring,
+  }));
+  // Planar containment is ambiguous across the antimeridian. Leave those
+  // geometries untouched rather than risk turning a separate polygon into a
+  // hole; MapLibre already handles their original GeoJSON representation.
+  if (rings.some(({ ring }) => ringCrossesAntimeridian(ring))) return feature;
+
+  for (let child = 0; child < rings.length; child += 1) {
+    let parentArea = Number.POSITIVE_INFINITY;
+    for (let candidate = 0; candidate < rings.length; candidate += 1) {
+      if (candidate === child || Math.abs(rings[candidate].area) <= Math.abs(rings[child].area)) {
+        continue;
+      }
+      if (
+        boundsContain(rings[candidate].bounds, rings[child].bounds) &&
+        Math.abs(rings[candidate].area) < parentArea &&
+        ringStrictlyContains(rings[candidate].ring, rings[child].ring)
+      ) {
+        rings[child].parent = candidate;
+        parentArea = Math.abs(rings[candidate].area);
+      }
+    }
+  }
+
+  if (!rings.some((ring) => ring.parent !== -1)) return feature;
+  const depthOf = (index: number): number => {
+    const parent = rings[index].parent;
+    return parent === -1 ? 0 : depthOf(parent) + 1;
+  };
+  rings.forEach((ring, index) => {
+    ring.depth = depthOf(index);
+  });
+
+  const coordinates: MultiPolygon["coordinates"] = [];
+  rings.forEach((entry, index) => {
+    if (entry.depth % 2 !== 0) return;
+    const polygon: Position[][] = [orientRing(entry.ring, true)];
+    rings.forEach((candidate) => {
+      if (candidate.parent === index && candidate.depth % 2 === 1) {
+        polygon.push(orientRing(candidate.ring, false));
+      }
+    });
+    coordinates.push(polygon);
+  });
+
+  return { ...feature, geometry: { ...geometry, coordinates } };
+}
+
+function signedRingArea(ring: Position[]): number {
+  let twiceArea = 0;
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    twiceArea += ring[index][0] * ring[index + 1][1] - ring[index + 1][0] * ring[index][1];
+  }
+  return twiceArea / 2;
+}
+
+type RingBounds = [west: number, south: number, east: number, north: number];
+
+function ringBounds(ring: Position[]): RingBounds {
+  return ring.reduce<RingBounds>(
+    (bounds, position) => [
+      Math.min(bounds[0], position[0]),
+      Math.min(bounds[1], position[1]),
+      Math.max(bounds[2], position[0]),
+      Math.max(bounds[3], position[1]),
+    ],
+    [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, -Infinity, -Infinity],
+  );
+}
+
+function boundsContain(container: RingBounds, child: RingBounds): boolean {
+  return (
+    container[0] <= child[0] &&
+    container[1] <= child[1] &&
+    container[2] >= child[2] &&
+    container[3] >= child[3]
+  );
+}
+
+function ringCrossesAntimeridian(ring: Position[]): boolean {
+  return ring
+    .slice(0, -1)
+    .some((position, index) => Math.abs(position[0] - ring[index + 1][0]) > 180);
+}
+
+function orientRing(ring: Position[], counterClockwise: boolean): Position[] {
+  return signedRingArea(ring) > 0 === counterClockwise ? ring : [...ring].reverse();
+}
+
+function pointInRing(point: Position, ring: Position[]): boolean {
+  let inside = false;
+  for (let current = 0, previous = ring.length - 1; current < ring.length; previous = current++) {
+    const [x1, y1] = ring[current];
+    const [x2, y2] = ring[previous];
+    if (
+      y1 > point[1] !== y2 > point[1] &&
+      point[0] < ((x2 - x1) * (point[1] - y1)) / (y2 - y1) + x1
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function ringStrictlyContains(container: Position[], child: Position[]): boolean {
+  return (
+    child.slice(0, -1).every((point) => pointInRing(point, container)) &&
+    !ringsIntersect(container, child)
+  );
+}
+
+function ringsIntersect(first: Position[], second: Position[]): boolean {
+  for (let firstIndex = 0; firstIndex < first.length - 1; firstIndex += 1) {
+    for (let secondIndex = 0; secondIndex < second.length - 1; secondIndex += 1) {
+      if (
+        segmentsIntersect(
+          first[firstIndex],
+          first[firstIndex + 1],
+          second[secondIndex],
+          second[secondIndex + 1],
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function segmentsIntersect(a: Position, b: Position, c: Position, d: Position): boolean {
+  const cross = (start: Position, end: Position, point: Position): number =>
+    (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0]);
+  const abC = cross(a, b, c);
+  const abD = cross(a, b, d);
+  const cdA = cross(c, d, a);
+  const cdB = cross(c, d, b);
+  if (abC === 0 && pointOnSegment(c, a, b)) return true;
+  if (abD === 0 && pointOnSegment(d, a, b)) return true;
+  if (cdA === 0 && pointOnSegment(a, c, d)) return true;
+  if (cdB === 0 && pointOnSegment(b, c, d)) return true;
+  return abC > 0 !== abD > 0 && cdA > 0 !== cdB > 0;
+}
+
+function pointOnSegment(point: Position, start: Position, end: Position): boolean {
+  return (
+    point[0] >= Math.min(start[0], end[0]) &&
+    point[0] <= Math.max(start[0], end[0]) &&
+    point[1] >= Math.min(start[1], end[1]) &&
+    point[1] <= Math.max(start[1], end[1])
+  );
 }
 
 async function resolveFeatureLayerUrl(
@@ -1738,7 +2174,7 @@ async function fetchArcGISPortalItemInfo(
     f: "json",
     token: options.token?.trim(),
   });
-  const response = await fetch(itemUrl);
+  const response = await arcGISFetch(itemUrl);
   if (!response.ok) {
     throw new Error(`ArcGIS portal item request failed with ${response.status}.`, {
       cause,
@@ -1751,12 +2187,14 @@ async function fetchArcGISJson<T>(
   url: string,
   options: ArcGISLayerOptions,
   cause: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(
+  const response = await arcGISFetch(
     appendArcGISParams(url, {
       f: "json",
       token: options.token?.trim(),
     }),
+    { signal },
   );
   if (!response.ok) {
     throw new Error(`ArcGIS service request failed with ${response.status}.`, {
@@ -1958,4 +2396,269 @@ function sanitizeIdPart(value: string): string {
 function createArcGISLayerId(): string {
   arcgisLayerSequence += 1;
   return `arcgis-layer-${arcgisLayerSequence}`;
+}
+
+// Credentials belong to the live connection, never to project metadata.
+const arcgisEditOptions = new Map<string, ArcGISLayerOptions>();
+const arcgisSavingLayers = new Set<string>();
+
+function arcGISBaseline(layer: GeoLibreLayer): FeatureCollection | undefined {
+  const value = layer.metadata.arcgisEditBaseline as FeatureCollection | undefined;
+  return value?.type === "FeatureCollection" && Array.isArray(value.features) ? value : undefined;
+}
+
+export function isArcGISWritableLayer(layer: GeoLibreLayer): boolean {
+  if (layer.metadata.sourceKind !== ARCGIS_FEATURE_SOURCE_KIND || !arcGISBaseline(layer))
+    return false;
+  const info = layer.metadata.arcgisEditInfo as ArcGISEditInfo | undefined;
+  if (!info) return false;
+  const caps = arcGISEditCapabilities(info);
+  return caps.create || caps.update || caps.delete;
+}
+
+/** Pause replacement downloads while edits are pending or an editor owns the features. */
+export function arcGISLayerHasPendingEdits(layerId: string): boolean {
+  const layer = useAppStore.getState().layers.find((l) => l.id === layerId);
+  if (!layer || layer.metadata.sourceKind !== ARCGIS_FEATURE_SOURCE_KIND) return false;
+  if (
+    arcgisSavingLayers.has(layerId) ||
+    layer.metadata.arcgisSaveUncertain === true ||
+    getGeometryEditTargetLayerId() === layerId
+  )
+    return true;
+  const baseline = arcGISBaseline(layer);
+  return Boolean(
+    baseline &&
+    layer.geojson &&
+    !sameArcGISFeatures(
+      baseline,
+      layer.geojson,
+      (layer.metadata.arcgisEditInfo as ArcGISEditInfo | undefined)?.objectIdField,
+    ),
+  );
+}
+
+/** Save one snapshot, retaining failed and concurrently changed features for the next save. */
+export async function saveArcGISLayerEdits(
+  layerId: string,
+): Promise<{ inserted: number; updated: number; deleted: number; errors: string[] }> {
+  if (arcgisSavingLayers.has(layerId)) throw new Error("An ArcGIS save is already in progress.");
+  if (getGeometryEditTargetLayerId() === layerId)
+    throw new Error("Finish editing geometry before saving to ArcGIS.");
+  const layer = useAppStore.getState().layers.find((l) => l.id === layerId);
+  if (!layer || !isArcGISWritableLayer(layer) || !layer.geojson)
+    throw new Error(
+      "This layer has no writable ArcGIS connection. Add the service again to establish one.",
+    );
+  if (layer.metadata.arcgisSaveUncertain === true)
+    throw new Error(
+      "The previous save could not be confirmed. Check the service and add the layer again before saving to avoid duplicate inserts.",
+    );
+  const queryUrl = layer.source.arcgisQueryUrl;
+  if (typeof queryUrl !== "string") throw new Error("Missing ArcGIS service URL.");
+  const layerUrl = trimTrailingSlash(queryUrl).replace(/\/query$/i, "");
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(layerUrl);
+  } catch {
+    throw new Error(
+      "Invalid ArcGIS service URL. Add the service again with a valid Feature Service URL.",
+    );
+  }
+  if (parsedUrl.protocol !== "https:") throw new Error("ArcGIS writes require HTTPS.");
+  const options = arcgisEditOptions.get(layerId) ?? { layerType: "feature", sourceType: "url" };
+  arcgisSavingLayers.add(layerId);
+  // Abort a page walk started before the save; late pages also check the lock.
+  arcgisFeatureLoaders.get(layerId)?.abort?.abort();
+  try {
+    const info = await fetchArcGISJson<ArcGISFeatureLayerInfo>(layerUrl, options, undefined);
+    const current = useAppStore.getState().layers.find((l) => l.id === layerId);
+    if (!current?.geojson) throw new Error("ArcGIS layer was removed.");
+    const baseline = arcGISBaseline(current)!;
+    const submitted: FeatureCollection = {
+      ...current.geojson,
+      features: current.geojson.features.map((f) =>
+        f.id === undefined && arcGISObjectId(f, info.objectIdField!) === undefined
+          ? { ...f, id: `arcgis-new-${crypto.randomUUID()}` }
+          : f,
+      ),
+    };
+    useAppStore.getState().updateLayer(layerId, { geojson: submitted });
+    const plan = planArcGISEdits(baseline, submitted, info);
+    const caps = current.capabilities;
+    if (
+      (plan.adds.length && caps?.create === false) ||
+      (plan.updates.length && caps?.update === false) ||
+      (plan.deletes.length && caps?.delete === false)
+    )
+      throw new Error("Layer permissions do not allow the requested edits.");
+    const result = { inserted: 0, updated: 0, deleted: 0, errors: [] as string[] };
+    if (!plan.adds.length && !plan.updates.length && !plan.deletes.length) return result;
+    const body = new URLSearchParams({
+      f: "json",
+      rollbackOnFailure: "false",
+      returnEditResults: "true",
+    });
+    if (options.token?.trim()) body.set("token", options.token.trim());
+    if (plan.adds.length) body.set("adds", JSON.stringify(plan.adds.map((e) => e.payload)));
+    if (plan.updates.length)
+      body.set("updates", JSON.stringify(plan.updates.map((e) => e.payload)));
+    if (plan.deletes.length) body.set("deletes", plan.deletes.join(","));
+    // Persist before dispatch. If the response is lost, a project reload must not retry inserts.
+    useAppStore
+      .getState()
+      .updateLayer(layerId, { metadata: { ...current.metadata, arcgisSaveUncertain: true } });
+    type EditResult = {
+      success?: boolean;
+      objectId?: number;
+      error?: { description?: string; code?: number };
+    };
+    let response: {
+      addResults?: EditResult[];
+      updateResults?: EditResult[];
+      deleteResults?: EditResult[];
+      error?: ArcGISErrorEnvelope;
+    };
+    try {
+      const http = await arcGISFetch(`${layerUrl}/applyEdits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        redirect: "error",
+      });
+      if (!http.ok) throw new Error(`HTTP ${http.status}`);
+      response = await http.json();
+      if (response.error) {
+        const latest = useAppStore.getState().layers.find((l) => l.id === layerId);
+        if (latest)
+          useAppStore
+            .getState()
+            .updateLayer(layerId, { metadata: { ...latest.metadata, arcgisSaveUncertain: false } });
+        throw new Error(arcgisErrorMessage(response.error, "ArcGIS rejected the edits."));
+      }
+      for (const [entries, count] of [
+        [response.addResults, plan.adds.length],
+        [response.updateResults, plan.updates.length],
+        [response.deleteResults, plan.deletes.length],
+      ] as const) {
+        if (
+          (entries?.length ?? 0) !== count ||
+          entries?.some((e) => typeof e.success !== "boolean")
+        )
+          throw new Error("Incomplete ArcGIS edit results.");
+      }
+      if (
+        response.addResults?.some(
+          (e) => e.success && (!Number.isSafeInteger(e.objectId) || e.objectId! < 0),
+        )
+      )
+        throw new Error("ArcGIS did not return inserted object IDs.");
+    } catch (error) {
+      const uncertain = useAppStore.getState().layers.find((l) => l.id === layerId)
+        ?.metadata.arcgisSaveUncertain;
+      if (uncertain)
+        throw new Error(
+          "ArcGIS save could not be confirmed. Check the service and add the layer again before saving to avoid duplicate inserts.",
+          { cause: error },
+        );
+      throw error;
+    }
+    const latest = useAppStore.getState().layers.find((l) => l.id === layerId);
+    if (!latest?.geojson) return result;
+    const field = info.objectIdField!;
+    const nextBaseline = new Map(baseline.features.map((f) => [arcGISObjectId(f, field)!, f]));
+    let features = [...latest.geojson.features];
+    const saved = new Map<number, Feature>();
+    const failed = (entry: EditResult, operation: string, id: number): boolean => {
+      if (entry.success) return false;
+      result.errors.push(
+        `${operation} ${id}: ${entry.error?.description ?? `ArcGIS error ${entry.error?.code ?? "unknown"}`}`,
+      );
+      return true;
+    };
+    response.addResults?.forEach((entry, i) => {
+      if (failed(entry, "Add", i + 1)) return;
+      const edit = plan.adds[i];
+      const id = entry.objectId!;
+      const stored = { ...edit.feature, properties: { ...edit.feature.properties, [field]: id } };
+      nextBaseline.set(id, stored);
+      saved.set(id, stored);
+      features = features.map((f) =>
+        f === edit.feature || (edit.feature.id !== undefined && f.id === edit.feature.id)
+          ? { ...f, properties: { ...f.properties, [field]: id } }
+          : f,
+      );
+      result.inserted++;
+    });
+    response.updateResults?.forEach((entry, i) => {
+      const edit = plan.updates[i];
+      if (failed(entry, "Update", edit.objectId)) return;
+      nextBaseline.set(edit.objectId, edit.feature);
+      saved.set(edit.objectId, edit.feature);
+      result.updated++;
+    });
+    response.deleteResults?.forEach((entry, i) => {
+      const id = plan.deletes[i];
+      if (failed(entry, "Delete", id)) return;
+      nextBaseline.delete(id);
+      result.deleted++;
+    });
+    useAppStore.getState().updateLayer(layerId, {
+      geojson: { ...latest.geojson, features },
+      metadata: {
+        ...latest.metadata,
+        arcgisEditBaseline: structuredClone({
+          type: "FeatureCollection",
+          features: [...nextBaseline.values()],
+        }),
+        arcgisEditInfo: info,
+        arcgisSaveUncertain: false,
+      },
+    });
+    // Capture defaults and server-calculated fields, without overwriting edits made during the save.
+    if (saved.size) {
+      try {
+        const fresh = await fetchArcGISFeaturePages(
+          queryUrl,
+          { ...options, maxFeatures: undefined },
+          info,
+          { params: { objectIds: [...saved.keys()].join(",") } },
+        );
+        const now = useAppStore.getState().layers.find((l) => l.id === layerId);
+        if (now?.geojson) {
+          const refreshed = new Map(
+            fresh.features.map((f) => {
+              const id = arcGISObjectId(f, field)!;
+              // A new feature keeps its local identity after ArcGIS assigns its object ID.
+              return [id, { ...f, id: saved.get(id)?.id ?? f.id }];
+            }),
+          );
+          for (const [id, f] of refreshed) if (saved.has(id)) nextBaseline.set(id, f);
+          const reconciled = now.geojson.features.map((f) => {
+            const id = arcGISObjectId(f, field);
+            const prior = id === undefined ? undefined : saved.get(id);
+            const serverFeature = id === undefined ? undefined : refreshed.get(id);
+            return prior && serverFeature ? reconcileArcGISRefresh(f, prior, serverFeature) : f;
+          });
+          useAppStore.getState().updateLayer(layerId, {
+            geojson: { ...now.geojson, features: reconciled },
+            metadata: {
+              ...now.metadata,
+              arcgisEditBaseline: structuredClone({
+                type: "FeatureCollection",
+                features: [...nextBaseline.values()],
+              }),
+            },
+          });
+        }
+      } catch {
+        result.errors.push(
+          "Edits were saved, but server-calculated values could not be refreshed.",
+        );
+      }
+    }
+    return result;
+  } finally {
+    arcgisSavingLayers.delete(layerId);
+  }
 }

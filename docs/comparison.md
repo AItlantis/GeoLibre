@@ -2,13 +2,15 @@
 
 How GeoLibre compares to the desktop GIS, cloud GIS, and web-mapping tools people
 most often ask about: **QGIS**, **ArcGIS Pro**, **ArcGIS Online**, **CARTO**,
-**Felt**, and **kepler.gl**.
+**Felt**, and **kepler.gl** — plus **Google Earth** and **Google Earth Pro**,
+which get [a section of their own](#google-earth-and-google-earth-pro) because
+they are virtual globes rather than a GIS.
 
 GeoLibre is not trying to replace any of these outright. It occupies a spot none
 of them quite fills: a **free and open-source GIS that runs in a browser tab with
 nothing installed**, keeps your data on your own machine, and still ships real
 analysis, spatial SQL, cartography, and a project file — then packages the *same*
-app as a desktop install, an Android app, and a Jupyter widget.
+app as a desktop install, an Android app, an iOS app, and a Jupyter widget.
 
 !!! note "How to read this"
     Comparisons like this age quickly and are written by an interested party. The
@@ -22,6 +24,50 @@ app as a desktop install, an Android app, and a Jupyter widget.
     [open an issue](https://github.com/opengeos/GeoLibre/issues) — corrections
     are welcome.
 
+!!! info "This page is closed to new columns"
+    The comparison matrix below covers a fixed set of platforms and is **not
+    accepting additional ones**. Every extra column means more than forty cells
+    that have to be researched, dated, and re-verified on each update, and the
+    tables have reached the width a page can readably hold. Adding more would
+    make the comparison harder to read and harder to keep honest.
+
+    Google Earth sits in [its own section](#google-earth-and-google-earth-pro)
+    with a short table of its own, because it is a viewer rather than a GIS and
+    most of the matrix rows would simply read "—" for it. That is a one-off, not
+    an opening.
+
+    Corrections to the platforms already listed are still very welcome. If you
+    maintain another tool and want it compared with GeoLibre, publish that
+    comparison on your own site and add a link under
+    [Comparisons hosted elsewhere](#comparisons-hosted-elsewhere).
+
+## Complementary, not competing
+
+A useful way to think about GeoLibre and QGIS is smartphone cameras versus
+professional cameras. Smartphone cameras did not replace professional cameras,
+and it would not have made sense to pour every advance in photography into
+making professional cameras better. The two serve different people and
+different moments. A professional camera offers tremendous power, flexibility,
+and control. A smartphone camera prioritizes accessibility, convenience, and
+the ability to capture and share something instantly.
+
+QGIS is the professional camera: mature, powerful, feature-rich, and
+extensible. GeoLibre is closer to the smartphone camera: lightweight,
+reachable from a web browser, cross-platform, and designed so that people can
+work with geospatial data without installing complex software or setting up
+servers.
+
+![QGIS and GeoLibre as professional and smartphone cameras](https://assets.geolibre.app/images/QGIS-GeoLibre.webp)
+
+The geospatial community benefits from both. Separate projects can also
+experiment with new architectures and technologies, and the ideas that work out
+can strengthen the broader open-source geospatial ecosystem. The goal of
+GeoLibre is not to replace QGIS, but to make GIS accessible in places, and to
+people, where a traditional desktop GIS may not be the best fit.
+
+The rest of this page is written in that spirit: the tables are there to help
+you pick the right tool for a given job, not to declare a winner.
+
 ## At a glance
 
 | | **GeoLibre** | **QGIS** | **ArcGIS Pro** | **ArcGIS Online** | **CARTO** | **Felt** | **kepler.gl** |
@@ -30,11 +76,11 @@ app as a desktop install, an Android app, and a Jupyter widget.
 | **Cost** | Free | Free | Paid subscription | Paid subscription (credit-metered analysis) | Paid subscription | Paid subscription | Free |
 | **Browser** | Full app, nothing to install | No official browser build | No | Yes (the product *is* the browser app) | Yes | Yes (the authoring product) | Yes |
 | **Desktop** | Windows, macOS, Linux (Tauri) | Windows, macOS, Linux | Windows only | — | — | — | — |
-| **Mobile** | Native Android app; responsive touch layout | Via QField / Mergin Maps (separate apps) | — | Via ArcGIS Field Maps (separate app) | — | Felt Field App for iOS and Android (separate app) | Responsive web |
+| **Mobile** | Native Android and iOS apps; responsive touch layout | Via QField / Mergin Maps (separate apps) | — | Via ArcGIS Field Maps (separate app) | — | Felt Field App for iOS and Android (separate app) | Responsive web |
 | **In Jupyter** | Full app as an anywidget, two-way sync | Via `qgis` bindings, not the UI | Notebooks drive `arcpy`, not the UI | ArcGIS API for Python | Via `pydeck-carto` | — | Yes (widget) |
 | **Works offline** | Yes — PWA install, offline area download, desktop build | Yes | Yes | Limited (Field Maps offline areas) | No — connected platform by design | Field App offline areas, syncing on reconnect (higher plans) | Client-side, but assets are hosted |
 | **Where your data lives** | Your device — processed client-side in the browser session | Your device | Your device / your enterprise geodatabase | Vendor cloud | Your own cloud data warehouse — no CARTO-side storage (except cache) or sync; imports write to a warehouse you own | Vendor cloud, or a single-tenant instance in your own AWS account (Enterprise) | Your browser |
-| **Project file** | `.geolibre.json` (open, documented) | `.qgs` / `.qgz` (open) | `.aprx` (proprietary) | Web map JSON (hosted) | Map/Workflow JSON via CLI and MCP | Hosted map (no local file) | Exportable map config JSON |
+| **Project file** | `.geolibre` / `.geolibre.json` (open, documented) | `.qgs` / `.qgz` (open) | `.aprx` (proprietary) | Web map JSON (hosted) | Map/Workflow JSON via CLI and MCP | Hosted map (no local file) | Exportable map config JSON |
 
 ## Data and formats
 
@@ -91,6 +137,92 @@ app as a desktop install, an Android app, and a Jupyter widget.
 | **Self-hosting** | Docker image, or serve the static build anywhere | QGIS Server | ArcGIS Enterprise (paid) | — | Yes — Docker on a single VM or Kubernetes, on any vendor cloud or on-premises | Single-tenant AWS VPC, Felt-maintained (Enterprise) | Static build |
 | **Standalone export** | Whole project to **one offline HTML file**, no server | Via qgis2web plugin | — | — | Data export to CSV, GeoJSON, GeoPackage, GeoParquet, KML, and Shapefile | — | HTML export |
 
+## Google Earth and Google Earth Pro
+
+Google Earth is the tool most people have used before they ever open a GIS, and
+it is the comparison this project is asked about most often. It belongs in a
+different category than everything above: Google Earth is a **virtual globe** for
+exploring, annotating, and presenting Google's imagery, while GeoLibre is a GIS
+that happens to ship a globe. The two overlap at the moment of *looking* at the
+Earth and diverge almost everywhere after it.
+
+Two products share the name, and they are heading in opposite directions:
+
+- **Google Earth** (the web app, plus the Android and iOS apps) is the one Google
+  is investing in. It comes in three plans: **Standard** is free, while
+  **Professional** and **Professional Advanced** are paid per seat. Standard
+  covers exploring, drawing, measuring, historical imagery, Street View, and
+  broadly applicable data layers such as administrative areas, postal codes, and
+  household income, with projects stored in Google Drive and shared like any
+  other Drive file. The paid plans add specialized layers (finer elevation
+  contours, slope and aspect, inundation history, parcel zoning, traffic), larger
+  design quotas and cloud import storage, and more of the Gemini-powered *Ask
+  Google Earth*, which every plan includes at a limited, higher, or highest level
+  of access.
+- **Google Earth Pro** (desktop, version 7.3.x) is the free application GIS users
+  have leaned on for historical imagery, Shapefile and GeoTIFF import, viewshed,
+  elevation profiles, and HD movie export. Google has announced that **desktop
+  downloads end on 25 June 2027**, and that existing installations keep working
+  after that date. A workflow that depends on being able to install Earth Pro on
+  new machines is worth planning around now.
+
+*Google Earth Engine* is a third, unrelated product — a cloud platform for
+planetary-scale raster analysis — and is out of scope here.
+
+| | **GeoLibre** | **Google Earth** (web and mobile) | **Google Earth Pro** (desktop) |
+|---|---|---|---|
+| **License and cost** | MIT, free | Proprietary; free tier plus paid per-seat plans | Proprietary, free — downloads end 25 June 2027 |
+| **What it is for** | Analysis, cartography, and data work | Exploring, annotating, and presenting imagery | The same, with a GIS-adjacent import and measurement set |
+| **Runs on** | Browser, Windows, macOS, Linux, Android, iOS, Jupyter | Browser, Android, iOS | Windows, macOS, Linux |
+| **Where your data lives** | Your device, processed client-side | Your Google account and Drive | Your device |
+| **Data in** | Vector, raster, tiles, databases, STAC, OGC and Esri services, and cloud-native formats (COG, GeoParquet, PMTiles, Zarr) | KML/KMZ, GeoJSON, and zipped Shapefile into projects, plus experimental GLB-only 3D model import on the web; more import storage on paid plans | KML/KMZ, Shapefile, GeoTIFF and image overlays, CSV with address geocoding, GPS/GPX, MapInfo TAB |
+| **Attribute data** | Attribute table, joins, field calculator, quick filters, spatial SQL | Placemark descriptions | Basic attribute display for imported files |
+| **Projections** | Reprojects on import, searchable EPSG catalog, per-project ellipsoid driving measurements | WGS84 globe only | WGS84 globe only |
+| **Analysis** | 1,000+ geoprocessing tools, spatial SQL, spatial statistics, routing and isochrones | Measurement, elevation profiles on the web, and layer filtering | Measure, elevation profile, viewshed |
+| **Symbology** | Data-driven single, categorized, graduated, rule-based, expression, heatmap, cluster, proportional | KML styles set by hand | KML styles set by hand, plus style templates driven by a data column |
+| **Historical imagery** | Historical Imagery plugin over Esri World Imagery snapshots, plus Timelapse annual basemaps | A timeline of the capture dates available for a place, plus historical Street View on the web | Historical imagery slider |
+| **Photorealistic 3D and Street View** | Google Photorealistic 3D Tiles and Street View with your own API key; plus 3D Tiles, I3S, LiDAR, COPC, and Gaussian splats | Native, no key, best-in-class | 3D buildings and Street View |
+| **Presentation output** | Story maps, print layout with atlas, camera tour recorded to video, dashboards, one-file offline HTML export | Shareable Drive projects with a slide-style present mode | Movie Maker HD video and high-resolution image export |
+| **Project file** | `.geolibre.json` — open, documented, diffable, local | Hosted project in Drive; KML export | `.kmz` / `.kml` |
+| **Automation** | Python package, MCP server, Jupyter widget, TypeScript plugin API, embed API | — | — |
+
+### Where they overlap
+
+GeoLibre borrows from the Google Earth playbook on purpose, and several features
+exist precisely because people expect them from Earth: a **Cesium globe** with
+terrain, an **Elevation Profile** along a drawn or selected line, an interactive
+**viewshed** from a right-clicked point, **Historical Imagery**, **Street View**,
+a **camera tour recorder** that exports video, and **planetary globes** for the
+Moon, Mars, and beyond.
+
+KML fidelity gets the same treatment. GeoLibre reads KML and KMZ with an in-house
+parser that preserves embedded symbology, folder structure, `GroundOverlay`
+images, time-tagged placemarks, embedded COLLADA models, and `NetworkLink`
+Super-Overlays served as tiles rather than loaded whole — so a document authored
+in Earth Pro generally arrives looking the way it did there. That makes GeoLibre
+a realistic destination for a KML archive when Earth Pro downloads end, and the
+map's right-click menu still offers **Open in Google Earth** for trips in the
+other direction.
+
+### Where Google Earth is still better
+
+- **Imagery.** Google's own imagery archive, its depth of historical coverage,
+  and the quality of its photorealistic 3D mesh are not things an open-source
+  project reproduces. GeoLibre can display Google's photorealistic tiles with
+  your API key, but the archive and the historical slider belong to Earth.
+- **Street View.** Native, complete, and free of credential setup.
+- **Effortlessness.** Earth opens and flies. There is no layer model, no CRS, no
+  project file, and nothing to learn — for simply showing someone a place, that
+  is exactly right.
+
+### Where GeoLibre is better
+
+Everything downstream of looking: attribute tables and joins, a real
+geoprocessing toolbox, spatial SQL, data-driven cartography, print layouts,
+reprojection, and an open project file you can keep, diff, script, and embed.
+Earth shows you the world; GeoLibre lets you ask questions of your own data on
+top of it — and keeps that data on your machine rather than in a Google account.
+
 ## Where each one is the right choice
 
 **Choose GeoLibre when** you want a real GIS in a browser tab with nothing to
@@ -128,6 +260,14 @@ large point and trip datasets, and DuckDB SQL plus its AI assistant cover the
 analysis you need — rather than a geoprocessing toolbox, cartographic output, or
 a portable project file.
 
+**Choose Google Earth when** the job is to look at the world, show it to someone,
+or annotate a place — Google's imagery, historical coverage, Street View, and
+photorealistic 3D are unmatched, and nothing has to be learned first. **Choose
+GeoLibre over Google Earth Pro when** you need attribute data, analysis,
+projections, or cartographic output, or when you want a successor now that Earth
+Pro downloads end on 25 June 2027; GeoLibre reads KML and KMZ with their
+symbology, overlays, models, and Super-Overlays intact.
+
 They also compose. GeoLibre reads QGIS and ArcGIS Pro projects and exchanges
 symbology as SLD, QML, and Mapbox GL JSON, so it is reasonable to author in
 QGIS or Pro and publish or embed with GeoLibre.
@@ -150,6 +290,38 @@ Stated plainly, so the table above is worth trusting:
 - **Maturity.** GeoLibre is stable and in active development, but it is far
   younger than QGIS or ArcGIS. Some capabilities listed as shipping are recent —
   see [Recently added](index.md#recently-added).
+
+## Comparisons hosted elsewhere
+
+Since this page cannot keep growing, other projects are welcome to compare
+themselves with GeoLibre on their own site, and to have that page linked from
+here.
+
+<!--
+  Entries go here, one line each, alphabetical by tool name:
+  - [<Tool> vs GeoLibre](<https URL>), maintained by <the project or author>
+  Delete the "none submitted yet" line below once the first one lands.
+-->
+
+- [Maptitude vs GeoLibre](https://www.caliper.com/maptitude/solutions/maptitude-vs-geolibre.htm), maintained by Caliper Corporation
+
+To add one, follow the [documentation contribution
+instructions](contributing.md#documentation) and open a pull request adding a
+single line of the form
+`- [Acme vs GeoLibre](https://acme.example/vs-geolibre), maintained by Acme`.
+To keep the list useful:
+
+- The linked page must actually compare your tool with GeoLibre, rather than
+  being a general product, pricing, or marketing page.
+- Link the comparison itself, not a site root or a redirect.
+- Say who maintains it, so readers know whose viewpoint they are reading.
+- It must be publicly readable, with no login, paywall, or signup.
+- One entry per project.
+
+These pages are written and maintained by their own authors. GeoLibre does not
+review, verify, or endorse what they claim, including what they claim about
+GeoLibre. Links that stop working, or that describe GeoLibre inaccurately and
+are not corrected when asked, will be removed.
 
 ## See also
 

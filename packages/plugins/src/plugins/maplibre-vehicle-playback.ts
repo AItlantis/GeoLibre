@@ -1,5 +1,5 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import { createIdentifyPopupElement } from "@geolibre/map";
 import type { Layer } from "@deck.gl/core";
 import { mercatorMetersPerPixelAtZoom0 } from "@geolibre/core";

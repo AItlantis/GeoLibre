@@ -33,6 +33,7 @@ export function projectChanged(a: AppState, b: AppState): boolean {
     a.basemapStyleUrl !== b.basemapStyleUrl ||
     a.basemapVisible !== b.basemapVisible ||
     a.basemapOpacity !== b.basemapOpacity ||
+    a.blankBackgroundColor !== b.blankBackgroundColor ||
     a.layers !== b.layers ||
     a.layerGroups !== b.layerGroups ||
     a.preferences !== b.preferences ||
@@ -45,6 +46,7 @@ export function projectChanged(a: AppState, b: AppState): boolean {
     a.mapLayout !== b.mapLayout ||
     a.secondaryMapViews !== b.secondaryMapViews ||
     a.primaryMapLabel !== b.primaryMapLabel ||
+    a.primaryRenderer !== b.primaryRenderer ||
     a.projectStyleLibrary !== b.projectStyleLibrary ||
     a.metadata !== b.metadata
   );

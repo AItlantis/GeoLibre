@@ -5,19 +5,20 @@
  * entries, replace a layer's classes with hand-authored items — e.g. NLCD
  * land-cover names — or add standalone custom sections).
  *
- * Mounted as a MapLibre control (see useMapPanelControl) so it stacks with
- * the other corner controls and is captured by Record Video. All state lives
+ * Mounted as a native GL control (see useMapPanelControl) so it stacks with
+ * the other corner controls on MapLibre or Mapbox and is captured by Record Video. All state lives
  * in the store's LegendConfig, so edits persist in the project and are shared
  * with the Print Layout legend.
  */
 import {
   normalizeHexColor,
+  storyVisibleLayers,
   useAppStore,
   type LegendConfig,
   type LegendCustomEntry,
   type LegendPanelPosition,
 } from "@geolibre/core";
-import type { MapController } from "@geolibre/map";
+import type { MapEngine } from "@geolibre/map";
 import { colormapColors, warmColormapColors } from "@geolibre/plugins";
 import { cn } from "@geolibre/ui";
 import {
@@ -174,11 +175,20 @@ export function MapLegendPanel({
   mapControllerRef,
   mapReadyGeneration,
 }: {
-  mapControllerRef: RefObject<MapController | null>;
+  mapControllerRef: RefObject<MapEngine | null>;
   mapReadyGeneration: number;
 }) {
   const { t, i18n } = useTranslation();
-  const layers = useAppStore((state) => state.layers);
+  const storeLayers = useAppStore((state) => state.layers);
+  const storyPresenting = useAppStore((state) => state.ui.storymapPresenting);
+  const storyOpacity = useAppStore((state) => state.ui.storymapLayerOpacity);
+  // During a story presentation the legend follows the chapters: a layer the
+  // current chapter has faded fully out drops from the legend as well, so
+  // the reader sees only the symbology on screen (discussion #2326).
+  const layers = useMemo(
+    () => storyVisibleLayers(storeLayers, storyPresenting, storyOpacity),
+    [storeLayers, storyPresenting, storyOpacity],
+  );
   const legend = useAppStore((state) => state.legend);
   const setLegend = useAppStore((state) => state.setLegend);
   const [editing, setEditing] = useState(false);
@@ -193,7 +203,10 @@ export function MapLegendPanel({
   const [maxHeight, setMaxHeight] = useState<number | null>(null);
   const maxHeightRef = useRef<number | null>(null);
   // Live size while a corner handle is being dragged (committed on release).
-  const [dragSize, setDragSize] = useState<{ width: number; height: number } | null>(null);
+  const [dragSize, setDragSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
 
   const visible = legend.panelVisible === true;
   const position = legend.panelPosition ?? "top-left";
@@ -209,7 +222,7 @@ export function MapLegendPanel({
   // never past the map (minus a margin for the corner controls' spacing).
   useEffect(() => {
     if (!host) return;
-    const mapElement = host.closest(".maplibregl-map");
+    const mapElement = host.closest(".maplibregl-map, .mapboxgl-map");
     if (!mapElement) return;
     const update = () => {
       const available = Math.max(MIN_PANEL_HEIGHT, mapElement.clientHeight - 24);
@@ -258,6 +271,12 @@ export function MapLegendPanel({
       buildAutoLegend(layers, legend, {
         locale: i18n.language,
         resolveColormapColors: colormapColors,
+        geometryGeneratorLabels: {
+          centroid: t("style.generator.typeCentroid"),
+          "bounding-box": t("style.generator.typeBoundingBox"),
+          "convex-hull": t("style.generator.typeConvexHull"),
+          buffer: t("style.generator.typeBuffer"),
+        },
       }),
     // colormapGeneration re-derives once an async colormap sample lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -624,7 +643,10 @@ export function MapLegendPanel({
             <select
               value={position}
               onChange={(event) =>
-                commit({ ...legend, panelPosition: event.target.value as LegendPanelPosition })
+                commit({
+                  ...legend,
+                  panelPosition: event.target.value as LegendPanelPosition,
+                })
               }
               className="h-6 flex-1 rounded-sm border border-input bg-background px-1 text-xs text-foreground focus-visible:outline-none"
             >
@@ -741,12 +763,17 @@ function LegendEntryRow({
           <InlineEdit
             value={entry.name}
             placeholder={entry.defaultName}
-            ariaLabel={t("legendPanel.renameEntry", { name: entry.defaultName })}
+            ariaLabel={t("legendPanel.renameEntry", {
+              name: entry.defaultName,
+            })}
             className="text-sm"
             onCommit={(next) => {
               if (entry.custom && customEntry) {
                 // A custom entry's name lives on the entry itself.
-                onUpdateCustom((current) => ({ ...current, title: next.trim() || undefined }));
+                onUpdateCustom((current) => ({
+                  ...current,
+                  title: next.trim() || undefined,
+                }));
               } else {
                 onCommit(setLegendItemLabel(legend, entry.id, next, entry.defaultName));
               }

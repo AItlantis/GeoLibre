@@ -116,28 +116,29 @@ export function isArcgisI3sTilesLayer(layer: GeoLibreLayer): boolean {
 }
 
 /**
- * Add an ArcGIS I3S scene layer to the store and ensure the deck.gl overlay is
- * mounted. Managed thereafter from the main Layers panel.
+ * The store record for an ArcGIS I3S scene layer.
  *
- * @param app The GeoLibre app API.
- * @param options Scene Layer URL, display name, opacity, visibility, flyTo.
- * @returns The new store layer id.
+ * Exported so the renderers that draw I3S without the deck.gl overlay (the
+ * Cesium globe loads a scene service through `I3SDataProvider`) record the same
+ * shape, and above all the same `sourceKind`: that is the only thing both
+ * `isArcgisI3sTilesLayer` here and `cesium-layer-sync`'s `isI3sLayer` key off,
+ * so a scene service filed under any other kind is loaded as a plain tileset
+ * and never renders (issue #2505).
+ *
+ * @param options Scene Layer URL, display name, opacity, visibility.
+ * @returns The store layer, with a fresh id.
  */
-export function addArcgisI3sTilesLayer(
-  app: GeoLibreAppAPI,
-  options: {
-    url: string;
-    name: string;
-    opacity: number;
-    visible: boolean;
-    flyTo: boolean;
-  },
-): string {
+export function createArcgisI3sStoreLayer(options: {
+  url: string;
+  name: string;
+  opacity: number;
+  visible: boolean;
+}): GeoLibreLayer {
   const id = `${ARCGIS_I3S_LAYER_ID_PREFIX}-${crypto.randomUUID()}`;
   const deckLayerId = `${id}-deck`;
   const url = options.url.trim();
 
-  useAppStore.getState().addLayer({
+  return {
     id,
     name: options.name,
     type: "3d-tiles",
@@ -159,7 +160,31 @@ export function addArcgisI3sTilesLayer(
       sourceKind: ARCGIS_I3S_SOURCE_KIND,
     },
     sourcePath: url,
-  });
+  };
+}
+
+/**
+ * Add an ArcGIS I3S scene layer to the store and ensure the deck.gl overlay is
+ * mounted. Managed thereafter from the main Layers panel.
+ *
+ * @param app The GeoLibre app API.
+ * @param options Scene Layer URL, display name, opacity, visibility, flyTo.
+ * @returns The new store layer id.
+ */
+export function addArcgisI3sTilesLayer(
+  app: GeoLibreAppAPI,
+  options: {
+    url: string;
+    name: string;
+    opacity: number;
+    visible: boolean;
+    flyTo: boolean;
+  },
+): string {
+  const layer = createArcgisI3sStoreLayer(options);
+  const id = layer.id;
+
+  useAppStore.getState().addLayer(layer);
 
   if (options.flyTo) i3sFlyToRequested.add(id);
   void ensureArcgisI3sTilesOverlay(app);
@@ -200,7 +225,7 @@ async function runEnsureArcgisI3sTilesOverlay(app: GeoLibreAppAPI): Promise<void
   i3sDeckGL ??= await app.getDeckGL();
   i3sLoader ??= await loadI3sLoader();
 
-  const map = app.getMap?.() ?? null;
+  const map = app.getMap?.() ?? app.getMapboxMap?.() ?? null;
   if (i3sOverlay && i3sBoundMap === map) {
     renderArcgisI3sTilesLayers();
     return;
@@ -291,7 +316,7 @@ function renderArcgisI3sTilesLayers(): void {
     i3sOverlayMounted = true;
     i3sMountRetries = 0;
     i3sMountGaveUp = false;
-    i3sBoundMap = i3sApp.getMap?.() ?? null;
+    i3sBoundMap = i3sApp.getMap?.() ?? i3sApp.getMapboxMap?.() ?? null;
     lastI3sLayerSignature = null;
   }
 
@@ -491,7 +516,9 @@ function flyToI3sTileset(layerId: string, tileset: unknown): void {
     zoom?: number;
   } | null;
   const center = info?.cartographicCenter;
-  const map = i3sApp.getMap?.() as { flyTo?: (opts: Record<string, unknown>) => void } | undefined;
+  const map = (i3sApp.getMap?.() ?? i3sApp.getMapboxMap?.()) as
+    | { flyTo?: (opts: Record<string, unknown>) => void }
+    | undefined;
   // Only consume the fly-to request once we can actually fly, so a transient
   // missing map/flyTo doesn't permanently drop it.
   if (!center || !map?.flyTo) return;

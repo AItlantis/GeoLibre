@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+linkWorkspacePackages: true
+
+allowBuilds:
+  '@google/genai': true
+  browser-tabs-lock: true
+  core-js: true
+  esbuild: true
+  protobufjs: true

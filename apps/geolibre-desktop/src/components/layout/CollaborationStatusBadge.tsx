@@ -1,6 +1,6 @@
 import { useAppStore } from "@geolibre/core";
 import { Button, Input } from "@geolibre/ui";
-import type { MapController } from "@geolibre/map";
+import type { MapEngine } from "@geolibre/map";
 import { ChevronUp, MapPin, Send, Settings2, Users, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -15,7 +15,7 @@ interface Announcement {
 
 interface CollaborationStatusBadgeProps {
   api: CollaborationApi;
-  mapControllerRef: RefObject<MapController | null>;
+  mapControllerRef: RefObject<MapEngine | null>;
 }
 
 // How long a join/leave announcement stays on screen before auto-dismissing.
@@ -238,11 +238,8 @@ export function CollaborationStatusBadge({ api, mapControllerRef }: Collaboratio
     const now = Date.now();
     if (now - lastSentAtRef.current < MIN_CHAT_SEND_INTERVAL_MS) return;
     // Capture the live map center only when the pin is active, at send time.
-    const center =
-      attachLocation && mapControllerRef.current
-        ? mapControllerRef.current.getMap()?.getCenter()
-        : null;
-    const sent = api.sendChat(text, center ? { lng: center.lng, lat: center.lat } : null);
+    const center = attachLocation ? mapControllerRef.current?.readView().center : null;
+    const sent = api.sendChat(text, center ? { lng: center[0], lat: center[1] } : null);
     // Only clear the composer (and stamp the floor) when the message actually
     // reached an open socket; otherwise keep the draft so a transient
     // disconnect doesn't lose it.
@@ -253,7 +250,9 @@ export function CollaborationStatusBadge({ api, mapControllerRef }: Collaboratio
   };
 
   const flyToCoordinate = (coordinate: { lng: number; lat: number }) => {
-    mapControllerRef.current?.getMap()?.flyTo({ center: [coordinate.lng, coordinate.lat] });
+    mapControllerRef.current?.flyTo({
+      center: [coordinate.lng, coordinate.lat],
+    });
   };
 
   if (!isActive) return null;

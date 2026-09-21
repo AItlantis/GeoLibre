@@ -20,13 +20,15 @@
  */
 
 import type { GeoLibreLayer } from "@geolibre/core";
-import type { MapController } from "@geolibre/map";
+import type { MapEngine } from "@geolibre/map";
 // Type-only: erased at compile time, so importing it does not pull maplibre-gl
 // (which `xyz-url` imports at runtime) into the pure builder surface.
 import type { ArcGISLayerType, ArcGISSourceType } from "@geolibre/plugins";
 import type { FeatureCollection } from "geojson";
 import type { RefObject } from "react";
 import { OGC_FEATURES_SOURCE_KIND } from "../../../lib/ogc-api-features";
+import { isHttpWmsUrl } from "../../../lib/native-wms-url";
+import { isTauri } from "../../../lib/tauri-io";
 import type { ResolvedXyzTileUrl } from "../../../lib/xyz-url";
 import {
   attributionForTileUrl,
@@ -78,7 +80,8 @@ export function buildXyzLayer(params: XyzLayerParams): GeoLibreLayer {
     "xyz",
     {
       type: "raster",
-      tiles: [tileUrl.renderUrl],
+      ...(tileUrl.tilejson ?? {}),
+      tiles: tileUrl.tilejson?.tiles ?? [tileUrl.renderUrl],
       tileSize: toTileSize(tileSize),
       url: tileUrl.originalUrl,
     },
@@ -86,6 +89,7 @@ export function buildXyzLayer(params: XyzLayerParams): GeoLibreLayer {
       originalUrl: shortUrl ? tileUrl.originalUrl : undefined,
       resolvedUrl: tileUrl.redirected ? tileUrl.url : undefined,
       sourceKind: "xyz-url",
+      ...(tileUrl.tilejson ? { tilejsonUrl: tileUrl.originalUrl } : {}),
     },
   );
 }
@@ -260,6 +264,8 @@ export interface WfsLayerParams {
   /** The output format that worked, which may differ from the requested one. */
   outputFormat: string;
   srsName: string;
+  /** Layers built earlier in the same batch but not added to the store yet. */
+  pendingLayers?: readonly GeoLibreLayer[];
 }
 
 /**
@@ -290,7 +296,7 @@ export function buildWfsGeoJsonLayer(params: WfsLayerParams): GeoLibreLayer {
         sourceKind: "wfs-getfeature",
         typeName: params.typeName,
       },
-      { geojson: params.data },
+      { geojson: params.data, pendingLayers: params.pendingLayers },
     ),
     geojson: params.data,
     sourcePath: params.featureUrl,
@@ -314,6 +320,8 @@ export interface OgcFeaturesLayerParams {
   numberMatched?: number;
   /** True when the collection holds more features than were loaded. */
   truncated: boolean;
+  /** Layers built earlier in the same batch but not added to the store yet. */
+  pendingLayers?: readonly GeoLibreLayer[];
 }
 
 /**
@@ -348,7 +356,7 @@ export function buildOgcFeaturesLayer(params: OgcFeaturesLayerParams): GeoLibreL
         ...(params.numberMatched !== undefined ? { numberMatched: params.numberMatched } : {}),
         truncated: params.truncated,
       },
-      { geojson: params.data },
+      { geojson: params.data, pendingLayers: params.pendingLayers },
     ),
     geojson: params.data,
     sourcePath: params.itemsUrl,
@@ -425,7 +433,7 @@ export interface ApplyServiceDeps {
   /** Store action to add the built layer. */
   addLayer: (layer: GeoLibreLayer, beforeLayerId?: string | null) => void;
   /** Map controller ref, used for the ArcGIS plugin path and to fit new layers. */
-  mapControllerRef: RefObject<MapController | null>;
+  mapControllerRef: RefObject<MapEngine | null>;
   /** Insert-before layer id, or null/undefined for the top of the stack. */
   beforeLayerId?: string | null;
 }
@@ -455,6 +463,8 @@ export async function applyServiceEntry(
   const { addLayer, mapControllerRef, beforeLayerId = null } = deps;
 
   switch (entry.kind) {
+    case "csw":
+      throw new Error("CSW catalog connections must be opened before choosing a dataset.");
     case "xyz": {
       const request = xyzFieldsToRequest(entry.fields);
       if (!request.url.trim()) throw new Error("This service has no tile URL.");
@@ -462,9 +472,7 @@ export async function applyServiceEntry(
       // this module's pure exports usable outside the browser (unit tests).
       const xyzUrl = await import("../../../lib/xyz-url");
       if (request.shortUrl) xyzUrl.registerXyzTileProtocol();
-      const tileUrl = request.shortUrl
-        ? await xyzUrl.resolveXyzTileUrlTemplate(request.url)
-        : xyzUrl.createXyzTileUrlTemplate(request.url);
+      const tileUrl = await xyzUrl.resolveXyzTileUrlTemplate(request.url);
       addLayer(
         buildXyzLayer({
           name: entry.name,
@@ -482,7 +490,14 @@ export async function applyServiceEntry(
       if (!params.layers.trim()) {
         throw new Error("This service has no layers.");
       }
-      addLayer(buildWmsLayer(params), beforeLayerId);
+      // Relative endpoints resolve against the app origin, which on the
+      // desktop means the bundled app, not the deployment that hosts the
+      // service; the native WMS tile protocol also requires an absolute URL.
+      if (isTauri() && !isHttpWmsUrl(params.endpoint)) {
+        throw new Error("The desktop app needs an absolute http(s) WMS endpoint.");
+      }
+      const { routeWmsLayerThroughNativeProtocol } = await import("../../../lib/xyz-url");
+      addLayer(routeWmsLayerThroughNativeProtocol(buildWmsLayer(params)), beforeLayerId);
       return;
     }
     case "wmts": {

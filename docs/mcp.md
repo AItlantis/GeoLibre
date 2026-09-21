@@ -102,7 +102,10 @@ Give it a directory meant for maps, not your home directory.
 | `add_tile_layer` | A raster XYZ tile template. |
 | `add_tiles_layer` | PMTiles archives and vector tile services. |
 | `add_ogc_layer` | WMS and WMTS endpoints. |
-| `add_3d_tiles_layer` | OGC 3D Tiles tilesets. |
+| `add_3d_tiles_layer` | OGC 3D Tiles tilesets, by URL or Cesium Ion asset id. |
+| `add_cesium_ion_layer` | Cesium Ion assets (tileset or imagery) by id; rendered by the 3D globe only. |
+| `add_czml_layer` | A CZML (Cesium Language) dynamic 3D scene, by URL or inline packets; rendered by the 3D globe only. |
+| `add_cesium_kml_layer` | Native globe KML/KMZ from a URL, inline XML, or KMZ data URL, preserving document styles and overlays. |
 
 ### Editing
 
@@ -111,6 +114,7 @@ Give it a directory meant for maps, not your home directory.
 | `update_layer` | Rename, show/hide, set opacity, or reorder. |
 | `remove_layer` | Drop a layer. |
 | `style_layer` | Merge style keys (`fillColor`, `strokeWidth`, `circleRadius`, …). |
+| `set_layer_popup` | Choose the fields a click popup shows, their labels and formats, and an optional hover tooltip. |
 | `classify_layer` | Build a graduated choropleth from a numeric column. |
 | `list_layer_properties` | List a layer's feature properties with sample values. |
 
@@ -168,6 +172,13 @@ will not load for anyone else, so use hosted URLs for a shareable export.
   backs the [Python widget](python.md) and the
   [embed API](user-guide/embedding.md).
 
+## Driving the server from an agent
+
+GeoLibre ships an [agent skill](agent-skill.md) that teaches an external AI
+agent how to use these tools well: which `add_*_layer` tool fits which data,
+what order to call things in, and the limits above. Install it from
+`skills/geolibre/` in the repository.
+
 ## Under the hood
 
 The tools are thin wrappers over `geolibre.authoring`, a widget-free module of
@@ -175,3 +186,12 @@ operations on project dicts (add/remove/restyle a layer, move the camera,
 compose the map controls). `geolibre.Map` delegates to the same module, so the
 notebook widget and the MCP server cannot drift apart in how they build a
 project.
+
+## Renderer and pane authoring
+
+Use `set_renderer(path, "cesium")` to open a project on the globe.
+`set_map_layout(path, 1, 2, view_kinds=["cesium", "maplibre"])` creates a mixed
+grid and returns the secondary pane IDs. Pass one as `pane_id` to `set_renderer`
+to change only that pane. Camera tools continue to use longitude/latitude and
+the shared zoom, bearing, and pitch convention. The accepted renderer names are
+`maplibre`, `mapbox`, `cesium`, and `arcgis`.

@@ -1,5 +1,5 @@
 import { useAppStore } from "@geolibre/core";
-import { detectGeometryProfile, type MapController } from "@geolibre/map";
+import { detectGeometryProfile, type MapEngine } from "@geolibre/map";
 import {
   VECTOR_TOOLS,
   getVectorTool,
@@ -30,6 +30,12 @@ import {
   Select,
   cn,
 } from "@geolibre/ui";
+import {
+  translateParameter,
+  translateToolDescription,
+  translateToolGroup,
+  translateToolName,
+} from "../../lib/processing-tool-i18n";
 import { ParameterField } from "./ParameterField";
 import { Loader2, Play, Server } from "lucide-react";
 import type { FeatureCollection } from "geojson";
@@ -37,7 +43,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useTranslation } from "react-i18next";
 
 interface VectorToolsDialogProps {
-  mapControllerRef: React.RefObject<MapController | null>;
+  mapControllerRef: React.RefObject<MapEngine | null>;
 }
 
 type Engine = "client" | "sidecar" | "pyodide";
@@ -117,7 +123,9 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
     if (!getVectorTool(resolved.toolId)) {
       setLog((prev) => [
         ...prev,
-        `Error: ${t("processing.history.toolUnavailable", { toolId: rerun.toolId })}`,
+        `Error: ${t("processing.history.toolUnavailable", {
+          toolId: rerun.toolId,
+        })}`,
       ]);
       setProcessingRerun(null);
       return;
@@ -151,16 +159,15 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
       params.north !== undefined
     )
       return;
-    const map = mapControllerRef.current?.getMap();
-    if (!map) return;
-    const b = map.getBounds();
+    const b = mapControllerRef.current?.getViewBounds();
+    if (!b) return;
     const round = (n: number) => Number(n.toFixed(6));
     setParams((prev) => ({
       ...prev,
-      west: round(b.getWest()),
-      south: round(b.getSouth()),
-      east: round(b.getEast()),
-      north: round(b.getNorth()),
+      west: round(b[0]),
+      south: round(b[1]),
+      east: round(b[2]),
+      north: round(b[3]),
     }));
     // params.west/south/east/north are read as a one-time guard; re-running only
     // when the source changes is intentional.
@@ -327,7 +334,10 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
       for (const message of result.messages) appendLog(message);
       // The engine response is untyped JSON; verify it is a FeatureCollection
       // before handing it to the map.
-      const remoteResult = result.geojson as { type?: string; features?: unknown } | null;
+      const remoteResult = result.geojson as {
+        type?: string;
+        features?: unknown;
+      } | null;
       if (remoteResult?.type === "FeatureCollection" && Array.isArray(remoteResult.features)) {
         addResultLayer(tool.name, remoteResult as unknown as FeatureCollection);
         return null;
@@ -350,6 +360,7 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
         value === undefined ||
         value === "" ||
         value === null ||
+        (Array.isArray(value) && value.length === 0) ||
         (param.type === "number" && Number.isNaN(value))
       ) {
         appendLog(`Error: "${param.label}" is required`);
@@ -390,12 +401,7 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
           fitBounds: (bounds) => mapControllerRef.current?.fitBounds(bounds),
           addResultLayer,
           duckdb,
-          viewportBounds: () => {
-            const map = mapControllerRef.current?.getMap();
-            if (!map) return null;
-            const b = map.getBounds();
-            return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-          },
+          viewportBounds: () => mapControllerRef.current?.getViewBounds() ?? null,
         };
         await tool.run(ctx);
       }
@@ -458,7 +464,7 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
               {groups.map((group) => (
                 <div key={group.group} className="mb-1">
                   <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
-                    {group.group}
+                    {translateToolGroup(t, group.group)}
                   </div>
                   {group.tools.map((entry) => (
                     <button
@@ -470,7 +476,7 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
                         entry.id === selectedId && "bg-accent font-medium text-accent-foreground",
                       )}
                     >
-                      {entry.name}
+                      {translateToolName(t, "vector", entry)}
                     </button>
                   ))}
                 </div>
@@ -480,11 +486,14 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
 
           {/* Parameter form + run + log */}
           <div className="flex min-w-0 flex-1 flex-col gap-3">
-            <p className="text-sm text-muted-foreground">{tool.description}</p>
+            <p className="text-sm text-muted-foreground">
+              {translateToolDescription(t, "vector", tool)}
+            </p>
 
             <div className="flex flex-col gap-3">
               {tool.parameters.filter(isParamVisible).map((param) => {
                 // Narrow the resolution spinner to the selected DGGS type's range.
+                const localized = translateParameter(t, "vector", tool.id, param);
                 const fieldParam =
                   (tool.id === "dggs-grid" ||
                     tool.id === "dggs-bin" ||
@@ -503,12 +512,14 @@ export function VectorToolsDialog({ mapControllerRef }: VectorToolsDialogProps):
                         const subtype = typeof rawSubtype === "string" ? rawSubtype : undefined;
                         const max = maxResolutionForDggs(dggsType, subtype);
                         return {
-                          ...param,
+                          ...localized,
                           max,
-                          label: t("processing.vectorTools.resolutionRange", { max }),
+                          label: t("processing.vectorTools.resolutionRange", {
+                            max,
+                          }),
                         };
                       })()
-                    : param;
+                    : localized;
                 return (
                   <ParameterField
                     key={param.id}

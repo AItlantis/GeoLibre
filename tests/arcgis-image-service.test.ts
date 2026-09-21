@@ -7,7 +7,11 @@ import {
   useAppStore,
 } from "@geolibre/core";
 import type { GeoLibreAppAPI } from "../packages/plugins/src/types";
-import { addArcGISLayer } from "../packages/plugins/src/plugins/arcgis-layer";
+import {
+  addArcGISLayer,
+  fetchArcGISImageServiceRasterFunctions,
+  fetchArcGISMapServiceSublayers,
+} from "../packages/plugins/src/plugins/arcgis-layer";
 
 const MAP_SERVICE_URL = "https://example.com/arcgis/rest/services/Boundaries/MapServer";
 const IMAGE_SERVICE_URL = "https://example.com/arcgis/rest/services/Elevation/ImageServer";
@@ -261,6 +265,61 @@ describe("addArcGISLayer (map and image services)", () => {
     );
   });
 
+  it("derives WGS84 bounds from selected layers when the service uses a local CRS", async () => {
+    respondWith({
+      ...DYNAMIC_MAP_SERVICE,
+      fullExtent: {
+        xmin: -18715,
+        ymin: 36680,
+        xmax: 1090090,
+        ymax: 943128,
+        spatialReference: { wkid: 3078 },
+      },
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      fetchUrls.push(url);
+      if (url.includes("/1/query?")) {
+        return jsonResponse({
+          extent: {
+            xmin: -90.56,
+            ymin: 41.68,
+            xmax: -81.78,
+            ymax: 48.33,
+            spatialReference: { wkid: 4326 },
+          },
+        });
+      }
+      if (url.includes("/2/query?")) {
+        return jsonResponse({
+          extent: {
+            xmin: -90.55,
+            ymin: 41.63,
+            xmax: -82.07,
+            ymax: 48.28,
+            spatialReference: { wkid: 4326 },
+          },
+        });
+      }
+      return jsonResponse(serviceInfo);
+    }) as typeof fetch;
+
+    const id = await addArcGISLayer(app, {
+      layerType: "map-service",
+      sourceType: "url",
+      url: MAP_SERVICE_URL,
+      sublayers: "1,2",
+    });
+
+    assert.deepEqual(fitBoundsCalls, [[-90.56, 41.63, -81.78, 48.33]]);
+    assert.deepEqual(
+      useAppStore.getState().layers.find((layer) => layer.id === id)?.source.bounds,
+      [-90.56, 41.63, -81.78, 48.33],
+    );
+    assert.ok(fetchUrls.some((url) => url.includes("returnExtentOnly=true")));
+    assert.ok(fetchUrls.some((url) => url.includes("outSR=4326")));
+  });
+
   it("reads a sublayer id off a /MapServer/<id> URL", async () => {
     const id = await addArcGISLayer(app, {
       layerType: "map-service",
@@ -442,5 +501,109 @@ describe("addArcGISLayer (map and image services)", () => {
       zoomTo: false,
     });
     assert.deepEqual(fitBoundsCalls, []);
+  });
+});
+
+describe("fetchArcGISMapServiceSublayers", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("retrieves named MapServer layers and carries credentials", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = input.toString();
+      return jsonResponse({
+        layers: [
+          null,
+          { name: "Missing id" },
+          { id: -1, name: "Negative id" },
+          {
+            id: 2,
+            name: "Hydrography Lines",
+            parentLayerId: -1,
+            defaultVisibility: true,
+            subLayerIds: null,
+          },
+        ],
+      });
+    }) as typeof fetch;
+
+    const layers = await fetchArcGISMapServiceSublayers({
+      url: `${MAP_SERVICE_URL}/?f=html`,
+      token: "private token",
+    });
+
+    assert.deepEqual(
+      layers.map(({ id, name }) => ({ id, name })),
+      [{ id: 2, name: "Hydrography Lines" }],
+    );
+    assert.match(requestedUrl, /\/MapServer\?f=json&token=private\+token$/);
+  });
+
+  it("rejects URLs that are not MapServer endpoints", async () => {
+    await assert.rejects(
+      fetchArcGISMapServiceSublayers({ url: IMAGE_SERVICE_URL }),
+      /Enter an ArcGIS MapServer URL/,
+    );
+  });
+});
+
+describe("fetchArcGISImageServiceRasterFunctions", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("retrieves named ImageServer raster functions and carries credentials", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requestedUrl = input.toString();
+      return jsonResponse({
+        rasterFunctionInfos: [
+          null,
+          { description: "Missing name" },
+          { name: 42, description: "Non-string name" },
+          { name: "", description: "Blank name" },
+          { name: "Missing description" },
+          {
+            name: "Multidirectional Hillshade",
+            description: "Creates a shaded-relief representation of the surface.",
+            help: "",
+          },
+          { name: "Multidirectional Hillshade", description: "Duplicate" },
+        ],
+      });
+    }) as typeof fetch;
+
+    const rasterFunctions = await fetchArcGISImageServiceRasterFunctions({
+      url: `${IMAGE_SERVICE_URL}/?f=html`,
+      token: "private token",
+    });
+
+    assert.deepEqual(rasterFunctions, [
+      { name: "Missing description", description: "" },
+      {
+        name: "Multidirectional Hillshade",
+        description: "Creates a shaded-relief representation of the surface.",
+      },
+    ]);
+    assert.match(requestedUrl, /\/ImageServer\?f=json&token=private\+token$/);
+  });
+
+  it("returns an empty catalog when the service advertises no raster functions", async () => {
+    globalThis.fetch = (async () => jsonResponse({ name: "Elevation" })) as typeof fetch;
+
+    assert.deepEqual(await fetchArcGISImageServiceRasterFunctions({ url: IMAGE_SERVICE_URL }), []);
+  });
+
+  it("rejects URLs that are not ImageServer endpoints", async () => {
+    await assert.rejects(
+      fetchArcGISImageServiceRasterFunctions({ url: MAP_SERVICE_URL }),
+      /Enter an ArcGIS ImageServer URL/,
+    );
   });
 });

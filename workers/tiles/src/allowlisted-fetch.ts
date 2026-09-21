@@ -8,6 +8,15 @@
  * shared `s3*.amazonaws.com` host) so a redirect cannot jump to another bucket.
  */
 export const HDX_CKAN_SEARCH_UPSTREAM = "https://data.humdata.org/api/3/action/package_search";
+// Prefer the reachable `z` backend instead of the round-robin hostname:
+// requests from Cloudflare's edge currently receive a synthetic 521 from the
+// latter. A second explicitly allowlisted public instance handles transient
+// overloads without turning the route into an open proxy.
+export const OVERPASS_API_UPSTREAM = "https://z.overpass-api.de/api/interpreter";
+export const OVERPASS_API_FALLBACK_UPSTREAM = "https://overpass.private.coffee/api/interpreter";
+export const OPEN_SKY_STATES_UPSTREAM = "https://opensky-network.org/api/states/all";
+export const ADSB_LOL_MILITARY_UPSTREAM = "https://api.adsb.lol/v2/mil";
+export const ADSBDB_AIRCRAFT_UPSTREAM = "https://api.adsbdb.com/v0/aircraft/";
 
 export const TILES_ALLOWED_URL_PREFIXES = [
   "https://s3-eu-west-1.amazonaws.com/whereonmars.cartodb.net/",
@@ -15,9 +24,17 @@ export const TILES_ALLOWED_URL_PREFIXES = [
   "https://s3.amazonaws.com/opmbuilder/",
   "https://api.openaerialmap.org/",
   HDX_CKAN_SEARCH_UPSTREAM,
+  OVERPASS_API_UPSTREAM,
+  OVERPASS_API_FALLBACK_UPSTREAM,
+  OPEN_SKY_STATES_UPSTREAM,
+  ADSB_LOL_MILITARY_UPSTREAM,
+  ADSBDB_AIRCRAFT_UPSTREAM,
   "https://source.coop/",
   "https://build.protomaps.com/",
   "https://planetarymaps.usgs.gov/",
+  "https://celestrak.org/NORAD/elements/gp.php",
+  "https://celestrak.org/NORAD/elements/supplemental/sup-gp.php",
+  "https://ll.thespacedevs.com/2.3.0/launches/",
   "https://raw.githubusercontent.com/",
 ] as const;
 

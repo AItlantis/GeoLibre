@@ -4,6 +4,7 @@ import { useAppStore } from "@geolibre/core";
 import type { GeoLibreAppAPI } from "../packages/plugins/src/types";
 import {
   addArcGISLayer,
+  setArcGISFetch,
   refreshArcGISFeatureLayer,
   reloadArcGISViewportLayer,
   restoreArcGISViewportLayers,
@@ -247,8 +248,42 @@ describe("addArcGISLayer (feature layer)", () => {
   });
 
   afterEach(() => {
+    setArcGISFetch(null);
     globalThis.fetch = originalFetch;
   });
+
+  for (const supportsPagination of [true, false]) {
+    it(`uses the installed transport for metadata, counts, paging, and refresh (pagination=${supportsPagination})`, async () => {
+      const service = fakeArcGISService({ total: 5, maxRecordCount: 2, supportsPagination });
+      const urls: string[] = [];
+      globalThis.fetch = async () => {
+        throw new TypeError("Browser fetch blocked by CORS");
+      };
+      setArcGISFetch(async (input, init) => {
+        urls.push(String(input));
+        return service.fetch(input, init);
+      });
+      const id = await addArcGISLayer(app, {
+        layerType: "feature",
+        sourceType: "url",
+        url: SERVICE_URL,
+        name: "Native cities",
+      });
+      const layer = useAppStore.getState().layers.find((entry) => entry.id === id)!;
+      assert.equal(layer.geojson?.features.length, 5);
+      assert.ok(urls.some((url) => url.includes("returnCountOnly=true")));
+      if (!supportsPagination) assert.ok(urls.some((url) => url.includes("returnIdsOnly=true")));
+      const refreshed = await refreshArcGISFeatureLayer({
+        queryUrl: String(layer.source.arcgisQueryUrl),
+      });
+      assert.equal(refreshed.features.length, 5);
+      setArcGISFetch(null);
+      await assert.rejects(
+        refreshArcGISFeatureLayer({ queryUrl: String(layer.source.arcgisQueryUrl) }),
+        /Browser fetch blocked/,
+      );
+    });
+  }
 
   it("loads a feature layer as a GeoJSON layer with its attributes intact", async () => {
     const id = await addArcGISLayer(app, {
@@ -277,6 +312,126 @@ describe("addArcGISLayer (feature layer)", () => {
     assert.equal(layer.source.attribution, "© Example City Data");
     // The geographic extent is fitted directly (no Web Mercator conversion).
     assert.deepEqual(fitBoundsCalls, [[-160, 18, -154, 23]]);
+  });
+
+  it("reassembles nested rings exported as separate ArcGIS polygons", async () => {
+    const malformedMask = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: { NAME: "Mask" },
+          geometry: {
+            type: "MultiPolygon",
+            coordinates: [
+              [
+                [
+                  [0, 0],
+                  [0, 10],
+                  [10, 10],
+                  [10, 0],
+                  [0, 0],
+                ],
+              ],
+              [
+                [
+                  [2, 2],
+                  [8, 2],
+                  [8, 8],
+                  [2, 8],
+                  [2, 2],
+                ],
+              ],
+              [
+                [
+                  [4, 4],
+                  [4, 6],
+                  [6, 6],
+                  [6, 4],
+                  [4, 4],
+                ],
+              ],
+              [
+                [
+                  [9, 1],
+                  [12, 1],
+                  [12, 4],
+                  [9, 4],
+                  [9, 1],
+                ],
+              ],
+            ],
+          },
+        },
+      ],
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      return jsonResponse(url.includes("/query") ? malformedMask : LAYER_INFO);
+    }) as typeof fetch;
+
+    const id = await addArcGISLayer(app, {
+      layerType: "feature",
+      sourceType: "url",
+      url: SERVICE_URL,
+    });
+    const geometry = useAppStore.getState().layers.find((layer) => layer.id === id)?.geojson
+      ?.features[0].geometry;
+
+    assert.equal(geometry?.type, "MultiPolygon");
+    if (geometry?.type !== "MultiPolygon") return;
+    assert.equal(
+      geometry.coordinates.length,
+      3,
+      "the nested island and overlapping polygon remain separate polygons",
+    );
+    assert.equal(geometry.coordinates[0].length, 2, "the contained ring becomes a hole");
+    assert.deepEqual(geometry.coordinates[1][0][0], [4, 4]);
+  });
+
+  it("leaves disjoint one-ring ArcGIS polygons unchanged", async () => {
+    const disjointGeometry = {
+      type: "MultiPolygon" as const,
+      coordinates: [
+        [
+          [
+            [0, 0],
+            [0, 2],
+            [2, 2],
+            [2, 0],
+            [0, 0],
+          ],
+        ],
+        [
+          [
+            [10, 10],
+            [10, 12],
+            [12, 12],
+            [12, 10],
+            [10, 10],
+          ],
+        ],
+      ],
+    };
+    const response = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: {}, geometry: disjointGeometry }],
+    };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      return jsonResponse(url.includes("/query") ? response : LAYER_INFO);
+    }) as typeof fetch;
+
+    const id = await addArcGISLayer(app, {
+      layerType: "feature",
+      sourceType: "url",
+      url: SERVICE_URL,
+    });
+
+    assert.deepEqual(
+      useAppStore.getState().layers.find((layer) => layer.id === id)?.geojson?.features[0].geometry,
+      disjointGeometry,
+    );
   });
 
   it("adds an interactive layer immediately and queries the current viewport", async () => {
@@ -1036,4 +1191,40 @@ describe("addArcGISLayer (feature layer)", () => {
       "expected the resolved service URL to be queried",
     );
   });
+});
+
+it("keeps pending viewport edits and their baseline when the map moves", async () => {
+  useAppStore.setState({ layers: [] });
+  const viewport = fakeViewportMap([-160, 18, -154, 23]);
+  let queries = 0;
+  setArcGISFetch(async (input) => {
+    if (String(input).includes("/query")) {
+      queries++;
+      return Response.json({ type: "FeatureCollection", features: [viewportFeature(1)] });
+    }
+    return Response.json(VIEWPORT_LAYER_INFO);
+  });
+  try {
+    const id = await addArcGISLayer(
+      { getMap: () => viewport.map, fitBounds() {} } as unknown as GeoLibreAppAPI,
+      { layerType: "feature", sourceType: "url", url: SERVICE_URL, maxFeatures: 1 },
+    );
+    await settle();
+    const before = useAppStore.getState().layers.find((l) => l.id === id)!;
+    const edited = structuredClone(before.geojson!);
+    edited.features[0].properties!.NAME = "Pending";
+    useAppStore.getState().updateLayer(id, { geojson: edited });
+    const requestsBeforePan = queries;
+    viewport.setBounds([10, 20, 15, 25]);
+    viewport.listeners.get("moveend")!();
+    await settle();
+    assert.equal(queries, requestsBeforePan);
+    const after = useAppStore.getState().layers.find((l) => l.id === id)!;
+    assert.deepEqual(after.geojson, edited);
+    assert.deepEqual(after.metadata.arcgisEditBaseline, before.metadata.arcgisEditBaseline);
+    assert.deepEqual(await reloadArcGISViewportLayer(id), edited);
+  } finally {
+    useAppStore.setState({ layers: [] });
+    setArcGISFetch(null);
+  }
 });

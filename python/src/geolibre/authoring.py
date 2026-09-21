@@ -18,6 +18,7 @@ import math
 import os
 import stat
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -34,6 +35,13 @@ LEGEND_SHAPES = frozenset({"square", "circle", "line"})
 
 # The pseudo-id the swipe control uses for the basemap (maplibre-swipe.ts).
 BASEMAP_LAYER_ID = "__basemap__"
+
+# Layer types the app always draws through a single MapLibre raster style layer
+# named `layer-<id>-raster` (see the style layer id helpers in the core layer
+# sync). `mbtiles` and `pmtiles` reach the same shape only when they carry
+# raster tiles, and `video` uses its own suffix, so those are resolved per
+# layer in `_style_layer_ids` rather than listed here.
+RASTER_STYLE_LAYER_TYPES = frozenset({"raster", "wms", "wmts", "xyz"})
 
 # Cap a project file read from disk. A project inlines its GeoJSON, so the
 # ceiling has to clear _MAX_GEOJSON_BYTES for a single layer with room for a few
@@ -450,21 +458,26 @@ def remove_layer(project: dict[str, Any], ref: str) -> str:
     layer = find_layer(project, ref)
     layers_of(project).remove(layer)
     layer_id = str(layer["id"])
-    _drop_swipe_reference(project, layer_id)
+    _drop_swipe_reference(project, layer)
     return layer_id
 
 
-def _drop_swipe_reference(project: dict[str, Any], layer_id: str) -> None:
-    """Remove a layer id from the swipe control's two sides."""
+def _drop_swipe_reference(project: dict[str, Any], layer: dict[str, Any]) -> None:
+    """Remove a layer's ids from the swipe control's two sides.
+
+    Mirrors `_expand_swipe_side`: whatever that adds to a side, this takes back
+    out, so removing a layer cannot leave a derived style layer id behind.
+    """
     plugins = project.get("plugins")
     settings = plugins.get("settings") if isinstance(plugins, dict) else None
     swipe = settings.get(_project.SWIPE_PLUGIN_ID) if isinstance(settings, dict) else None
     if not isinstance(swipe, dict):
         return
+    dropped = {str(layer.get("id", "")), *_style_layer_ids(layer)}
     for side in ("leftLayers", "rightLayers"):
         ids = swipe.get(side)
         if isinstance(ids, list):
-            swipe[side] = [value for value in ids if value != layer_id]
+            swipe[side] = [value for value in ids if value not in dropped]
 
 
 def update_layer(
@@ -536,6 +549,92 @@ def apply_style(project: dict[str, Any], ref: str, style: dict[str, Any]) -> dic
     merged.update(style)
     layer["style"] = merged
     return merged
+
+
+def set_popup(
+    project: dict[str, Any],
+    ref: str,
+    fields: Any = None,
+    *,
+    click: bool | None = None,
+    hover: bool | None = None,
+    title: str | None = None,
+    title_expression: str | None = None,
+    body_expression: str | None = None,
+    show_feature_id: bool | None = None,
+    tooltip: Any = None,
+    merge: bool = False,
+) -> dict[str, Any]:
+    """Configure what a layer shows when a feature is clicked or hovered.
+
+    A layer with no popup config keeps the app's default: the layer name as the
+    heading, then every visible property as a key/value row, and no hover
+    tooltip. Configuring one narrows and formats that -- see
+    :func:`geolibre.project.popup_config` for the field vocabulary.
+
+    Args:
+        project: The project dict (mutated in place).
+        ref: A layer id or display name.
+        fields: The fields to show and their order; property names and/or
+            :func:`geolibre.project.popup_field` mappings.
+        click: ``False`` suppresses the click popup.
+        hover: ``True`` shows a hover tooltip built from the ``hover`` fields.
+        title: Property whose value titles the popup.
+        title_expression: MapLibre expression source producing the title.
+        body_expression: MapLibre expression source producing the popup body.
+        show_feature_id: ``False`` drops the synthetic ``id`` row.
+        tooltip: Hover shorthand -- a property name, a sequence of names,
+            ``True`` to flag every configured field, or ``False`` to turn the
+            tooltip off.
+        merge: Merge into the layer's existing popup config instead of
+            replacing it, so a tooltip can be added without restating the
+            fields.
+
+    Returns:
+        The layer's popup config after the change.
+
+    Raises:
+        ValueError: If the reference does not resolve to exactly one layer, or
+            the popup specification is unusable.
+    """
+    layer = find_layer(project, ref)
+    config = _project.popup_config(
+        fields,
+        click=click,
+        hover=hover,
+        title=title,
+        title_expression=title_expression,
+        body_expression=body_expression,
+        show_feature_id=show_feature_id,
+    )
+    if merge:
+        current = layer.get("popup")
+        if isinstance(current, dict):
+            config = {**copy.deepcopy(current), **config}
+    # Apply the tooltip shorthand after the merge so `merge=True` can flag a
+    # field the existing config already carries rather than appending a
+    # duplicate entry for it.
+    config = _project.apply_tooltip(config, tooltip)
+    layer["popup"] = config
+    return config
+
+
+def clear_popup(project: dict[str, Any], ref: str) -> dict[str, Any]:
+    """Drop a layer's popup config, restoring the app's default popup.
+
+    Args:
+        project: The project dict (mutated in place).
+        ref: A layer id or display name.
+
+    Returns:
+        A summary of the updated layer.
+
+    Raises:
+        ValueError: If the reference does not resolve to exactly one layer.
+    """
+    layer = find_layer(project, ref)
+    layer.pop("popup", None)
+    return layer_summary(layer)
 
 
 def build_choropleth_style(
@@ -632,6 +731,95 @@ def classify_layer(
 
 
 # -- camera and basemap -------------------------------------------------------
+
+
+_RENDERERS = frozenset({"maplibre", "cesium", "mapbox", "arcgis"})
+
+
+def _is_renderer(value: Any) -> bool:
+    """Whether ``value`` names a supported renderer (a non-string is never one)."""
+    return isinstance(value, str) and value in _RENDERERS
+
+
+def secondary_panes(project: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return ``secondaryMapViews`` validated as a list of renderable panes.
+
+    Args:
+        project: The project dict.
+
+    Returns:
+        The pane list (empty when the project has none).
+
+    Raises:
+        ValueError: If the field is not a list of pane objects carrying a
+            unique string ``id`` and, when present, a ``maplibre``/``cesium``/``mapbox``/
+            ``arcgis`` ``viewKind`` (an omitted ``viewKind`` means ``maplibre``), e.g.
+            from a hand-edited project file.
+    """
+    panes = project.get("secondaryMapViews", [])
+    if not isinstance(panes, list) or any(
+        not isinstance(p, dict)
+        or not isinstance(p.get("id"), str)
+        or not _is_renderer(p.get("viewKind", "maplibre"))
+        for p in panes
+    ):
+        raise ValueError(
+            "secondaryMapViews must be a list of pane objects with an id "
+            "and a maplibre, cesium, mapbox, or arcgis viewKind"
+        )
+    if len({p["id"] for p in panes}) != len(panes):
+        raise ValueError("secondaryMapViews pane ids must be unique")
+    return panes
+
+
+def set_renderer(project: dict[str, Any], renderer: str, *, pane_id: str | None = None) -> str:
+    """Select ``maplibre``, ``cesium``, ``mapbox``, or ``arcgis`` for the primary map or a pane."""
+    if not _is_renderer(renderer):
+        raise ValueError("renderer must be maplibre, cesium, mapbox, or arcgis")
+    if pane_id is None:
+        project["primaryRenderer"] = renderer
+    else:
+        pane = next((p for p in secondary_panes(project) if p["id"] == pane_id), None)
+        if pane is None:
+            raise ValueError(f"Unknown pane: {pane_id}")
+        pane["viewKind"] = renderer
+    return renderer
+
+
+def set_map_layout(
+    project: dict[str, Any],
+    rows: int,
+    cols: int,
+    *,
+    view_kinds: list[str] | None = None,
+    sync_view: bool = True,
+) -> list[dict[str, Any]]:
+    """Set a 1–4 row/column grid. ``view_kinds`` lists every pane, primary first."""
+    if any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 4 for v in (rows, cols)):
+        raise ValueError("rows and cols must be integers between 1 and 4")
+    count = rows * cols
+    if view_kinds is not None and (
+        len(view_kinds) != count or not all(_is_renderer(k) for k in view_kinds)
+    ):
+        raise ValueError(
+            "view_kinds must contain one maplibre, cesium, mapbox, or arcgis renderer per pane"
+        )
+    panes = copy.deepcopy(secondary_panes(project)[: count - 1])
+    while len(panes) < count - 1:
+        panes.append(
+            {
+                "id": str(uuid.uuid4()),
+                "view": copy.deepcopy(project.get("mapView", _project.default_map_view())),
+                "layerVisibility": {},
+            }
+        )
+    if view_kinds is not None:
+        set_renderer(project, view_kinds[0])
+        for pane, kind in zip(panes, view_kinds[1:]):
+            pane["viewKind"] = kind
+    project["mapLayout"] = {"rows": rows, "cols": cols, "syncView": bool(sync_view)}
+    project["secondaryMapViews"] = panes
+    return panes
 
 
 def set_view(
@@ -993,6 +1181,72 @@ def add_colorbar(
     return entry
 
 
+def _style_layer_ids(layer: dict[str, Any]) -> list[str]:
+    """The MapLibre style layer ids a layer is drawn as, when they are derivable.
+
+    Only layers the app draws through a single style layer with a predictable
+    id qualify. `pmtiles` vector layers are deliberately absent: their ids are
+    `<sourceId>-<sourceLayer>-<kind>` (``pmtilesNativeLayerIds`` in
+    pmtiles-layer.ts), which the layer dict alone cannot spell out.
+
+    Args:
+        layer: A layer dict from the project's ``layers`` array.
+
+    Returns:
+        The style layer ids, or an empty list when none are derivable.
+    """
+    layer_id = str(layer.get("id", ""))
+    layer_type = layer.get("type")
+    metadata = layer.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    source = layer.get("source")
+    source = source if isinstance(source, dict) else {}
+    # syncMbtilesLayer/syncRasterTileLayer in layer-sync.ts read both.
+    is_raster = metadata.get("tileType") == "raster" or source.get("type") == "raster"
+
+    if layer_type == "pmtiles":
+        if not is_raster:
+            return []
+        # The archive's source id, which pmtiles_layer defaults to the layer id
+        # but callers may override, and without the `layer-` prefix the other
+        # raster paths carry.
+        return [f"{metadata.get('sourceId') or layer_id}-raster"]
+    if layer_type == "video":
+        return [f"layer-{layer_id}-video"]
+    if layer_type == "mbtiles":
+        return [f"layer-{layer_id}-raster"] if is_raster else []
+    if layer_type in RASTER_STYLE_LAYER_TYPES:
+        return [f"layer-{layer_id}-raster"]
+    return []
+
+
+def _expand_swipe_side(project: dict[str, Any], layer_ids: list[str]) -> list[str]:
+    """Add the derived style layer ids of every listed layer to one swipe side.
+
+    The swipe control drives what each half shows by toggling MapLibre style
+    layer ids. A layer drawn through a style layer of its own — a raster tile
+    source as ``layer-<id>-raster``, a video as ``layer-<id>-video`` — leaves a
+    side holding only the project layer id matching no style layer: the control
+    treats the layer as assigned to neither side, which it renders on both
+    halves. Listing both ids keeps the project layer id (what the panel
+    checkboxes read) and adds the ids the control acts on.
+    """
+    layers = {
+        layer.get("id"): layer for layer in project.get("layers", []) if isinstance(layer, dict)
+    }
+    expanded: list[str] = []
+    for layer_id in layer_ids:
+        if layer_id not in expanded:
+            expanded.append(layer_id)
+        layer = layers.get(layer_id)
+        if not isinstance(layer, dict):
+            continue
+        for style_id in _style_layer_ids(layer):
+            if style_id not in expanded:
+                expanded.append(style_id)
+    return expanded
+
+
 def add_swipe(
     project: dict[str, Any],
     *,
@@ -1027,8 +1281,8 @@ def add_swipe(
             f"control_position must be one of {sorted(CONTROL_POSITIONS)}, got {control_position!r}"
         )
     state = _project.swipe_state(
-        left_layers=list(left_layers),
-        right_layers=list(right_layers),
+        left_layers=_expand_swipe_side(project, list(left_layers)),
+        right_layers=_expand_swipe_side(project, list(right_layers)),
         orientation=orientation,
         position=min(100.0, max(0.0, float(position))),
     )

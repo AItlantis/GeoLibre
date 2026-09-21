@@ -17,6 +17,7 @@ Before listing formats, it's important to clarify "where it runs," since many fo
 | Browser | Open `web.geolibre.app` | No installation needed; works offline after initial load |
 | Desktop | Tauri v2 native application | Windows / macOS / Linux; available via Microsoft Store, Homebrew, winget, AUR, Flatpak |
 | Android | Google Play native app | ~40 MB per ABI |
+| iOS | App Store native app | iPhone and iPad, same codebase via Tauri v2 mobile |
 | Jupyter | `pip install geolibre` | The entire application embedded in a notebook cell |
 
 > **No accounts, no servers, no fees for the core application.** Local files are read in place and stay on your machine, and once the app has loaded, local workflows keep working offline. The optional remote pieces are the exception: online catalogs (STAC, Source Cooperative, Overture, Planetary Computer), basemap and tile downloads from a CDN, and services such as Earth Engine or an authenticated ArcGIS endpoint all need network access, and some need their own credentials or OAuth sign-in.
@@ -44,7 +45,7 @@ What's truly interesting is **which engine reads each format behind the scenes**
 | **GeoPackage** | `.gpkg` | **sql.js (SQLite WASM), not GDAL** | Multi-layer files prompt a layer selector; auto-repairs `gpkg_ogr_contents` |
 | **Shapefile (individual files)** | `.shp` | shpjs | Desktop auto-reads companion `.dbf/.shx/.prj/.cpg`; 3D MultiPatch falls back to DuckDB |
 | **Shapefile (zip archive)** | `.zip` | fflate decompress → shpjs | `.prj` determines projection, `.cpg` determines DBF encoding (**Chinese attribute encoding issues resolved**); auto-skips macOS `__MACOSX` |
-| **KML** | `.kml` | Custom parser | **Preserves embedded styling**; also extracts GroundOverlay images and `<Model>` 3D models |
+| **KML** | `.kml` | Custom parser | **Preserves embedded styling** and Folder structure; placemarks with `<TimeSpan>`/`<TimeStamp>` animate on the Time Slider; also extracts GroundOverlay images and `<Model>` 3D models |
 | **KMZ** | `.kmz` | fflate decompress | Custom icons and formatted descriptions are preserved |
 | **GML** | `.gml` | DuckDB `ST_Read` | — |
 | **GPX** | `.gpx` | Pure JS | **Auto-splits into three layers**: waypoints / tracks / routes |
@@ -255,7 +256,7 @@ Mentioned piecemeal above, consolidated here. **This is where things most easily
 | **Desktop (Tauri) exclusive** | Native file/folder dialogs, local MBTiles, local raster reads, Shapefile companion file auto-discovery, PostGIS/Martin, file geodatabase, local file watch reload |
 | **Requires Python sidecar** | File geodatabase, all desktop conversion tools (preferred path), raster tools (rasterio), AI segmentation, PostGIS, Sedona |
 | **Mac App Store build** | No Python sidecar: hides PostgreSQL and GDB data sources, hides AI segmentation; Whitebox, conversion, raster, and vector tools all fall back to their browser/WASM engines; Shapefile companion files must be manually multi-selected |
-| **Android / Mobile** | Hides raster tools, conversion tools, AI segmentation, PostgreSQL — all sidecar-backed. The Whitebox toolbox is WASM-backed and stays available |
+| **Android / iOS (mobile)** | Hides raster tools, conversion tools, AI segmentation, PostgreSQL — all sidecar-backed. The Whitebox toolbox is WASM-backed and stays available |
 | **Browser** | No local MBTiles/GDB/PostGIS; conversion output is subset; vector conversion doesn't accept `.zip`; raster-to-COG only accepts GeoTIFF; Zarr local folders unavailable in Firefox/Safari |
 
 ---
@@ -270,11 +271,21 @@ After listing over a hundred formats, the natural reaction is "how complex must 
 
 The dividend of this design: **adding a format is cheap**. As long as a new format can be represented as a layer record, it automatically gains the full capabilities of the layer panel — opacity, ordering, project save, style export.
 
-**Division of labor among three renderers** (note: there is no "engine abstraction layer"):
+**Division of labor among four rendering engines**, behind a shared `MapEngine`
+interface:
 
-- **MapLibre** is the default primary map; the vast majority of layers are rendered by it
-- **deck.gl** does not occupy a separate view — it is an overlay **interleaved within the MapLibre canvas**, responsible for COG, 3D Tiles, I3S, Z-enabled vectors, and visualization layers. There's a hard constraint: all interleaving producers must share the **same** overlay instance, or later ones will wipe out earlier layers (the author encountered this firsthand)
-- **Cesium** is a view mode within split-screen, not a replacement. It only supports GeoJSON, 3D Tiles, and imagery layers; other types are labeled "2D only" in the panel
+- **MapLibre** is the default and has the broadest layer, tool, and plugin support.
+- **Mapbox** uses Mapbox GL JS for Mapbox styles and services while sharing much
+  of MapLibre's Style Specification surface.
+- **Cesium** is the native 3D-globe engine for terrain, 3D Tiles, CZML, ion
+  assets, I3S, and globe-oriented workflows.
+- **ArcGIS** uses the ArcGIS Maps SDK for native ArcGIS services and 2D or 3D
+  Esri views.
+
+**deck.gl is not a fifth engine.** It is an overlay hosted by compatible
+engines for COG, point-cloud, 3D, and visualization layers. Interleaved
+producers on the same map must share one overlay instance or a later instance
+can replace layers owned by an earlier one.
 
 ![Cesium view mode showing the 3D globe; the same layer panel is on the left](https://assets.geolibre.app/images/earth-cesium-globe.webp)
 
@@ -335,7 +346,7 @@ Having covered the strengths, let's discuss the limitations.
 
 **4. Platform capability asymmetry.** See the table in Section 10. Don't extrapolate the browser version's experience to represent the whole.
 
-**5. Cesium 3D Globe requires an Ion token.** The free tier is sufficient for individual use; teams need to budget accordingly.
+**5. Cesium 3D Globe requires an ion token outside the web version.** The hosted web version bundles a demo token, but the desktop and mobile apps need your own. The free tier is sufficient for individual use; teams need to budget for quotas and pricing.
 
 **6. The China-specific environment.** Default sources for basemaps, terrain, and Photorealistic 3D Tiles are all outside the firewall; coordinates use standard WGS84 — **GCJ-02 offsets must be handled separately**. These two issues need to be addressed first for serious use. Reliable first-hand data on this is unavailable; further input from actual users is welcome.
 
@@ -347,7 +358,7 @@ You receive a zip archive containing a mix of shp, tif, gpkg, and tileset.json �
 
 GeoLibre's real value is not that it's better than QGIS (it isn't) — it's that it drives **the cost of "just take a quick look at the data" down to near zero**. This niche was previously empty.
 
-For those working with Cesium / 3D GIS development, there's an additional layer of reference value: **the engine-agnostic store design**. Storing state as plain layer records and view state, rather than tied to a specific rendering engine's objects, allows a second renderer to slide in smoothly. This approach is worth adopting.
+For those working with multi-engine or 3D GIS development, there's an additional layer of reference value: **the engine-agnostic store design**. Storing state as plain layer records and view state, rather than tying it to a specific engine's objects, lets another renderer plug in without changing the project model. This approach is worth adopting.
 
 Usage paths by scenario:
 

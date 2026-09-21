@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import inspect
 import os
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__, authoring
 from .. import project as _project
@@ -58,7 +60,10 @@ Pick the layer tool by what the data *is*, not by file extension alone:
 - `add_tile_layer`     - a raster XYZ tile template with {z}/{x}/{y}.
 - `add_tiles_layer`    - PMTiles or a vector tile service.
 - `add_ogc_layer`      - a WMS or WMTS endpoint.
-- `add_3d_tiles_layer` - an OGC 3D Tiles tileset.
+- `add_3d_tiles_layer` - an OGC 3D Tiles tileset (URL or Cesium Ion asset id).
+- `add_cesium_ion_layer` - a Cesium Ion asset (tileset or imagery) by id, 3D globe only.
+- `add_czml_layer`     - a CZML dynamic 3D scene (orbits, vehicle tracks) by URL or
+  inline packets, 3D globe only.
 
 Layers are referenced by id or by display name. `describe_project` is the cheap
 way to see what a project currently holds; it never echoes back inlined
@@ -154,6 +159,56 @@ def _build_layer(
         ) from exc
 
 
+def _reports_its_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a tool so a rejected call tells the caller why it was rejected.
+
+    Every validation failure in this package is a ``ValueError`` (``WorkspaceError``
+    subclasses it), raised where the rule lives -- in :mod:`geolibre.authoring`,
+    :mod:`geolibre.project`, :mod:`geolibre.mcp.workspace`, or a tool body here --
+    so none of those modules has to import the MCP SDK. But the SDK reserves
+    ``ToolError`` for a failure the tool *anticipated* and treats anything else as
+    a crash, withholding its message: from mcp 2.1 the caller of, say,
+    ``add_ogc_layer`` without ``layers`` sees only "Error executing tool
+    add_ogc_layer" instead of the sentence naming the missing argument. An agent
+    that cannot read why a call was rejected cannot correct it, so it retries the
+    same call or gives up.
+
+    Restating each failure as a ``ToolError`` at the tool boundary keeps the rules
+    SDK-free and the messages intact. A crash still surfaces as a crash: only
+    ``ValueError`` is translated, and the original stays attached as ``__cause__``
+    for the server log.
+
+    Every tool is synchronous. An ``async def`` one would return an unawaited
+    coroutine from the wrapper and raise its ``ValueError`` after the ``try``
+    below has exited, so its messages would be withheld again with nothing to
+    show for the wrapper -- it is refused here rather than registered that way.
+
+    Args:
+        fn: The tool function to wrap.
+
+    Returns:
+        The same function, with anticipated failures restated as ``ToolError``.
+
+    Raises:
+        TypeError: If *fn* is a coroutine function.
+    """
+    if inspect.iscoroutinefunction(fn):
+        raise TypeError(
+            f"{fn.__name__} is async, which this wrapper cannot report errors for; "
+            "give _reports_its_errors a coroutine branch that awaits fn inside the "
+            "same try, and register the tool through that."
+        )
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+
+    return wrapper
+
+
 def _summarize(path: Path, project: dict[str, Any], **extra: Any) -> dict[str, Any]:
     """Build a tool result: what changed, plus where the project now stands."""
     return {
@@ -179,6 +234,22 @@ def build_server(workspace: Workspace) -> MCPServer:
         instructions=INSTRUCTIONS,
         version=__version__,
     )
+
+    def tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Any]:
+        """Register a tool, restating its anticipated failures for the caller.
+
+        Stands in for ``@server.tool()`` on every tool below, so none of them can
+        be registered without :func:`_reports_its_errors`; a bare
+        ``@server.tool()`` would silently mask that tool's validation messages.
+
+        Args:
+            **kwargs: Forwarded to :meth:`MCPServer.tool` unchanged.
+
+        Returns:
+            The decorator to apply to the tool function.
+        """
+        register = server.tool(**kwargs)
+        return lambda fn: register(_reports_its_errors(fn))
 
     @contextlib.contextmanager
     def edit(path: str) -> Iterator[tuple[Path, dict[str, Any]]]:
@@ -222,7 +293,7 @@ def build_server(workspace: Workspace) -> MCPServer:
 
     # -- project lifecycle ----------------------------------------------------
 
-    @server.tool()
+    @tool()
     def create_project(
         path: str,
         name: str = "Untitled Project",
@@ -281,7 +352,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         authoring.save_project(file, project)
         return _summarize(file, project, mapView=project["mapView"])
 
-    @server.tool()
+    @tool()
     def describe_project(path: str) -> dict[str, Any]:
         """Summarize a project: its camera, basemap, layers, and map controls.
 
@@ -298,7 +369,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         project = authoring.load_project(file)
         return {"path": str(file), **authoring.describe_project(project)}
 
-    @server.tool()
+    @tool()
     def list_catalog() -> dict[str, Any]:
         """List the named basemaps, color ramps, and legend presets available.
 
@@ -318,7 +389,7 @@ def build_server(workspace: Workspace) -> MCPServer:
 
     # -- adding layers --------------------------------------------------------
 
-    @server.tool()
+    @tool()
     def add_geojson_layer(
         path: str,
         name: str,
@@ -362,7 +433,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             layer_id = authoring.add_layer(project, layer, index=index)
         return _summarize(file, project, layerId=layer_id, layerName=layer.get("name"))
 
-    @server.tool()
+    @tool()
     def add_vector_layer(
         path: str,
         name: str,
@@ -404,7 +475,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         )
         return add(path, layer, index)
 
-    @server.tool()
+    @tool()
     def add_raster_layer(
         path: str,
         name: str,
@@ -445,7 +516,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         )
         return add(path, layer, index)
 
-    @server.tool()
+    @tool()
     def add_tile_layer(
         path: str,
         name: str,
@@ -474,7 +545,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         layer = _project.tile_layer(name, url, tile_size=tile_size, attribution=attribution)
         return add(path, layer, index)
 
-    @server.tool()
+    @tool()
     def add_ogc_layer(
         path: str,
         name: str,
@@ -486,6 +557,7 @@ def build_server(workspace: Workspace) -> MCPServer:
         transparent: bool = True,
         tile_size: int = 256,
         version: str | None = "1.1.1",
+        bounds: list[float] | None = None,
         index: int | None = None,
     ) -> dict[str, Any]:
         """Add a WMS or WMTS service layer.
@@ -502,13 +574,24 @@ def build_server(workspace: Workspace) -> MCPServer:
             transparent: Request a transparent background (WMS).
             tile_size: Tile edge in pixels.
             version: WMS protocol version, e.g. `1.1.1` or `1.3.0`.
+            bounds: The layer's extent as `[west, south, east, north]` in
+                WGS84. A service layer has no geometry to derive it from, so
+                without this "zoom to layer" cannot reach it. Read it from the
+                capabilities document: `EX_GeographicBoundingBox` for WMS,
+                `ows:WGS84BoundingBox` for WMTS. Both are already lon/lat,
+                unlike a WMS 1.3.0 `BoundingBox CRS="EPSG:4326"`.
             index: Draw-order position; appended on top when omitted.
 
         Returns:
             The new layer's id and the project's updated layer count.
+
+        Raises:
+            ValueError: If `service` is not `wms` or `wmts`, if `layers` is
+                missing for `wms`, or if `bounds` is not four finite numbers
+                with valid latitudes.
         """
         if service == "wmts":
-            layer = _project.wmts_layer(name, endpoint, tile_size=tile_size)
+            layer = _project.wmts_layer(name, endpoint, tile_size=tile_size, bounds=bounds)
         elif service == "wms":
             if not layers:
                 raise ValueError("add_ogc_layer: 'layers' is required when service='wms'")
@@ -521,12 +604,13 @@ def build_server(workspace: Workspace) -> MCPServer:
                 transparent=transparent,
                 tile_size=tile_size,
                 version=version,
+                bounds=bounds,
             )
         else:
             raise ValueError(f"service must be 'wms' or 'wmts', got {service!r}")
         return add(path, layer, index)
 
-    @server.tool()
+    @tool()
     def add_tiles_layer(
         path: str,
         name: str,
@@ -575,20 +659,26 @@ def build_server(workspace: Workspace) -> MCPServer:
             raise ValueError(f"kind must be 'pmtiles' or 'vector-tiles', got {kind!r}")
         return add(path, layer, index)
 
-    @server.tool()
+    @tool()
     def add_3d_tiles_layer(
         path: str,
         name: str,
-        url: str,
+        url: str | None = None,
+        ion_asset_id: int | None = None,
         altitude_offset: float = 0,
         index: int | None = None,
     ) -> dict[str, Any]:
         """Add an OGC 3D Tiles tileset (photogrammetry meshes, 3D buildings).
 
+        Pass either a `tileset.json` URL or a Cesium Ion asset id. An Ion asset
+        (for example 96188, Cesium OSM Buildings) renders on the 3D globe only,
+        which loads it with the app's Cesium Ion token.
+
         Args:
             path: Path to the `.geolibre.json` file.
             name: The layer's display name.
             url: URL of the tileset's `tileset.json`.
+            ion_asset_id: A Cesium Ion asset id, instead of `url`.
             altitude_offset: Metres to shift the tileset vertically, to correct
                 a tileset that floats above or sinks below the terrain.
             index: Draw-order position; appended on top when omitted.
@@ -596,12 +686,89 @@ def build_server(workspace: Workspace) -> MCPServer:
         Returns:
             The new layer's id and the project's updated layer count.
         """
-        layer = _project.three_d_tiles_layer(name, url, altitude_offset=altitude_offset)
+        layer = _project.three_d_tiles_layer(
+            name, url, ion_asset_id=ion_asset_id, altitude_offset=altitude_offset
+        )
         return add(path, layer, index)
+
+    @tool()
+    def add_cesium_ion_layer(
+        path: str,
+        name: str,
+        asset_id: int,
+        kind: str = "3d-tiles",
+        altitude_offset: float = 0,
+        index: int | None = None,
+    ) -> dict[str, Any]:
+        """Add a Cesium Ion asset (a 3D Tiles tileset or imagery) by asset id.
+
+        Renders on the 3D globe only (set the project's `primaryRenderer` to
+        `"cesium"`), which loads the asset with the app's Cesium Ion token; the
+        token is never written to the project.
+
+        Args:
+            path: Path to the `.geolibre.json` file.
+            name: The layer's display name.
+            asset_id: The Cesium Ion asset id (a positive integer).
+            kind: `"3d-tiles"` for a tileset or `"imagery"` for an imagery asset.
+            altitude_offset: Metres to shift a tileset vertically.
+            index: Draw-order position; appended on top when omitted.
+
+        Returns:
+            The new layer's id and the project's updated layer count.
+        """
+        layer = _project.cesium_ion_layer(
+            name, asset_id, kind=kind, altitude_offset=altitude_offset
+        )
+        return add(path, layer, index)
+
+    @tool()
+    def add_czml_layer(
+        path: str,
+        name: str,
+        url: str | None = None,
+        data: list[dict[str, Any]] | dict[str, Any] | None = None,
+        index: int | None = None,
+    ) -> dict[str, Any]:
+        """Add a CZML (Cesium Language) dynamic 3D scene: orbits, tracks, moving models.
+
+        Pass either the URL of a `.czml` document or its packets inline. Renders
+        on the 3D globe only (set the project's `primaryRenderer` to
+        `"cesium"`), which follows the document's `clock` packet for playback.
+
+        Args:
+            path: Path to the `.geolibre.json` file.
+            name: The layer's display name.
+            url: An `http(s)://` URL of a `.czml` document.
+            data: The CZML packet array (or a single packet) to inline instead
+                of a URL; the first packet is normally
+                `{"id": "document", "version": "1.0"}`.
+            index: Draw-order position; appended on top when omitted.
+
+        Returns:
+            The new layer's id and the project's updated layer count.
+        """
+        layer = _project.czml_layer(name, url=url, data=data)
+        return add(path, layer, index)
+
+    @tool()
+    def add_cesium_kml_layer(
+        path: str,
+        name: str,
+        url: str | None = None,
+        data: str | None = None,
+        index: int | None = None,
+    ) -> dict[str, Any]:
+        """Add native KML/KMZ with document styles, overlays, and network links.
+
+        Supply a document URL, inline XML, or a KMZ data URL. Renders on the
+        globe only; set the project's primaryRenderer to "cesium".
+        """
+        return add(path, _project.cesium_kml_layer(name, url=url, data=data), index)
 
     # -- editing layers -------------------------------------------------------
 
-    @server.tool()
+    @tool()
     def update_layer(
         path: str,
         layer: str,
@@ -631,7 +798,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             )
         return _summarize(file, project, layer=summary)
 
-    @server.tool()
+    @tool()
     def remove_layer(path: str, layer: str) -> dict[str, Any]:
         """Remove a layer from the project.
 
@@ -646,7 +813,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             layer_id = authoring.remove_layer(project, layer)
         return _summarize(file, project, removedLayerId=layer_id)
 
-    @server.tool()
+    @tool()
     def style_layer(path: str, layer: str, style: dict[str, Any]) -> dict[str, Any]:
         """Set style properties on a layer, merging with what is already there.
 
@@ -667,7 +834,66 @@ def build_server(workspace: Workspace) -> MCPServer:
             merged = authoring.apply_style(project, layer, style)
         return _summarize(file, project, style=merged)
 
-    @server.tool()
+    @tool()
+    def set_layer_popup(
+        path: str,
+        layer: str,
+        fields: list[Any] | None = None,
+        click: bool | None = None,
+        title: str | None = None,
+        title_expression: str | None = None,
+        body_expression: str | None = None,
+        show_feature_id: bool | None = None,
+        tooltip: list[str] | None = None,
+        merge: bool = False,
+    ) -> dict[str, Any]:
+        """Choose what a layer shows when a feature is clicked or hovered.
+
+        Without a popup config a layer shows its name and every visible
+        property. A config narrows that to the fields you list, in your order,
+        under your labels and formats.
+
+        Each entry of `fields` is either a property name or an object with
+        `field` plus any of: `label`, `kind` (`auto`, `text`, `number`, `date`,
+        `link`, or `image` — `link` renders an http(s) URL as an anchor and
+        `image` renders one as a thumbnail), `hover`, `decimals`, `thousands`,
+        `date_format` (`date`, `datetime`, `time`, `iso`, `year`), `prefix`,
+        `suffix`, and `link_label`.
+
+        Args:
+            path: Path to the `.geolibre.json` file.
+            layer: The layer's id or display name.
+            fields: The fields to show, in display order.
+            click: False suppresses the click popup for this layer.
+            title: Property whose value titles the popup instead of the name.
+            title_expression: MapLibre expression source producing the title.
+            body_expression: MapLibre expression source producing the body as
+                one block of text instead of the field rows.
+            show_feature_id: False drops the synthetic `id` row.
+            tooltip: Property names to show in a hover tooltip. An empty list
+                turns the tooltip off.
+            merge: Merge into the layer's existing popup config instead of
+                replacing it.
+
+        Returns:
+            The layer's popup config after the change.
+        """
+        with edit(path) as (file, project):
+            config = authoring.set_popup(
+                project,
+                layer,
+                fields,
+                click=click,
+                title=title,
+                title_expression=title_expression,
+                body_expression=body_expression,
+                show_feature_id=show_feature_id,
+                tooltip=tooltip,
+                merge=merge,
+            )
+        return _summarize(file, project, popup=config)
+
+    @tool()
     def classify_layer(
         path: str,
         layer: str,
@@ -710,7 +936,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             )
         return _summarize(file, project, symbology=fragment)
 
-    @server.tool()
+    @tool()
     def list_layer_properties(path: str, layer: str) -> dict[str, Any]:
         """List the feature properties of a layer, with sample values.
 
@@ -736,7 +962,25 @@ def build_server(workspace: Workspace) -> MCPServer:
 
     # -- camera, basemap, and controls ---------------------------------------
 
-    @server.tool()
+    @tool()
+    def set_renderer(path: str, renderer: str, pane_id: str | None = None) -> dict[str, Any]:
+        """Select maplibre, cesium, mapbox, or arcgis for the primary map or a secondary pane ID."""
+        with edit(path) as (file, project):
+            authoring.set_renderer(project, renderer, pane_id=pane_id)
+        return _summarize(file, project, renderer=renderer, paneId=pane_id)
+
+    @tool()
+    def set_map_layout(
+        path: str, rows: int, cols: int, view_kinds: list[str] | None = None, sync_view: bool = True
+    ) -> dict[str, Any]:
+        """Set a 1–4 row/column grid; view_kinds lists each pane renderer, primary first."""
+        with edit(path) as (file, project):
+            panes = authoring.set_map_layout(
+                project, rows, cols, view_kinds=view_kinds, sync_view=sync_view
+            )
+        return _summarize(file, project, secondaryMapViews=panes)
+
+    @tool()
     def set_view(
         path: str,
         center: list[float] | None = None,
@@ -773,7 +1017,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             )
         return _summarize(file, project, mapView=view)
 
-    @server.tool()
+    @tool()
     def set_basemap(path: str, basemap: str) -> dict[str, Any]:
         """Set the project's background basemap.
 
@@ -789,7 +1033,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             url = authoring.set_basemap(project, basemap)
         return _summarize(file, project, basemapStyleUrl=url)
 
-    @server.tool()
+    @tool()
     def add_legend(
         path: str,
         title: str | None = None,
@@ -835,7 +1079,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             )
         return _summarize(file, project, legend=entry)
 
-    @server.tool()
+    @tool()
     def add_colorbar(
         path: str,
         colormap: str = "viridis",
@@ -879,7 +1123,7 @@ def build_server(workspace: Workspace) -> MCPServer:
             )
         return _summarize(file, project, colorbar=entry)
 
-    @server.tool()
+    @tool()
     def add_swipe(
         path: str,
         left_layers: list[str],
@@ -915,7 +1159,7 @@ def build_server(workspace: Workspace) -> MCPServer:
 
     # -- export ---------------------------------------------------------------
 
-    @server.tool()
+    @tool()
     def export_html(
         path: str,
         out_path: str,

@@ -1,5 +1,5 @@
-import { useAppStore } from "@geolibre/core";
-import type { MapController } from "@geolibre/map";
+import { useAppStore, FEET_PER_METER, METERS_PER_MILE } from "@geolibre/core";
+import type { MapEngine } from "@geolibre/map";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,13 +11,13 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@geolibre/ui";
-import type maplibregl from "maplibre-gl";
 import {
   BookOpen,
   Braces,
   Circle,
   Crosshair,
   Earth,
+  Eye,
   MapIcon,
   MapPin,
   Route,
@@ -35,9 +35,11 @@ import {
   QUICK_TRAVEL_CONTOURS,
   QUICK_TRAVEL_CONTOURS_LABEL,
   runQuickAnalysis,
+  beginQuickAnalysisRun,
   type QuickBufferPreset,
 } from "../../lib/quick-analysis";
 import { hasRoutingConsent, recordRoutingConsent } from "../../lib/routing-consent";
+import { runViewshed } from "../../lib/run-viewshed";
 import { RoutingConsentDialog } from "./RoutingConsentDialog";
 
 interface ContextMenuState {
@@ -79,14 +81,20 @@ async function copyText(value: string): Promise<void> {
   }
 }
 
+/** Read the camera zoom only while the engine still owns a render surface. */
+function liveZoom(engine: MapEngine | null | undefined): number | undefined {
+  return engine?.getRenderSurface() ? engine.readView().zoom : undefined;
+}
+
 /**
  * Renders the map's right-click context menu (issue #829).
  *
- * Listening to MapLibre's own `contextmenu` event (rather than a raw DOM
- * handler) yields the clicked geographic coordinate directly. The top item
- * shows that coordinate and copies it to the clipboard on click, Google-Maps
- * style; below it sits a curated set of quick actions that operate on the
- * clicked point (copy GeoJSON, recenter, zoom in, open in Google Maps/Earth).
+ * Listening on the renderer-neutral surface keeps the menu available on every
+ * engine. The surface converts the canvas-relative pointer position to a
+ * geographic coordinate. The top item shows that coordinate and copies it to
+ * the clipboard on click, Google-Maps style; below it sits a curated set of
+ * quick actions that operate on the clicked point (copy GeoJSON, recenter,
+ * zoom in, open in Google Maps/Earth).
  *
  * The menu is positioned with an invisible zero-size trigger pinned at the
  * cursor: Radix anchors its content to that trigger. The whole menu is keyed by
@@ -102,7 +110,7 @@ export function MapContextMenu({
   mapReadyGeneration,
   onExplorePlace,
 }: {
-  mapControllerRef: RefObject<MapController | null>;
+  mapControllerRef: RefObject<MapEngine | null>;
   mapReadyGeneration: number;
   /** Open a Wikipedia knowledge card for the clicked coordinate. */
   onExplorePlace?: (lat: number, lng: number) => void;
@@ -115,24 +123,32 @@ export function MapContextMenu({
   const seqRef = useRef(0);
 
   useEffect(() => {
-    const map = mapControllerRef.current?.getMap();
-    if (!map) return;
+    const surface = mapControllerRef.current?.getRenderSurface();
+    if (!surface) return;
+    const canvas = surface.getCanvas();
 
-    const handleContextMenu = (event: maplibregl.MapMouseEvent) => {
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const coordinate = surface.unproject([event.clientX - rect.left, event.clientY - rect.top]);
+      // Globe renderers can return no coordinate when the pointer is over
+      // empty space beyond the planet. In that case there is no point for the
+      // menu actions to operate on.
+      if (!coordinate) return;
       seqRef.current += 1;
       setMenu({
         id: seqRef.current,
-        lng: event.lngLat.lng,
-        lat: event.lngLat.lat,
-        x: event.originalEvent.clientX,
-        y: event.originalEvent.clientY,
+        lng: coordinate.lng,
+        lat: coordinate.lat,
+        x: event.clientX,
+        y: event.clientY,
       });
       setOpen(true);
     };
 
-    map.on("contextmenu", handleContextMenu);
+    canvas.addEventListener("contextmenu", handleContextMenu);
     return () => {
-      map.off("contextmenu", handleContextMenu);
+      canvas.removeEventListener("contextmenu", handleContextMenu);
     };
   }, [mapControllerRef, mapReadyGeneration]);
 
@@ -161,8 +177,9 @@ export function MapContextMenu({
     // Read the live zoom; if the map was torn down between right-click and
     // selection, omit zoom so the move still recenters instead of snapping to
     // zoom 1. MapLibre clamps the +1 to the configured maxZoom on its own.
-    const currentZoom = mapControllerRef.current?.getMap()?.getZoom();
-    mapControllerRef.current?.flyTo({
+    const engine = mapControllerRef.current;
+    const currentZoom = liveZoom(engine);
+    engine?.flyTo({
       center: [menu.lng, menu.lat],
       ...(currentZoom !== undefined ? { zoom: currentZoom + 1 } : {}),
     });
@@ -180,13 +197,15 @@ export function MapContextMenu({
   // city-level view rather than dropping the action.
   const viewInGoogleMaps = useCallback(() => {
     if (!menu) return;
-    const zoom = mapControllerRef.current?.getMap()?.getZoom() ?? 12;
+    const engine = mapControllerRef.current;
+    const zoom = liveZoom(engine) ?? 12;
     void openExternalLink(googleMapsUrl(menu.lat, menu.lng, zoom, { marker: true }));
   }, [menu, mapControllerRef]);
 
   const viewInGoogleEarth = useCallback(() => {
     if (!menu) return;
-    const zoom = mapControllerRef.current?.getMap()?.getZoom() ?? 12;
+    const engine = mapControllerRef.current;
+    const zoom = liveZoom(engine) ?? 12;
     void openExternalLink(googleEarthUrl(menu.lat, menu.lng, zoom));
   }, [menu, mapControllerRef]);
 
@@ -197,9 +216,84 @@ export function MapContextMenu({
   const bufferPresets = useMemo(() => bufferPresetsFor(scaleUnit), [scaleUnit]);
   const setVectorToolOpen = useAppStore((s) => s.setVectorToolOpen);
 
+  /**
+   * Radius label for the viewshed entries.
+   *
+   * Follows the scale bar's unit system like the buffer ladder above, so an
+   * imperial-preference user does not get miles for buffers and kilometres for
+   * viewsheds in the same submenu. The radii themselves stay metric constants —
+   * they size the analysis, not the label — so an imperial reading is a
+   * conversion of the same distance rather than a different one.
+   */
+  const formatViewshedRadius = useCallback(
+    (meters: number): string => {
+      const imperial = scaleUnit === "imperial";
+      const perUnit = imperial ? METERS_PER_MILE : 1000;
+      const large = meters >= perUnit;
+      const value = large ? meters / perUnit : imperial ? meters * FEET_PER_METER : meters;
+      const formatted = new Intl.NumberFormat(i18n.language, {
+        maximumFractionDigits: large ? 1 : 0,
+      }).format(value);
+      const unit = large
+        ? imperial
+          ? t("quickAnalysis.unit.miles")
+          : t("quickAnalysis.unit.kilometers")
+        : imperial
+          ? t("quickAnalysis.unit.feet")
+          : t("quickAnalysis.unit.meters");
+      return `${formatted} ${unit}`;
+    },
+    [scaleUnit, i18n.language, t],
+  );
+
   const formatDistance = useCallback(
     (preset: QuickBufferPreset) => formatBufferDistance(preset, i18n.language, t),
     [i18n.language, t],
+  );
+
+  // Viewshed radii. Small enough that the tile fetch and the line-of-sight walk
+  // stay interactive; the 50km cap in the processing module is the hard limit.
+  const VIEWSHED_RADII_METERS = [2000, 5000, 15000];
+
+  const [viewshedBusy, setViewshedBusy] = useState(false);
+  const viewshedHere = useCallback(
+    (radiusMeters: number) => {
+      if (!menu || viewshedBusy) return;
+      const { lng, lat } = menu;
+      setViewshedBusy(true);
+      const toolName = t("quickAnalysis.viewshedToolName");
+      // Reported through the Quick Analysis banner like every other action in
+      // this menu rather than failing silently: the terrain fetch takes seconds
+      // and can fail, and a click with no feedback either way reads as a broken
+      // menu item. The returned setter is bound to this run, so a slow viewshed
+      // cannot overwrite the status of a faster action started after it.
+      const reportStatus = beginQuickAnalysisRun(toolName);
+      void runViewshed({
+        lng,
+        lat,
+        radiusMeters,
+        mapControllerRef,
+        layerName: t("quickAnalysis.viewshedLayerName", {
+          radius: formatViewshedRadius(radiusMeters),
+        }),
+      })
+        .then((result) => {
+          reportStatus(
+            result
+              ? { phase: "idle" }
+              : { phase: "error", toolName, message: t("quickAnalysis.viewshedNoResult") },
+          );
+        })
+        .catch((error: unknown) => {
+          reportStatus({
+            phase: "error",
+            toolName,
+            message: error instanceof Error ? error.message : t("quickAnalysis.viewshedNoResult"),
+          });
+        })
+        .finally(() => setViewshedBusy(false));
+    },
+    [menu, viewshedBusy, t, formatViewshedRadius, mapControllerRef],
   );
 
   const bufferHere = useCallback(
@@ -360,6 +454,20 @@ export function MapContextMenu({
                 <Route className="h-4 w-4 shrink-0 text-muted-foreground" />
                 {t("quickAnalysis.walkTimeHere", { contours: QUICK_TRAVEL_CONTOURS_LABEL })}
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {VIEWSHED_RADII_METERS.map((radiusMeters) => (
+                <DropdownMenuItem
+                  key={`viewshed-${radiusMeters}`}
+                  onSelect={() => viewshedHere(radiusMeters)}
+                  disabled={viewshedBusy}
+                  className="gap-2"
+                >
+                  <Eye className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  {t("quickAnalysis.viewshedHere", {
+                    radius: formatViewshedRadius(radiusMeters),
+                  })}
+                </DropdownMenuItem>
+              ))}
               <DropdownMenuSeparator />
               {/* Escape hatch when the presets aren't what was wanted: the full
                 dialog, preselected on the same tool. */}

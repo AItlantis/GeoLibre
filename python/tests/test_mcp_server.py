@@ -7,11 +7,13 @@ not pull the SDK) stays green rather than silently losing coverage it never had.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import builtins
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +24,10 @@ mcp = pytest.importorskip("mcp", reason="the mcp SDK is an optional extra")
 
 from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402 - after the skip guard
 
-from geolibre.mcp.server import build_server  # noqa: E402 - after the skip guard
+from geolibre.mcp.server import (  # noqa: E402 - after the skip guard
+    _reports_its_errors,
+    build_server,
+)
 
 POINT_FC = {
     "type": "FeatureCollection",
@@ -184,6 +189,48 @@ def test_every_tool_is_registered_with_a_description(server):
     assert {"create_project", "add_geojson_layer", "classify_layer", "export_html"} <= names
     # An undescribed tool is invisible to a model choosing between them.
     assert all(tool.description for tool in tools)
+
+
+def test_every_tool_reports_its_own_validation_errors(server):
+    """No tool may be registered with a bare ``@server.tool()``.
+
+    The SDK reserves ``ToolError`` for an anticipated failure and treats every
+    other exception as a crash whose message is withheld, so from mcp 2.1 a tool
+    registered straight on the server answers a rejected call with only "Error
+    executing tool <name>" -- the caller cannot see which argument was wrong.
+    ``build_server``'s ``@tool()`` wrapper restates the ``ValueError`` that every
+    validation rule in this package raises, and this is what keeps a later tool
+    from being added without it.
+    """
+    source = (Path(mcp_package.__file__).parent / "server.py").read_text(encoding="utf-8")
+    bare = [
+        node.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+        and any("server.tool" in ast.unparse(d) for d in node.decorator_list)
+    ]
+    assert not bare, f"tools registered without the error-reporting wrapper: {bare}"
+
+    # And the wrapper is really in force: a rejected call carries its reason.
+    message = call_error(server, "create_project", path="map.txt")
+    assert "map.txt" in message or "suffix" in message.lower()
+
+
+def test_an_async_tool_is_refused_rather_than_registered_unreported():
+    """A coroutine tool cannot be wrapped, so it is rejected where it is wrapped.
+
+    The wrapper is synchronous: an ``async def`` tool would hand the SDK an
+    unawaited coroutine, and the ``ValueError`` inside it would be raised after
+    the wrapper's ``try`` had exited, putting the tool right back to answering
+    with "Error executing tool <name>". Failing at registration keeps that from
+    reaching a caller unnoticed.
+    """
+
+    async def make_map():
+        raise ValueError("never reached: the wrapper refuses this function")
+
+    with pytest.raises(TypeError, match="async"):
+        _reports_its_errors(make_map)
 
 
 def test_create_project_writes_a_file(server, tmp_path):
@@ -394,6 +441,14 @@ def test_add_raster_layer_records_its_source(server, project_path):
         ),
         ("add_tile_layer", {"url": "https://example.com/{z}/{x}/{y}.png"}, "xyz"),
         ("add_3d_tiles_layer", {"url": "https://example.com/tileset.json"}, "3d-tiles"),
+        ("add_3d_tiles_layer", {"ion_asset_id": 96188}, "3d-tiles"),
+        ("add_cesium_ion_layer", {"asset_id": 96188}, "3d-tiles"),
+        ("add_cesium_ion_layer", {"asset_id": 2, "kind": "imagery"}, "raster"),
+        ("add_cesium_kml_layer", {"url": "https://example.com/landmarks.kmz"}, "3d-tiles"),
+        ("add_cesium_kml_layer", {"data": "<kml><Document/></kml>"}, "3d-tiles"),
+        ("add_czml_layer", {"url": "https://example.com/sat.czml"}, "3d-tiles"),
+        ("add_czml_layer", {"data": [{"id": "document", "version": "1.0"}]}, "3d-tiles"),
+        ("add_czml_layer", {"data": {"id": "document", "version": "1.0"}}, "3d-tiles"),
         (
             "add_tiles_layer",
             {"url": "https://example.com/a.pmtiles", "kind": "pmtiles"},
@@ -427,6 +482,31 @@ def test_each_layer_tool_adds_a_layer_of_its_type(
     assert described["layers"][0]["type"] == expected_type
 
 
+def test_cesium_ion_tools_persist_the_asset_id(server, project_path, tmp_path):
+    """The globe loads Ion assets from `source.ionAssetId`, so it must survive the save."""
+    call(server, "add_3d_tiles_layer", path=project_path, name="A", ion_asset_id=96188)
+    call(server, "add_cesium_ion_layer", path=project_path, name="B", asset_id=96188)
+    call(server, "add_cesium_ion_layer", path=project_path, name="C", asset_id=2, kind="imagery")
+    saved = json.loads((tmp_path / project_path).read_text())
+    assert [layer["source"]["ionAssetId"] for layer in saved["layers"]] == [96188, 96188, 2]
+    assert [layer["type"] for layer in saved["layers"]] == ["3d-tiles", "3d-tiles", "raster"]
+    assert {layer["metadata"]["sourceKind"] for layer in saved["layers"]} == {"cesium-ion"}
+
+
+def test_czml_tool_persists_the_document(server, project_path, tmp_path):
+    """The globe loads CZML from `source.czmlData` / `source.url`, so both must survive the save."""
+    packets = [{"id": "document", "version": "1.0"}, {"id": "sat", "point": {"pixelSize": 8}}]
+    call(server, "add_czml_layer", path=project_path, name="A", url="https://example.com/a.czml")
+    call(server, "add_czml_layer", path=project_path, name="B", data=packets)
+    saved = json.loads((tmp_path / project_path).read_text())
+    assert saved["layers"][0]["source"]["url"] == "https://example.com/a.czml"
+    assert saved["layers"][1]["source"]["czmlData"] == packets
+    assert {layer["metadata"]["sourceKind"] for layer in saved["layers"]} == {"czml"}
+    assert "url or non-empty data" in call_error(
+        server, "add_czml_layer", path=project_path, name="C"
+    )
+
+
 def test_add_vector_layer_rejects_an_undocumented_render_mode(server, project_path):
     """The tool's docstring names the accepted values; they must be the real ones."""
     assert "render_mode" in call_error(
@@ -448,6 +528,75 @@ def test_style_layer_merges_into_the_existing_style(server, project_path):
     # The second call must not drop the first call's key.
     assert result["style"]["fillColor"] == "#ff0000"
     assert result["style"]["strokeWidth"] == 4
+
+
+def test_set_layer_popup_writes_fields_labels_and_kinds(server, project_path):
+    call(server, "add_geojson_layer", path=project_path, name="Cities", data=json.dumps(POINT_FC))
+    result = call(
+        server,
+        "set_layer_popup",
+        path=project_path,
+        layer="Cities",
+        fields=[
+            "name",
+            {"field": "pop", "label": "Population", "kind": "number", "thousands": True},
+        ],
+        title="name",
+    )
+    assert result["popup"] == {
+        "titleField": "name",
+        "fields": [
+            {"field": "name"},
+            {
+                "field": "pop",
+                "label": "Population",
+                "kind": "number",
+                "format": {"thousands": True},
+            },
+        ],
+    }
+
+
+def test_set_layer_popup_tooltip_flags_the_named_fields(server, project_path):
+    call(server, "add_geojson_layer", path=project_path, name="Cities", data=json.dumps(POINT_FC))
+    result = call(
+        server,
+        "set_layer_popup",
+        path=project_path,
+        layer="Cities",
+        fields=["name", "pop"],
+        tooltip=["name"],
+    )
+    assert result["popup"]["hover"] is True
+    assert result["popup"]["fields"][0]["hover"] is True
+
+
+def test_set_layer_popup_empty_tooltip_turns_hover_off(server, project_path):
+    call(server, "add_geojson_layer", path=project_path, name="Cities", data=json.dumps(POINT_FC))
+    call(
+        server,
+        "set_layer_popup",
+        path=project_path,
+        layer="Cities",
+        fields=["name"],
+        tooltip=["name"],
+    )
+    result = call(
+        server, "set_layer_popup", path=project_path, layer="Cities", tooltip=[], merge=True
+    )
+    assert result["popup"]["hover"] is False
+
+
+def test_set_layer_popup_reports_an_unusable_field(server, project_path):
+    call(server, "add_geojson_layer", path=project_path, name="Cities", data=json.dumps(POINT_FC))
+    message = call_error(
+        server,
+        "set_layer_popup",
+        path=project_path,
+        layer="Cities",
+        fields=[{"field": "pop", "kind": "markdown"}],
+    )
+    assert "kind must be one of" in message
 
 
 def test_remove_layer_drops_it(server, project_path):
@@ -532,6 +681,28 @@ def test_add_ogc_layer_requires_layers_for_wms(server, project_path):
         service="wms",
         endpoint="https://example.com/wms",
     )
+
+
+@pytest.mark.parametrize(
+    ("service", "arguments"),
+    [
+        ("wms", {"endpoint": "https://example.com/wms", "layers": "topo"}),
+        ("wmts", {"endpoint": "https://example.com/wmts/{z}/{y}/{x}.png"}),
+    ],
+)
+def test_add_ogc_layer_passes_bounds_through(server, project_path, tmp_path, service, arguments):
+    """Both branches build a different layer, and either is unreachable without bounds."""
+    call(
+        server,
+        "add_ogc_layer",
+        path=project_path,
+        name="Service",
+        service=service,
+        bounds=[8.14, 38.85, 9.83, 41.31],
+        **arguments,
+    )
+    written = json.loads((tmp_path / project_path).read_text(encoding="utf-8"))
+    assert written["layers"][-1]["source"]["bounds"] == [8.14, 38.85, 9.83, 41.31]
 
 
 def test_add_ogc_layer_rejects_an_unknown_service(server, project_path):
@@ -650,3 +821,17 @@ def test_export_html_refuses_a_non_html_destination(server, project_path):
     assert "Refusing to write" in call_error(
         server, "export_html", path=project_path, out_path="map.json"
     )
+
+
+def test_renderer_tools_persist_pane_kinds(server, tmp_path):
+    path = str(tmp_path / "globe.geolibre.json")
+    call(server, "create_project", path=path)
+    call(server, "set_renderer", path=path, renderer="cesium")
+    result = call(
+        server, "set_map_layout", path=path, rows=1, cols=2, view_kinds=["cesium", "maplibre"]
+    )
+    pane_id = result["secondaryMapViews"][0]["id"]
+    call(server, "set_renderer", path=path, renderer="cesium", pane_id=pane_id)
+    saved = json.loads(Path(path).read_text())
+    assert saved["primaryRenderer"] == "cesium"
+    assert saved["secondaryMapViews"][0]["viewKind"] == "cesium"

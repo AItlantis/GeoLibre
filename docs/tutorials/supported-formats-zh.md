@@ -19,6 +19,7 @@
 | 浏览器 | 打开 `web.geolibre.app` | 什么都不用装，加载完可离线用 |
 | 桌面 | Tauri v2 原生应用 | Windows / macOS / Linux，微软商店、Homebrew、winget、AUR、Flatpak 都有 |
 | 安卓 | Google Play 原生 App | 每 ABI 约 40MB |
+| iOS | App Store 原生 App | iPhone 与 iPad，同一套代码经 Tauri v2 mobile 构建 |
 | Jupyter | `pip install geolibre` | 整个应用嵌进 notebook 单元格 |
 
 > **核心应用没有账号、没有服务器、没有费用。** 本地文件就地读取、不出本机，应用加载完成后本地流程也能离线继续用。例外的是那些可选的远程能力：在线目录（STAC、Source Cooperative、Overture、Planetary Computer）、从 CDN 下载底图与瓦片，以及 Earth Engine、需要鉴权的 ArcGIS 服务等，都需要联网，部分还需要各自的凭据或 OAuth 登录。
@@ -46,7 +47,7 @@ csv, tsv, kml, kmz, gml, gpx, dxf, tab, shp, zip
 | **GeoPackage** | `.gpkg` | **sql.js（SQLite WASM），不是 GDAL** | 多图层会弹选择器；会先修复 `gpkg_ogr_contents` |
 | **Shapefile（散文件）** | `.shp` | shpjs | 桌面端自动读同名 `.dbf/.shx/.prj/.cpg`；3D MultiPatch 改走 DuckDB |
 | **Shapefile（压缩包）** | `.zip` | fflate 解压 → shpjs | `.prj` 决定投影，`.cpg` 决定 DBF 编码（**中文属性乱码可以得到正确处理**）；自动跳过 macOS 的 `__MACOSX` |
-| **KML** | `.kml` | 自研解析器 | **保留内嵌符号化**；还能吐出 GroundOverlay 图像和 `<Model>` 三维模型 |
+| **KML** | `.kml` | 自研解析器 | **保留内嵌符号化**和 Folder 结构；带 `<TimeSpan>`/`<TimeStamp>` 的地标能接时间轴动画；还能吐出 GroundOverlay 图像和 `<Model>` 三维模型 |
 | **KMZ** | `.kmz` | fflate 解压 | 自定义图标、格式化描述都保留 |
 | **GML** | `.gml` | DuckDB `ST_Read` | — |
 | **GPX** | `.gpx` | 纯 JS | **自动拆成三个图层**：航点 / 轨迹 / 路线 |
@@ -257,7 +258,7 @@ _浏览器端输出格式是子集：geojson / json / csv / parquet / geoparquet
 | **桌面端（Tauri）专属** | 原生文件/文件夹对话框、本地 MBTiles、本地栅格读取、Shapefile 同名文件自动发现、PostGIS/Martin、文件地理数据库、本地文件监听重载 |
 | **需要 Python sidecar** | 文件地理数据库、桌面端的全部转换工具（首选路径）、栅格工具（rasterio）、AI 分割、PostGIS、Sedona |
 | **Mac App Store 版本** | 不带 Python sidecar：隐藏 PostgreSQL 和 GDB 数据源、隐藏 AI 分割；Whitebox、转换、栅格、矢量工具全部退回浏览器/WASM 引擎；Shapefile companion 文件要手动多选 |
-| **安卓 / 移动端** | 隐藏栅格工具、转换工具、AI 分割、PostgreSQL——这些都依赖 sidecar。Whitebox 工具箱走 WASM，依然可用 |
+| **安卓 / iOS 移动端** | 隐藏栅格工具、转换工具、AI 分割、PostgreSQL——这些都依赖 sidecar。Whitebox 工具箱走 WASM，依然可用 |
 | **浏览器端** | 无本地 MBTiles/GDB/PostGIS；转换输出是子集；矢量转换不收 `.zip`；栅格转 COG 只收 GeoTIFF；Zarr 本地文件夹在 Firefox/Safari 不可用 |
 
 ---
@@ -272,11 +273,14 @@ _浏览器端输出格式是子集：geojson / json / csv / parquet / geoparquet
 
 这个设计的红利就是**加格式很便宜**：新格式只要能变成一条图层记录，就自动获得图层面板、透明度、排序、工程保存、样式导出的全部能力。
 
-**三个渲染器的分工**（注意这里没有「引擎抽象层」）：
+**四个渲染引擎的分工**，统一通过 `MapEngine` 接口接入：
 
-- **MapLibre** 是默认主地图，绝大多数图层由它渲染
-- **deck.gl** 不占独立视图，是**交织进 MapLibre 画布内**的 overlay，负责 COG、3D Tiles、I3S、带 Z 值的矢量、可视化图层。这里有个硬约束：所有交织生产者必须共用**同一个** overlay 实例，否则后来的会把前面的图层清掉（作者实际遇到过这个问题）
-- **Cesium** 是分屏里的一个视图模式，不是替换。它只支持 GeoJSON、3D Tiles 和影像类图层，其它类型在面板里标「仅 2D」
+- **MapLibre** 是默认引擎，图层、工具和插件支持最全面。
+- **Mapbox** 使用 Mapbox GL JS 提供 Mapbox 样式和服务，同时与 MapLibre 共享大部分 Style Specification 能力。
+- **Cesium** 是原生三维球引擎，适合地形、3D Tiles、CZML、ion 资产、I3S 和面向全球的三维工作流。
+- **ArcGIS** 使用 ArcGIS Maps SDK，原生支持 ArcGIS 服务以及 Esri 的二维地图和三维场景。
+
+**deck.gl 不是第五个引擎。** 它是由兼容引擎承载的 overlay，用于 COG、点云、三维内容和可视化图层。同一地图上交织渲染的生产者必须共用一个 overlay 实例，否则后创建的实例可能覆盖前一个实例管理的图层。
 
 ![Cesium 视图模式下的三维球，左边还是那套图层面板](https://assets.geolibre.app/images/earth-cesium-globe.webp)
 
@@ -337,7 +341,7 @@ _浏览器端输出格式是子集：geojson / json / csv / parquet / geoparquet
 
 **四、平台能力不对等。** 见第十节那张表。别拿浏览器版的体验去代表全部。
 
-**五、Cesium 3D 球要 Ion token。** 免费额度够个人玩，团队用要算账。
+**五、Cesium 3D 球在网页版之外需要 Ion token。** 网页版内置了演示 token，桌面版和移动版需要自己的 token。免费额度够个人玩，团队用要算账。
 
 **六、国内环境。** 底图、地形、Photorealistic 3D Tiles 这些默认源都在墙外；坐标系走标准 WGS84，**GCJ-02 偏移得自己处理**。想认真用得先解决这两件事。这部分暂无可靠的实测信息，留给实际使用者补充。
 
@@ -349,7 +353,7 @@ _浏览器端输出格式是子集：geojson / json / csv / parquet / geoparquet
 
 GeoLibre 真正的价值在于——不在于它比 QGIS 强（它不强），而在于它把**「看一眼数据」这件事的成本降低到了接近零**。这个位置以前是空的。
 
-对做 Cesium / 三维 GIS 开发的人，它还有一层参考价值：**引擎无关的 store 设计**。把状态存成普通的图层记录和视图状态，而不是绑死在某个渲染引擎的对象上，第二个渲染器就能平滑插进来。这个思路值得借鉴。
+对做多引擎或三维 GIS 开发的人，它还有一层参考价值：**引擎无关的 store 设计**。把状态存成普通的图层记录和视图状态，而不是绑死在某个渲染引擎的对象上，就能在不改变工程模型的前提下接入另一个渲染器。这个思路值得借鉴。
 
 使用路径按场景分：
 
