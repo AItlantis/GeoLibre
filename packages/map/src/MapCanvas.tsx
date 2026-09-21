@@ -98,7 +98,7 @@ function stringifyIdentifyValue(value: unknown): string {
   return String(value);
 }
 
-function createIdentifyPopupElement(
+export function createIdentifyPopupElement(
   layerName: string,
   properties: Record<string, unknown>,
   featureId?: string | number,

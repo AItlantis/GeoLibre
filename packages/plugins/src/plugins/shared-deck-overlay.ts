@@ -29,15 +29,27 @@ type DeviceListener = (device: unknown) => void;
  * Draw order, bottom (drawn first) to top (drawn last). Rasters sit under 3D
  * tiles, which sit under vector / deck-viz overlays -- typical GIS stacking.
  * The route-animation marker/trail sit on top of everything so the animated
- * position stays visible above the 3D track it rides (see #1210).
+ * position stays visible above the 3D track it rides (see #1210), and the
+ * vehicle-playback footprints sit above those for the same reason: animated
+ * traffic must stay readable over whatever network it is driving on.
  * Ordering WITHIN a source is whatever order that source supplies.
+ *
+ * The network-kpi choropleth sits BELOW the animated sources rather than above
+ * them: it is a static result surface painted onto the road network itself, so
+ * it belongs with the basemap-side stack, and putting it over the vehicles
+ * would hide the very traffic whose results it is showing.
  */
 const SOURCE_DRAW_ORDER = [
   "raster",
   "stac-search",
   "google-3d-tiles",
+  "network-kpi",
+  "emissions-h3",
+  "path-analysis",
+  "scenario-comparison",
   "deckviz",
   "route-anim",
+  "vehicle-playback",
 ] as const;
 export type SharedDeckSource = (typeof SOURCE_DRAW_ORDER)[number];
 
@@ -211,6 +223,24 @@ function renderSharedDeckOverlay(): void {
   }
 
   overlay.setProps({ layers });
+}
+
+/**
+ * The deck.gl layer `parameters` that implement the "visible through
+ * buildings" toggle: `"always"` disables the depth test so the layer draws
+ * over 3D building extrusions (see-through), while `"less-equal"` restores
+ * normal depth occlusion so buildings can hide the layer again.
+ *
+ * Spread this into any deck.gl layer's props (`...depthOcclusionParameters(...)`)
+ * instead of hardcoding `parameters: { depthCompare: "always" }`, so every
+ * layer respects its own plugin's `seeThroughBuildings` setting.
+ *
+ * @param seeThroughBuildings - The plugin's own local setting value.
+ */
+export function depthOcclusionParameters(
+  seeThroughBuildings: boolean,
+): { parameters: { depthCompare: "always" | "less-equal" } } {
+  return { parameters: { depthCompare: seeThroughBuildings ? "always" : "less-equal" } };
 }
 
 function scheduleMountRetry(): void {

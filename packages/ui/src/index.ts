@@ -50,3 +50,4 @@ export {
   type ErrorBoundaryProps,
   type ErrorBoundaryFallbackProps,
 } from "./components/error-boundary";
+export { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/tabs";

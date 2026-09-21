@@ -18,6 +18,7 @@
     "@deck.gl/geo-layers": "^9.3.7",
     "@deck.gl/layers": "^9.3.7",
     "@deck.gl/mapbox": "^9.3.7",
+    "@duckdb/duckdb-wasm": "^1.33.1",
     "@deck.gl/mesh-layers": "^9.3.7",
     "@developmentseed/deck.gl-geotiff": "^0.7.0",
     "@developmentseed/deck.gl-raster": "^0.7.0",
@@ -73,6 +74,7 @@
     "proj4": "^2.21.0",
     "s2js": "^1.44.0",
     "shpjs": "^6.2.0",
+    "sql.js": "^1.14.0",
     "three": "^0.185.1",
     "webdggrid": "^1.9.0",
     "whitebox-wasm": "^0.5.1"
@@ -80,6 +82,7 @@
   "devDependencies": {
     "@types/geojson": "^7946.0.16",
     "@types/ngeohash": "^0.6.8",
+    "@types/sql.js": "^1.4.9",
     "typescript": "^7.0.2"
   }
 }

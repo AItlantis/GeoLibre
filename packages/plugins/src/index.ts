@@ -1,5 +1,57 @@
 export * from "./types";
+export {
+  openTestudoDatasetProvider,
+  type OpenTestudoDatasetProviderOptions,
+  type TestudoCatalogEntry,
+  type TestudoDatasetDescriptor,
+  type TestudoDatasetFormat,
+  type TestudoDatasetMetadata,
+  type TestudoDatasetProvider,
+  type TestudoDatasetQuery,
+  type TestudoDatasetQueryResult,
+  type TestudoDatasetSource,
+  type TestudoDuckDbConnection,
+  type TestudoDuckDbRuntime,
+  type TestudoFilterOperator,
+  type TestudoProviderLimits,
+  type TestudoQueryFilter,
+  type TestudoScenarioMetadata,
+  type TestudoSqliteDatabase,
+  type TestudoSqliteRuntime,
+} from "./plugins/testudo-dataset-provider";
 export { PluginManager } from "./plugin-manager";
+export {
+  PATH_ANALYSIS_PLUGIN_ID,
+  closePathAnalysisPanel,
+  getPathAnalysisSnapshot,
+  isPathAnalysisPanelVisible,
+  maplibrePathAnalysisPlugin,
+  openPathAnalysisPanel,
+  reattachPathAnalysis,
+  setPathAnalysisManifestUrl,
+  setPathAnalysisSettings,
+  clearPathAnalysisSelection,
+  removePathAnalysisSection,
+  loadLocalPathAnalysisFolder,
+  subscribePathAnalysis,
+  subscribePathAnalysisPanel,
+  type PathAnalysisSettings,
+  type PathAnalysisSnapshot,
+} from "./plugins/maplibre-path-analysis";
+export { PATH_METRICS, PATH_RAMPS, pathColorRgb, pathElevation, type PathMetric } from "./plugins/path-analysis-ramps";
+export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
+export { buildScenarioComparisonRows, type ComparisonInput, type ComparisonRow } from "./plugins/scenario-comparison-data";
+export { parseComparisonRamps, comparisonCategoricalRamp, type ComparisonMetric, type CategoricalRamp } from "./plugins/comparison-ramps";
+export {
+  loadPathAnalysis,
+  parsePathAnalysisManifest,
+  canLoadLocalPathAnalysisPackage,
+  createPathAnalysisDirectorySource,
+  readLocalPathAnalysisManifestJson,
+  type PathAnalysisManifest,
+  type PathMatch,
+  type PathAnalysisSummary,
+} from "./plugins/path-analysis-data";
 export {
   registerRightPanel,
   unregisterRightPanel,
@@ -754,6 +806,41 @@ export {
 } from "./plugins/maplibre-tilecode";
 export type { WeatherAnimationState, WeatherLayerController } from "./plugins/weather-layer";
 export {
+  useManifestUrlDraft,
+  type UseManifestUrlDraftResult,
+} from "./shared/useManifestUrlDraft";
+export {
+  useScenarioReplicationSelector,
+  type ReplicationLike,
+  type ScenarioLike,
+  type UseScenarioReplicationSelectorArgs,
+  type UseScenarioReplicationSelectorResult,
+} from "./shared/useScenarioReplicationSelector";
+export {
+  deriveIntervalPlayback,
+  stepInterval,
+  toggleAggregateInterval,
+  useIntervalPlayback,
+  type IntervalPlaybackDerivation,
+  type UseIntervalPlaybackArgs,
+  type UseIntervalPlaybackResult,
+} from "./shared/useIntervalPlayback";
+export {
+  formatSimClock,
+  tickTimelineProps,
+  useTickPlayback,
+  type TickTimelineProps,
+  type UseTickPlaybackArgs,
+  type UseTickPlaybackResult,
+} from "./shared/useTickPlayback";
+export {
+  heightSliderProps,
+  useViewModeToggle,
+  type HeightSliderProps,
+  type UseViewModeToggleArgs,
+  type UseViewModeToggleResult,
+} from "./shared/useViewModeToggle";
+export {
   maplibreCloudsPlugin,
   CLOUDS_PLUGIN_ID,
   getCloudsAnimationState,
@@ -950,6 +1037,141 @@ export {
   type PointOnLine,
   type RouteWithElevation,
 } from "./plugins/route-animation-geometry";
+export {
+  canLoadLocalNetworkKpiPackage,
+  closeNetworkKpiPanel,
+  DEFAULT_NETWORK_KPI_SETTINGS,
+  getNetworkKpiSettings,
+  getNetworkKpiSnapshot,
+  getNetworkKpiStatus,
+  isNetworkKpiPanelVisible,
+  loadLocalNetworkKpiFolder,
+  maplibreNetworkKpiPlugin,
+  NETWORK_KPI_MAX_HEIGHT_MAX,
+  NETWORK_KPI_MAX_HEIGHT_MIN,
+  NETWORK_KPI_OPACITY_MAX,
+  NETWORK_KPI_OPACITY_MIN,
+  NETWORK_KPI_PLUGIN_ID,
+  normalizeNetworkKpiSettings,
+  openNetworkKpiPanel,
+  reattachNetworkKpi,
+  restoreNetworkKpi,
+  setNetworkKpiManifestUrl,
+  setNetworkKpiScenario,
+  setNetworkKpiReplication,
+  setNetworkKpiSettings,
+  stepNetworkKpiInterval,
+  toggleNetworkKpiIntervalPlaying,
+  subscribeNetworkKpi,
+  subscribeNetworkKpiPanel,
+  subscribeNetworkKpiStatus,
+  type NetworkKpiSettings,
+  type NetworkKpiStatus,
+} from "./plugins/maplibre-network-kpi";
+export {
+  DEFAULT_MAX_HEIGHT_M,
+  elevationByKpi,
+  kpiColorRgb,
+  kpiInterpolateExpression,
+  kpiLegendStops,
+  KPI_RAMPS,
+  KPI_RANGES,
+  LOD_ZOOM_THRESHOLD,
+  NETWORK_KPI_METRICS,
+  type KpiRamp,
+  type NetworkKpiMetric,
+} from "./plugins/network-kpi-ramps";
+export {
+  bufferLineToRing,
+  buildLaneRows,
+  buildSectionRows,
+  type KpiPolygonRow,
+} from "./plugins/network-kpi-geometry";
+export {
+  laneKey,
+  parseNetworkKpiManifest,
+  type KpiRow,
+  type NetworkKpiGeometry,
+  type NetworkKpiManifest,
+  type NetworkKpiResults,
+} from "./plugins/network-kpi-data";
+export {
+  EMISSIONS_H3_PLUGIN_ID, DEFAULT_EMISSIONS_H3_SETTINGS, maplibreEmissionsH3Plugin,
+  EMISSIONS_H3_RESOLUTION_MIN, EMISSIONS_H3_RESOLUTION_MAX,
+  openEmissionsH3Panel, closeEmissionsH3Panel, reattachEmissionsH3,
+  isEmissionsH3PanelVisible, subscribeEmissionsH3Panel, getEmissionsH3Snapshot,
+  subscribeEmissionsH3, getEmissionsH3Status, subscribeEmissionsH3Status,
+  setEmissionsH3Settings, setEmissionsH3ManifestUrl, loadLocalEmissionsH3Folder, toggleEmissionsH3IntervalPlaying, stepEmissionsH3Interval, setEmissionsH3Scenario,
+  aggregateEmissionsH3, type EmissionsH3Settings, type EmissionsH3Status,
+} from "./plugins/maplibre-emissions-h3";
+export { computeNoiseSource, energyWeightedDb } from "./plugins/emissions-h3-data";
+export { EMISSIONS_H3_METRICS, EMISSIONS_H3_RAMPS, type EmissionsH3Metric } from "./plugins/emissions-h3-ramps";
+export {
+  advanceVehiclePlaybackTick,
+  canLoadLocalVehiclePackage,
+  closeVehiclePlaybackPanel,
+  DEFAULT_VEHICLE_PLAYBACK_SETTINGS,
+  loadLocalVehiclePlaybackFolder,
+  setVehiclePlaybackScenario,
+  getVehiclePlaybackSettings,
+  getVehiclePlaybackSnapshot,
+  getVehiclePlaybackStatus,
+  isVehiclePlaybackPanelVisible,
+  maplibreVehiclePlaybackPlugin,
+  normalizeVehiclePlaybackSettings,
+  openVehiclePlaybackPanel,
+  reattachVehiclePlayback,
+  restoreVehiclePlayback,
+  setVehiclePlaybackManifestUrl,
+  setVehiclePlaybackSettings,
+  setVehiclePlaybackTick,
+  subscribeVehiclePlayback,
+  subscribeVehiclePlaybackPanel,
+  subscribeVehiclePlaybackStatus,
+  toggleVehiclePlaybackPlaying,
+  VEHICLE_PLAYBACK_OPACITY_MAX,
+  VEHICLE_PLAYBACK_OPACITY_MIN,
+  VEHICLE_PLAYBACK_PLUGIN_ID,
+  VEHICLE_PLAYBACK_SPEED_MAX,
+  VEHICLE_PLAYBACK_SPEED_MIN,
+  type VehicleNetworkView,
+  type VehiclePlaybackSettings,
+  type VehiclePlaybackStatus,
+} from "./plugins/maplibre-vehicle-playback";
+export {
+  articulatedSegmentCount,
+  articulatedVehicleFootprints,
+  createDirectoryPackageSource,
+  createHttpPackageSource,
+  interpolateFrames,
+  isArticulatedSample,
+  listVehicleManifestScenarios,
+  loadVehicleGeometry,
+  loadVehiclePlayback,
+  openLocalVehiclePackage,
+  parseVehicleManifest,
+  supportsLocalPackageFolders,
+  vehicleFootprint,
+  VehiclePlaybackData,
+  type VehicleChunkEntry,
+  type VehicleDirectoryHandle,
+  type VehicleGeometryLayers,
+  type VehicleGeometrySources,
+  type VehicleHistoryEntry,
+  type VehicleManifest,
+  type VehicleManifestScenario,
+  type VehiclePackageSource,
+  type VehicleSample,
+} from "./plugins/vehicle-playback-data";
+export {
+  DEFAULT_VEHICLE_COLOR,
+  resolveVehicleShapeKey,
+  vehicleColorRgb,
+  VEHICLE_SHAPES,
+  VEHICLE_TYPE_COLORS,
+  type VehicleShape,
+  type VehicleShapeKey,
+} from "./plugins/vehicle-shape-catalog";
 export {
   DEFAULT_FLIGHT_SIMULATOR_SETTINGS,
   FLIGHT_CAMERA_TOKEN,

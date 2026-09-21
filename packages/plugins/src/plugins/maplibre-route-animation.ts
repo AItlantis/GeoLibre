@@ -3,7 +3,7 @@ import type { Feature, LineString, Point } from "geojson";
 import type { Layer } from "@deck.gl/core";
 import type { GeoLibreAppAPI, GeoLibreDeckGL, GeoLibrePlugin } from "../types";
 import { colorToRgba } from "./deck-style-utils";
-import { ensureSharedDeckOverlay, setSharedDeckLayers } from "./shared-deck-overlay";
+import { depthOcclusionParameters, ensureSharedDeckOverlay, setSharedDeckLayers } from "./shared-deck-overlay";
 import {
   type LngLat,
   measureLine,
@@ -108,6 +108,8 @@ export interface RouteAnimationSettings {
   showTrail: boolean;
   /** Hex color (`#rgb`/`#rrggbb`) of the marker and trail. */
   color: string;
+  /** When true, the marker/trail draw over 3D building extrusions instead of being occluded by them. */
+  seeThroughBuildings: boolean;
 }
 
 const DEFAULT_COLOR = "#2563eb";
@@ -136,6 +138,7 @@ export const DEFAULT_ROUTE_ANIMATION_SETTINGS: RouteAnimationSettings = {
   markerStyle: "arrow",
   showTrail: true,
   color: DEFAULT_COLOR,
+  seeThroughBuildings: true,
 };
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -174,6 +177,8 @@ export function normalizeRouteAnimationSettings(
       : base.markerStyle,
     showTrail: typeof c.showTrail === "boolean" ? c.showTrail : base.showTrail,
     color: typeof c.color === "string" && HEX_COLOR.test(c.color) ? c.color : base.color,
+    seeThroughBuildings:
+      typeof c.seeThroughBuildings === "boolean" ? c.seeThroughBuildings : base.seeThroughBuildings,
   };
 }
 
@@ -190,7 +195,8 @@ function settingsEqual(a: RouteAnimationSettings, b: RouteAnimationSettings): bo
     a.followRotate === b.followRotate &&
     a.markerStyle === b.markerStyle &&
     a.showTrail === b.showTrail &&
-    a.color === b.color
+    a.color === b.color &&
+    a.seeThroughBuildings === b.seeThroughBuildings
   );
 }
 
@@ -577,8 +583,9 @@ class RouteAnimationEngine {
             widthUnits: "pixels",
             widthMinPixels: 2,
             billboard: true,
-            // Draw over the track it rides instead of z-fighting with it.
-            parameters: { depthCompare: "always" },
+            // Draw over the track it rides instead of z-fighting with it,
+            // unless the user has disabled see-through-buildings.
+            ...depthOcclusionParameters(this.settings.seeThroughBuildings),
           }),
         );
       }
@@ -628,7 +635,7 @@ class RouteAnimationEngine {
       sizeUnits: "pixels",
       getAngle: angle,
       billboard: true,
-      parameters: { depthCompare: "always" },
+      ...depthOcclusionParameters(this.settings.seeThroughBuildings),
     });
   }
 

@@ -9,6 +9,11 @@ import {
   closeSearchPlacesPanel,
   closeFlightSimulatorPanel,
   closeRouteAnimationPanel,
+  closeVehiclePlaybackPanel,
+  closeNetworkKpiPanel,
+  closePathAnalysisPanel,
+  closeScenarioComparisonPanel,
+  closeEmissionsH3Panel, openEmissionsH3Panel, isEmissionsH3PanelVisible, subscribeEmissionsH3Panel,
   closeSpinGlobePanel,
   closeSunPanel,
   closeViewStatePanel,
@@ -22,6 +27,10 @@ import {
   isSearchPlacesPanelVisible,
   isFlightSimulatorPanelVisible,
   isRouteAnimationPanelVisible,
+  isVehiclePlaybackPanelVisible,
+  isNetworkKpiPanelVisible,
+  isPathAnalysisPanelVisible,
+  isScenarioComparisonPanelVisible,
   isSpinGlobePanelVisible,
   isSunPanelVisible,
   isViewStatePanelVisible,
@@ -34,6 +43,10 @@ import {
   openSearchPlacesPanel,
   openFlightSimulatorPanel,
   openRouteAnimationPanel,
+  openVehiclePlaybackPanel,
+  openNetworkKpiPanel,
+  openPathAnalysisPanel,
+  openScenarioComparisonPanel,
   openSpinGlobePanel,
   openSunPanel,
   openViewStatePanel,
@@ -47,6 +60,10 @@ import {
   subscribeSearchPlacesPanel,
   subscribeFlightSimulatorPanel,
   subscribeRouteAnimationPanel,
+  subscribeVehiclePlaybackPanel,
+  subscribeNetworkKpiPanel,
+  subscribePathAnalysisPanel,
+  subscribeScenarioComparison,
   subscribeSpinGlobePanel,
   subscribeSunPanel,
   subscribeViewStatePanel,
@@ -67,6 +84,11 @@ export interface ToolbarPanels {
   spinGlobe: ToolbarPanel;
   sun: ToolbarPanel;
   routeAnimation: ToolbarPanel;
+  vehiclePlayback: ToolbarPanel;
+  networkKpi: ToolbarPanel;
+  pathAnalysis: ToolbarPanel;
+  scenarioComparison: ToolbarPanel;
+  emissionsH3: ToolbarPanel;
   flightSimulator: ToolbarPanel;
   print: ToolbarPanel;
   colorbar: ToolbarPanel;
@@ -104,6 +126,23 @@ export function useToolbarPanels(appApi: AppApi): ToolbarPanels {
     isRouteAnimationPanelVisible,
     isRouteAnimationPanelVisible,
   );
+  const vehiclePlaybackVisible = useSyncExternalStore(
+    subscribeVehiclePlaybackPanel,
+    isVehiclePlaybackPanelVisible,
+    isVehiclePlaybackPanelVisible,
+  );
+  const networkKpiVisible = useSyncExternalStore(
+    subscribeNetworkKpiPanel,
+    isNetworkKpiPanelVisible,
+    isNetworkKpiPanelVisible,
+  );
+  const pathAnalysisVisible = useSyncExternalStore(
+    subscribePathAnalysisPanel,
+    isPathAnalysisPanelVisible,
+    isPathAnalysisPanelVisible,
+  );
+  const scenarioComparisonVisible = useSyncExternalStore(subscribeScenarioComparison, isScenarioComparisonPanelVisible, isScenarioComparisonPanelVisible);
+  const emissionsH3Visible = useSyncExternalStore(subscribeEmissionsH3Panel, isEmissionsH3PanelVisible, isEmissionsH3PanelVisible);
   const flightSimulatorVisible = useSyncExternalStore(
     subscribeFlightSimulatorPanel,
     isFlightSimulatorPanelVisible,
@@ -196,6 +235,38 @@ export function useToolbarPanels(appApi: AppApi): ToolbarPanels {
         openRouteAnimationPanel(appApi);
       },
     },
+    vehiclePlayback: {
+      visible: vehiclePlaybackVisible,
+      toggle: () => {
+        if (vehiclePlaybackVisible) {
+          closeVehiclePlaybackPanel(appApi);
+          return;
+        }
+        openVehiclePlaybackPanel(appApi);
+      },
+    },
+    networkKpi: {
+      visible: networkKpiVisible,
+      toggle: () => {
+        if (networkKpiVisible) {
+          closeNetworkKpiPanel(appApi);
+          return;
+        }
+        openNetworkKpiPanel(appApi);
+      },
+    },
+    pathAnalysis: {
+      visible: pathAnalysisVisible,
+      toggle: () => {
+        if (pathAnalysisVisible) {
+          closePathAnalysisPanel();
+          return;
+        }
+        openPathAnalysisPanel(appApi);
+      },
+    },
+    scenarioComparison: { visible: scenarioComparisonVisible, toggle: () => scenarioComparisonVisible ? closeScenarioComparisonPanel(appApi) : openScenarioComparisonPanel(appApi) },
+    emissionsH3: { visible: emissionsH3Visible, toggle: () => emissionsH3Visible ? closeEmissionsH3Panel() : openEmissionsH3Panel(appApi) },
     flightSimulator: {
       visible: flightSimulatorVisible,
       toggle: () => {

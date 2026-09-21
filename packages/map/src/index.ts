@@ -1,4 +1,4 @@
-export { MapCanvas, type MapCanvasProps, type MapDiagnosticEvent } from "./MapCanvas";
+export { MapCanvas, createIdentifyPopupElement, type MapCanvasProps, type MapDiagnosticEvent } from "./MapCanvas";
 export { SecondaryMapCanvas, type SecondaryMapCanvasProps } from "./SecondaryMapCanvas";
 export { CesiumCanvas, type CesiumCanvasProps } from "./CesiumCanvas";
 export { isCesiumSupportedLayerType } from "./cesium-layer-sync";

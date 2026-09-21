@@ -34,6 +34,7 @@ import {
   ChevronUp,
   Circle,
   Compass,
+  Eye,
   Film,
   Mountain,
   Navigation,
@@ -169,6 +170,7 @@ function RouteAnimationCard({ mapControllerRef }: RouteAnimationPanelProps) {
     markerStyle,
     showTrail,
     color,
+    seeThroughBuildings,
   } = settings;
 
   // Discover which geojson layers contain line geometry. Resolution is async for
@@ -546,6 +548,15 @@ function RouteAnimationCard({ mapControllerRef }: RouteAnimationPanelProps) {
               label={t("toolbar.routeAnimation.trail")}
               disabled={busy}
               onClick={() => setRouteAnimationSettings({ showTrail: !showTrail })}
+            />
+            <ToggleChip
+              active={seeThroughBuildings}
+              icon={<Eye className="h-3.5 w-3.5" />}
+              label={t("toolbar.routeAnimation.seeThroughBuildings")}
+              disabled={busy}
+              onClick={() =>
+                setRouteAnimationSettings({ seeThroughBuildings: !seeThroughBuildings })
+              }
             />
           </div>
 

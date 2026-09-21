@@ -1,0 +1,1 @@
+export function energyWeightedDb(parts: { db: number; length: number }[]): number | null { const valid=parts.filter((p)=>Number.isFinite(p.db)&&p.length>0); if(!valid.length)return null; const length=valid.reduce((s,p)=>s+p.length,0); return 10*Math.log10(valid.reduce((s,p)=>s+p.length*Math.pow(10,p.db/10),0)/length); }

@@ -157,6 +157,10 @@ export function ControlsMenu({
     show("controls.graticule") ||
     show("controls.sun") ||
     show("controls.routeAnimation") ||
+    show("controls.vehiclePlayback") ||
+    show("controls.networkKpi") ||
+    show("controls.emissionsH3") ||
+    show("controls.pathAnalysis") ||
     show("controls.flightSimulator") ||
     show("controls.directions") ||
     show("controls.reverseGeocode");
@@ -240,6 +244,35 @@ export function ControlsMenu({
               {panels.routeAnimation.visible ? " ✓" : ""}
             </DropdownMenuItem>
           )}
+          {show("controls.vehiclePlayback") && (
+            <DropdownMenuItem
+              title={t("toolbar.item.vehiclePlaybackTooltip")}
+              onSelect={panels.vehiclePlayback.toggle}
+            >
+              {t("toolbar.item.vehiclePlayback")}
+              {panels.vehiclePlayback.visible ? " ✓" : ""}
+            </DropdownMenuItem>
+          )}
+          {show("controls.networkKpi") && (
+            <DropdownMenuItem
+              title={t("toolbar.item.networkKpiTooltip")}
+              onSelect={panels.networkKpi.toggle}
+            >
+              {t("toolbar.item.networkKpi")}
+              {panels.networkKpi.visible ? " ✓" : ""}
+            </DropdownMenuItem>
+          )}
+          {show("controls.emissionsH3") && <DropdownMenuItem title={t("toolbar.item.emissionsH3Tooltip")} onSelect={panels.emissionsH3.toggle}>{t("toolbar.item.emissionsH3")}{panels.emissionsH3.visible ? " ✓" : ""}</DropdownMenuItem>}
+          {show("controls.pathAnalysis") && (
+            <DropdownMenuItem
+              title={t("toolbar.item.pathAnalysisTooltip")}
+              onSelect={panels.pathAnalysis.toggle}
+            >
+              {t("toolbar.item.pathAnalysis")}
+              {panels.pathAnalysis.visible ? " ✓" : ""}
+            </DropdownMenuItem>
+          )}
+          {show("controls.scenarioComparison") && <DropdownMenuItem title={t("toolbar.item.scenarioComparisonTooltip")} onSelect={panels.scenarioComparison.toggle}>{t("toolbar.item.scenarioComparison")}{panels.scenarioComparison.visible ? " ✓" : ""}</DropdownMenuItem>}
           {show("controls.flightSimulator") && (
             <DropdownMenuItem
               title={t("toolbar.item.flightSimulatorTooltip")}

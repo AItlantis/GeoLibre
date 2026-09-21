@@ -26,6 +26,11 @@ import {
   restorePlanetaryComputerLayers,
   reattachSun,
   reattachRouteAnimation,
+  reattachVehiclePlayback,
+  reattachNetworkKpi,
+  reattachEmissionsH3,
+  reattachScenarioComparison,
+  reattachPathAnalysis,
   reattachFlightSimulator,
   restoreArcGISViewportLayers,
   restoreRasterLayers,
@@ -155,6 +160,11 @@ import { ViewerLayerPanel } from "../panels/ViewerLayerPanel";
 import { FloatingPanels } from "../panels/FloatingPanels";
 import { SunPanel } from "../panels/SunPanel";
 import { RouteAnimationPanel } from "../panels/RouteAnimationPanel";
+import { VehiclePlaybackPanel } from "../panels/VehiclePlaybackPanel";
+import { NetworkKpiPanel } from "../panels/NetworkKpiPanel";
+import { ScenarioComparisonPanel } from "../panels/ScenarioComparisonPanel";
+import { EmissionsH3Panel } from "../panels/EmissionsH3Panel";
+import { PathAnalysisPanel } from "../panels/PathAnalysisPanel";
 import { FlightSimulatorPanel } from "../panels/FlightSimulatorPanel";
 import {
   PluginRightPanel,
@@ -1192,6 +1202,22 @@ export function DesktopShell({
     // to the (possibly new) map after a re-init/basemap swap without deriving
     // open/closed state (project loads handle that via applyProjectState).
     reattachRouteAnimation(appAPI);
+    // The vehicle playback engine likewise holds a reference to the live map
+    // (for its deck.gl overlay), so rebind it after a re-init/basemap swap
+    // without deriving open/closed state (project loads handle that via
+    // applyProjectState).
+    reattachVehiclePlayback(appAPI);
+    // The network KPI engine also owns a deck.gl overlay tied to the live map;
+    // rebind it after map re-initialisation without changing panel visibility.
+    reattachNetworkKpi(appAPI);
+    reattachEmissionsH3(appAPI);
+    reattachScenarioComparison(appAPI);
+    // The path-analysis engine holds the section/path click layers on the live
+    // map; this call was previously missing entirely, so its engine was only
+    // ever created once (if the map happened to be ready at first activation)
+    // and never rebuilt afterward — every subsequent load silently had nowhere
+    // to draw sections/paths.
+    reattachPathAnalysis(appAPI);
     // The flight simulator holds a reference to the live map (and suspends its
     // interaction handlers while flying), so rebind it after a map re-init too.
     reattachFlightSimulator(appAPI);
@@ -2413,11 +2439,28 @@ export function DesktopShell({
             <RouteAnimationPanel mapControllerRef={mapControllerRef} />
           </SectionErrorBoundary>
           <SectionErrorBoundary
+            label="Vehicle playback panel"
+            displayName={t("shell.section.vehiclePlaybackPanel")}
+          >
+            <VehiclePlaybackPanel />
+          </SectionErrorBoundary>
+          <SectionErrorBoundary
+            label="Network KPI panel"
+            displayName={t("shell.section.networkKpiPanel")}
+          >
+          <NetworkKpiPanel />
+          </SectionErrorBoundary>
+          <SectionErrorBoundary label="Emissions H3 panel" displayName={t("shell.section.emissionsH3Panel")}>
+            <EmissionsH3Panel />
+          </SectionErrorBoundary>
+          <SectionErrorBoundary
             label="Flight simulator panel"
             displayName={t("shell.section.flightSimulatorPanel")}
           >
             <FlightSimulatorPanel />
           </SectionErrorBoundary>
+          <PathAnalysisPanel />
+          <ScenarioComparisonPanel />
           <KnowledgeCardConsentDialog
             open={knowledgeNoticeOpen}
             onOpenChange={(open) => {

@@ -605,6 +605,26 @@ export const MENU_ITEM_CATALOG: readonly MenuItemCatalogEntry[] = [
     tier: "intermediate",
   },
   {
+    id: "controls.vehiclePlayback",
+    menuId: "controls",
+    labelKey: "toolbar.item.vehiclePlayback",
+    tier: "intermediate",
+  },
+  {
+    id: "controls.networkKpi",
+    menuId: "controls",
+    labelKey: "toolbar.item.networkKpi",
+    tier: "intermediate",
+  },
+  { id: "controls.emissionsH3", menuId: "controls", labelKey: "toolbar.item.emissionsH3", tier: "intermediate" },
+  {
+    id: "controls.pathAnalysis",
+    menuId: "controls",
+    labelKey: "toolbar.item.pathAnalysis",
+    tier: "intermediate",
+  },
+  { id: "controls.scenarioComparison", menuId: "controls", labelKey: "toolbar.item.scenarioComparison", tier: "intermediate" },
+  {
     id: "controls.flightSimulator",
     menuId: "controls",
     labelKey: "toolbar.item.flightSimulator",
