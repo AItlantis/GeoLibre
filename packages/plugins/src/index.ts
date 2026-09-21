@@ -519,10 +519,12 @@ export {
 } from "./plugins/maplibre-osm-downloader";
 export {
   buildOsmDownloadQuery,
+  defaultOverpassEndpoint,
   downloadOsmGeoJson,
   escapeOverpassString,
   overpassJsonToGeoJson,
   OVERPASS_DEFAULT_ENDPOINT,
+  OVERPASS_DEV_ENDPOINT,
   type OsmDownloadFilter,
   type OsmDownloadPreset,
   type OverpassElement,
@@ -925,7 +927,22 @@ export {
   GODS_EYE_VIEW_SPACE_MISSIONS_FLAG,
   GODS_EYE_VIEW_STREET_TRAFFIC_FLAG,
   GODS_EYE_VIEW_MAPPED_ALPR_FLAG,
+  GODS_EYE_VIEW_FLIGHTS_FLAG,
+  GODS_EYE_VIEW_MILITARY_FLIGHTS_FLAG,
 } from "./plugins/gods-eye-view";
+export {
+  ADSB_LOL_EDGE_URL,
+  AIRCRAFT_ENRICHMENT_BUDGET,
+  OPEN_SKY_EDGE_URL,
+  aircraftToCzml,
+  buildAircraftFeedUrl,
+  fetchMilitaryFlightsCzml,
+  fetchOpenSkyCzml,
+  normalizeAdsbLolAircraft,
+  normalizeOpenSkyAircraft,
+  predictAircraftPosition,
+  type AircraftObservation,
+} from "./plugins/gods-eye-view-aircraft-feeds";
 export {
   buildCelestrakTleUrl,
   buildUsgsFeedUrl,

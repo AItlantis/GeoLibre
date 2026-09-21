@@ -28,6 +28,7 @@ import {
   viewportBoundsKey,
 } from "./gods-eye-view-viewport-feeds";
 import { OVERPASS_REQUEST_TIMEOUT_MS } from "./osm-downloader-api";
+import { fetchMilitaryFlightsCzml, fetchOpenSkyCzml } from "./gods-eye-view-aircraft-feeds";
 
 export const GODS_EYE_VIEW_PLUGIN_ID = "gods-eye-view";
 export const GODS_EYE_VIEW_EARTHQUAKES_FLAG = "godsEyeViewEarthquakes";
@@ -42,8 +43,14 @@ export const GODS_EYE_VIEW_BIKE_SHARE_FLAG = "godsEyeViewBikeShare";
 export const GODS_EYE_VIEW_SPACE_MISSIONS_FLAG = "godsEyeViewSpaceMissions";
 export const GODS_EYE_VIEW_STREET_TRAFFIC_FLAG = "godsEyeViewStreetTraffic";
 export const GODS_EYE_VIEW_MAPPED_ALPR_FLAG = "godsEyeViewMappedAlpr";
+export const GODS_EYE_VIEW_FLIGHTS_FLAG = "godsEyeViewFlights";
+export const GODS_EYE_VIEW_MILITARY_FLIGHTS_FLAG = "godsEyeViewMilitaryFlights";
 
-const REFRESH_TICK_MS = 10 * 60_000;
+// The aircraft feeds refresh every 15–30 seconds. Individual descriptors still
+// decide whether they are due, so this inexpensive scheduler does not increase
+// the cadence of the slower catalogs.
+const REFRESH_TICK_MS = 5_000;
+const FAILURE_RETRY_COOLDOWN_MS = 60_000;
 const VIEWPORT_REFRESH_DEBOUNCE_MS = 400;
 const ARC_DURATION_MS = 3 * 60 * 60_000;
 
@@ -78,6 +85,26 @@ interface FeedDescriptor {
  * through the OSM infrastructure loader.
  */
 const FEED_DESCRIPTORS = {
+  flights: {
+    group: "movement",
+    label: ["panel.godsEyeView.flights", "Live Flights"],
+    attribution: "Live flights: © OpenSky Network; aircraft details: ADSBDB",
+    refreshIntervalMs: 30_000,
+    timeoutMs: 20_000,
+    flag: GODS_EYE_VIEW_FLIGHTS_FLAG,
+    defaultEnabled: false,
+    fetch: ({ signal, window, bounds }) => fetchOpenSkyCzml(window, { signal, bounds }),
+  },
+  militaryFlights: {
+    group: "movement",
+    label: ["panel.godsEyeView.militaryFlights", "Military Flights"],
+    attribution: "Military flights: adsb.lol, ODbL; aircraft details: ADSBDB",
+    refreshIntervalMs: 15_000,
+    timeoutMs: 20_000,
+    flag: GODS_EYE_VIEW_MILITARY_FLIGHTS_FLAG,
+    defaultEnabled: false,
+    fetch: ({ signal, window, bounds }) => fetchMilitaryFlightsCzml(window, { signal, bounds }),
+  },
   satellites: {
     group: "movement",
     label: ["panel.godsEyeView.satellites", "Satellites"],
@@ -240,6 +267,7 @@ interface FeedState {
   loading: boolean;
   lastUpdated: Date | null;
   failed: boolean;
+  retryAfter: number;
   layerId: string | null;
   request: AbortController | null;
   generation: number;
@@ -255,6 +283,7 @@ const feeds = Object.fromEntries(
       loading: false,
       lastUpdated: null,
       failed: false,
+      retryAfter: 0,
       layerId: null,
       request: null,
       generation: 0,
@@ -398,7 +427,10 @@ function syncDenseLayerRows(): void {
   const layer = ownedDenseLayer();
   if (!layer) return;
   useAppStore.getState().updateLayer(layer.id, {
-    geojson: { type: "FeatureCollection", features: denseCatalog.attributeFeatures() },
+    geojson: {
+      type: "FeatureCollection",
+      features: denseCatalog.attributeFeatures(),
+    },
   });
 }
 
@@ -480,6 +512,11 @@ function upsertLayer(feed: FeedId, payload: GodsEyeViewFeedPayload, updatedAt: D
 async function refreshFeed(feed: FeedId, force = true): Promise<void> {
   const state = feeds[feed];
   if (!state.enabled || !cesiumRef) return;
+  // A scheduler tick must not abort and restart a slow in-flight request. User
+  // actions still call with `force=true`, so explicit refresh/toggle behavior
+  // retains the existing supersession semantics.
+  if (!force && state.loading) return;
+  if (!force && state.retryAfter > Date.now()) return;
   const descriptor: FeedDescriptor = FEED_DESCRIPTORS[feed];
   const bounds = appRef?.getViewBounds?.() ?? null;
   const viewportKey = descriptor.viewportKey?.(bounds) ?? null;
@@ -516,6 +553,7 @@ async function refreshFeed(feed: FeedId, force = true): Promise<void> {
     upsertLayer(feed, payload, updatedAt);
     if (descriptor.ownsClockWindow) applyFeedClockWindow(window);
     state.lastUpdated = updatedAt;
+    state.retryAfter = 0;
     state.lastViewportKey = viewportKey;
     if (feed === "satellites") syncDenseCatalog();
   } catch (error) {
@@ -525,6 +563,7 @@ async function refreshFeed(feed: FeedId, force = true): Promise<void> {
     // `deactivate` — bumps the generation instead, which this already excludes.
     if (generation === state.generation) {
       state.failed = true;
+      state.retryAfter = Date.now() + FAILURE_RETRY_COOLDOWN_MS;
       console.warn(`[God's Eye View] ${feed} refresh failed`, error);
     }
   } finally {
@@ -546,6 +585,7 @@ function removeFeedLayer(feed: FeedId): void {
   state.requestedViewportKey = null;
   state.lastViewportKey = null;
   state.loading = false;
+  state.retryAfter = 0;
   const layer = state.layerId
     ? useAppStore.getState().layers.find((candidate) => candidate.id === state.layerId)
     : ownedLayer(feed);
@@ -557,6 +597,7 @@ function removeFeedLayer(feed: FeedId): void {
 function setFeedEnabled(feed: FeedId, enabled: boolean): void {
   feeds[feed].enabled = enabled;
   feeds[feed].failed = false;
+  feeds[feed].retryAfter = 0;
   savedState = { ...savedState, [feed]: enabled };
   if (enabled) void refreshFeed(feed);
   else {
@@ -650,7 +691,9 @@ function statusText(feed: FeedId): string {
         timeStyle: "medium",
       }).format(state.lastUpdated)
     : translate("panel.godsEyeView.never", "Never");
-  return translate("panel.godsEyeView.lastUpdated", "Last updated: {{time}}", { time });
+  return translate("panel.godsEyeView.lastUpdated", "Last updated: {{time}}", {
+    time,
+  });
 }
 
 /** The clock-speed row: how fast the globe replays the feeds' time window. */
@@ -671,7 +714,9 @@ function speedRow(): HTMLElement {
     item.textContent =
       option === 1
         ? translate("panel.godsEyeView.speedRealTime", "Real time (1×)")
-        : translate("panel.godsEyeView.speedMultiple", "{{factor}}×", { factor: option });
+        : translate("panel.godsEyeView.speedMultiple", "{{factor}}×", {
+            factor: option,
+          });
     item.selected = option === savedState.speed;
     select.append(item);
   }
@@ -803,6 +848,7 @@ function resetRuntime(): void {
   viewportRefreshTimer = null;
   removeViewportListener?.();
   removeViewportListener = null;
+  for (const feed of FEED_IDS) feeds[feed].retryAfter = 0;
   unsubscribeLocale?.();
   unsubscribeLocale = null;
   unregisterPanel?.();
@@ -903,6 +949,7 @@ export function reattachGodsEyeView(app: GeoLibreAppAPI): void {
   viewportRefreshTimer = null;
   removeViewportListener?.();
   removeViewportListener = null;
+  for (const feed of FEED_IDS) feeds[feed].retryAfter = 0;
   if (cesiumRef) {
     savedClockAnimating = cesiumRef.clock.shouldAnimate;
     savedClockMultiplier = cesiumRef.clock.multiplier;
@@ -921,6 +968,7 @@ function deactivate(): void {
     removeFeedLayer(feed);
     feeds[feed].lastUpdated = null;
     feeds[feed].failed = false;
+    feeds[feed].retryAfter = 0;
   }
   if (cesiumRef && savedClockAnimating !== null) {
     cesiumRef.clock.shouldAnimate = savedClockAnimating;
