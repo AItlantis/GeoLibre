@@ -45,6 +45,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { clamp } from "../../lib/clamp";
+import { PlaybackTimelineReadout, intervalCurrentSeconds } from "./PlaybackTimelineReadout";
 
 const PANEL_WIDTH = 360;
 const EDGE_MARGIN = 12;
@@ -101,10 +102,15 @@ function EmissionsH3Card() {
     seeThroughBuildings,
   } =
     settings;
-  const { loading, error, intervals, scenarios, scenarioIndex, replications, did, localFolderName, hasResults, hasEmissions } =
+  const { loading, error, intervals, scenarios, scenarioIndex, replications, did, localFolderName, hasResults, hasEmissions, timeline } =
     status;
   const ramp = EMISSIONS_H3_RAMPS[metric];
-  const hasPackage = manifestUrl != null && manifestUrl.length > 0;
+  // A local folder has no URL, and a valid manifest can still have no
+  // microscopic emissions columns. Both cases are loaded package states: keep
+  // the Style/Playback tabs visible while the Data Source tab reports the
+  // package limitation.
+  const hasPackage =
+    (manifestUrl != null && manifestUrl.length > 0) || localFolderName != null;
 
   const { urlDraft, setUrlDraft, loadPackage, handleKeyDown } = useManifestUrlDraft(
     manifestUrl,
@@ -348,6 +354,7 @@ function EmissionsH3Card() {
           {t("toolbar.emissionsH3.extruded")}
         </Button>
       </div>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground"><label className="flex-1">Speed <input className="w-20 accent-sky-500" type="range" min="0.25" max="8" step="0.25" value={settings.playbackSpeed} onChange={(e) => setEmissionsH3Settings({ playbackSpeed: Number(e.currentTarget.value) })} /></label><span>{settings.playbackSpeed}×</span><label className="flex items-center gap-1"><input type="checkbox" checked={settings.loop} onChange={(e) => setEmissionsH3Settings({ loop: e.currentTarget.checked })} />Loop</label></div>
       {/* The height ceiling only means anything while extruded, so it
           is disabled rather than hidden — hiding it would make the
           flat/extruded toggle reflow the card under the pointer. */}
@@ -408,6 +415,7 @@ function EmissionsH3Card() {
 
   const playbackContent = intervalPlayback.hasRealIntervals ? (
     <div className="space-y-1">
+      <PlaybackTimelineReadout timeline={timeline} currentSeconds={intervalCurrentSeconds(timeline, intervals, interval)} intervalSeconds={timeline?.intervalDurationSeconds} />
       <span className="block text-xs text-muted-foreground">
         {t("toolbar.emissionsH3.interval")}
       </span>

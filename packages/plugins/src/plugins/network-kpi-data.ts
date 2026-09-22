@@ -142,9 +142,13 @@ export function parseNetworkKpiManifest(
   const selectedScenario = scenarioGeometry[
     Math.min(Math.max(0, Math.trunc(scenarioIndex) || 0), Math.max(0, scenarioGeometry.length - 1))
   ];
-  const geometryBlock = ((selectedScenario?.sc_geometry ?? scope.geometry ?? rootGeometry) ?? {}) as Record<string, unknown>;
+  // Scenario-specific geometry blocks are often partial (notably Micro SRC
+  // packages). Keep the root geometry as a fallback per field instead of
+  // replacing it wholesale with an incomplete scenario block.
+  const scenarioBlock = (selectedScenario?.sc_geometry ?? {}) as Record<string, unknown>;
+  const geometryBlock = { ...rootGeometry, ...(scope.geometry as Record<string, unknown> | undefined), ...scenarioBlock };
   const scenarioId = selectedScenario && (selectedScenario.scid ?? selectedScenario.scenario_id);
-  const metadata = ((scope.metadata ?? root.metadata) ?? {}) as Record<string, unknown>;
+  const metadata = { ...((root.metadata ?? {}) as Record<string, unknown>), ...((scope.metadata ?? {}) as Record<string, unknown>) };
   const rawBounds = (metadata.bounds ?? null) as Record<string, unknown> | null;
   const bounds: [number, number, number, number] | null = rawBounds
     ? [
@@ -165,6 +169,11 @@ export function parseNetworkKpiManifest(
       lanes: resolvePath(geometryBlock.lanes, manifestUrl),
       turns: resolvePath(geometryBlock.turns, manifestUrl),
       nodes: resolvePath(geometryBlock.nodes ?? geometryBlock.junctions, manifestUrl),
+      // Prefer the richer base-network + scenario-additions contract whenever
+      // a scenario id is declared. Older packages may not contain this file;
+      // loadScenarioNetworkKpiGeometry() then returns null and the inline/root
+      // geometry paths remain the compatible fallback. Scenario `sc_geometry`
+      // paths are additions, not necessarily a complete network.
       scenarioManifest: scenarioId !== undefined && scenarioId !== null
         ? resolvePath(`geometry/${String(scenarioId)}/manifest.json`, manifestUrl)
         : null,

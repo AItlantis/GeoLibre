@@ -1,13 +1,20 @@
 // @ts-nocheck
 import * as duckdb from "@duckdb/duckdb-wasm";
+import duckdbWasmEh from "@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url";
+import ehWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url";
+import duckdbWasmMvp from "@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url";
+import mvpWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url";
 import { createDirectoryPackageSource, loadVehicleGeometry, supportsLocalPackageFolders, type VehicleDirectoryHandle, type VehiclePackageSource, type VehicleGeometryLayers } from "./vehicle-playback-data";
 import { attachGeolibrePackage, capabilityAvailable } from "./geolibre-package-loader";
+import { normalizeSelectedPathPercentages } from "./path-analysis-ramps";
 
 export interface PathAnalysisManifest { pathIndex: string | null; geometry: { sections: string | null; lanes: string | null; turns: string | null; nodes: string | null }; bounds: [number, number, number, number] | null; available: boolean; unavailableReason: string | null; }
 export interface PathAnalysisSummary { path_count?: number; route_links_count?: number; unique_sections_count?: number; total_demand?: number; [key: string]: unknown; }
 export interface PathMatch { route_id: number; demand: number; percentage: number; origin: number; destination: number; vehicle: number; interval: number; }
 export type PathRule = "or" | "and";
-export interface PathAnalysisData { summary: PathAnalysisSummary; geometry: VehicleGeometryLayers; query(sectionIds: number[], rule: PathRule): Promise<PathMatch[]>; sequence(routeId: number): Promise<number[]>; close(): void; }
+export interface PathAnalysisData { summary: PathAnalysisSummary; geometry: VehicleGeometryLayers; intervals: number[]; query(sectionIds: number[], rule: PathRule, interval?: number): Promise<PathMatch[]>; sequence(routeId: number): Promise<number[]>; close(): void; }
+let activePathInterval = 0;
+export function setPathAnalysisQueryInterval(interval: number): void { activePathInterval = Number.isFinite(Number(interval)) ? Math.max(0, Math.trunc(Number(interval))) : 0; }
 
 const resolve = (v: unknown, base: string | null) => typeof v === "string" && v ? (base ? new URL(v, base).toString() : v) : null;
 const safeNumber = (value: unknown, fallback = 0) => { const num = Number(value); return Number.isFinite(num) ? num : fallback; };
@@ -48,7 +55,7 @@ export function parsePathAnalysisManifest(raw: unknown, manifestUrl: string | nu
   const { available, reason } = capabilityAvailable(raw, "paths");
   const animations = Array.isArray(root.animations) ? root.animations as Record<string, any>[] : [];
   const scope = animations.length ? animations[0] : root;
-  const metadata = (scope.metadata ?? root.metadata ?? {}) as Record<string, any>;
+  const metadata = { ...((root.metadata ?? {}) as Record<string, any>), ...((scope.metadata ?? {}) as Record<string, any>) };
   const rawBounds = (metadata.bounds ?? null) as Record<string, unknown> | null;
   const bounds = rawBounds ? [safeNumber(rawBounds.min_lon, Number.NaN), safeNumber(rawBounds.min_lat, Number.NaN), safeNumber(rawBounds.max_lon, Number.NaN), safeNumber(rawBounds.max_lat, Number.NaN)] as [number, number, number, number] : null;
   const g = (root.geometry ?? {}) as Record<string, any>;
@@ -65,11 +72,17 @@ export function parsePathAnalysisManifest(raw: unknown, manifestUrl: string | nu
   return { pathIndex: resolve(pathIndex, manifestUrl), geometry: { sections: resolve(g.sections, manifestUrl), lanes: resolve(g.lanes, manifestUrl), turns: resolve(g.turns, manifestUrl), nodes: resolve(g.nodes ?? g.junctions, manifestUrl) }, bounds: bounds && bounds.every(Number.isFinite) ? bounds : null, available, unavailableReason: reason };
 }
 
-async function makeDb(files: Record<string, ArrayBuffer>) {
-  const bundles = duckdb.getJsDelivrBundles(); const bundle = await duckdb.selectBundle(bundles);
-  const worker = new Worker(URL.createObjectURL(new Blob([`importScripts('${bundle.mainWorker}');`], { type: "text/javascript" }))); const logger = new duckdb.ConsoleLogger();
-  const db = new duckdb.AsyncDuckDB(logger, worker); await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-  for (const [name, bytes] of Object.entries(files)) await db.registerFileBuffer(name, new Uint8Array(bytes));
+async function makeDb(files: Record<string, ArrayBuffer>, urls: Record<string, string> = {}) {
+  const bundle = await duckdb.selectBundle({ mvp: { mainModule: duckdbWasmMvp, mainWorker: mvpWorker }, eh: { mainModule: duckdbWasmEh, mainWorker: ehWorker } });
+  const worker = new Worker(bundle.mainWorker!, { type: "module" }); const logger = new duckdb.ConsoleLogger();
+  const db = new duckdb.AsyncDuckDB(logger, worker); await db.instantiate(bundle.mainModule, bundle.pthreadWorker); await db.open({});
+  const extensionConnection = await db.connect();
+  try { await extensionConnection.query("LOAD parquet"); } finally { await extensionConnection.close(); }
+  for (const [name, bytes] of Object.entries(files)) {
+    const url = urls[name];
+    if (url) await db.registerFileURL(name, url, duckdb.DuckDBDataProtocol.HTTP, true);
+    else await db.registerFileBuffer(name, new Uint8Array(bytes));
+  }
   return { db, worker };
 }
 export async function loadPathAnalysis(source: VehiclePackageSource, manifest: PathAnalysisManifest): Promise<PathAnalysisData> {
@@ -81,9 +94,20 @@ export async function loadPathAnalysis(source: VehiclePackageSource, manifest: P
   // feature at all".
   if (!manifest.pathIndex) throw new Error("No path index found for this package (no path_index or path_indices entry).");
   const base = manifest.pathIndex.replace(/\/$/, ""); const read = (p: string) => source.read(`${base}/${p}`);
-  const [meta, link, routes, routeLinks] = await Promise.all([read("metadata.json"), read("link_to_routes.parquet"), read("routes.parquet"), read("route_links.parquet")]);
-  const { db, worker } = await makeDb({ "link_to_routes.parquet": link, "routes.parquet": routes, "route_links.parquet": routeLinks }); const conn = await db.connect();
+  const meta = await read("metadata.json");
+  const empty = new ArrayBuffer(0);
+  const [link, routes, routeLinks] = source.baseUrl
+    ? [empty, empty, empty]
+    : await Promise.all([read("link_to_routes.parquet"), read("routes.parquet"), read("route_links.parquet")]);
+  const urls = source.baseUrl ? {
+    "link_to_routes.parquet": new URL("link_to_routes.parquet", `${base}/`).toString(),
+    "routes.parquet": new URL("routes.parquet", `${base}/`).toString(),
+    "route_links.parquet": new URL("route_links.parquet", `${base}/`).toString(),
+  } : {};
+  const { db, worker } = await makeDb({ "link_to_routes.parquet": link, "routes.parquet": routes, "route_links.parquet": routeLinks }, urls); const conn = await db.connect();
   const rows = async (sql: string) => (await conn.query(sql)).toArray() as any[];
   const geometry = await loadVehicleGeometry(source, manifest.geometry);
-  return { summary: JSON.parse(new TextDecoder().decode(meta)), geometry, async query(sectionIds, rule) { const ids = [...new Set(sectionIds.map((id) => Math.trunc(Number(id))).filter(Number.isFinite))]; if (!ids.length) return []; const inClause = ids.join(","); const matched = rule === "and" ? `SELECT route_id FROM read_parquet('link_to_routes.parquet') WHERE section_id IN (${inClause}) GROUP BY route_id HAVING COUNT(DISTINCT section_id) = ${ids.length}` : `SELECT DISTINCT route_id FROM read_parquet('link_to_routes.parquet') WHERE section_id IN (${inClause})`; const out = await rows(`SELECT r.route_id, r.demand, r.percentage, r.origin, r.destination, r.vehicle, r.interval FROM (${matched}) m JOIN read_parquet('routes.parquet') r USING (route_id) ORDER BY r.percentage DESC`); return out.map((x) => Object.fromEntries(Object.entries(x).map(([k,v]) => [k, Number(v)]))) as PathMatch[]; }, async sequence(routeId) { const out = await rows(`SELECT section_id FROM read_parquet('route_links.parquet') WHERE route_id = ${Math.trunc(Number(routeId))} ORDER BY pos`); return out.map((x) => Number(x.section_id)); }, close() { void conn.close(); void db.terminate(); worker.terminate(); } };
+  const intervalRows = await rows("SELECT DISTINCT interval FROM read_parquet(['routes.parquet']) ORDER BY interval");
+  const intervals = [...new Set(intervalRows.map((x) => Number(x.interval)).filter(Number.isFinite))].sort((a,b) => a-b);
+  return { summary: JSON.parse(new TextDecoder().decode(meta)), geometry, intervals, async query(sectionIds, rule, interval = 0) { const ids = [...new Set(sectionIds.map((id) => Math.trunc(Number(id))).filter(Number.isFinite))]; if (!ids.length) return []; const inClause = ids.join(","); const matched = rule === "and" ? `SELECT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause}) GROUP BY route_id HAVING COUNT(DISTINCT section_id) = ${ids.length}` : `SELECT DISTINCT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause})`; const intervalWhere = ` WHERE r.interval = ${Math.trunc(Number(interval))}`; const out = await rows(`SELECT r.route_id, r.demand, r.percentage, r.origin, r.destination, r.vehicle, r.interval FROM (${matched}) m JOIN read_parquet(['routes.parquet']) r USING (route_id)${intervalWhere} ORDER BY r.demand DESC`); const numeric = out.map((x) => Object.fromEntries(Object.entries(x).map(([k,v]) => [k, Number(v)]))) as PathMatch[]; return normalizeSelectedPathPercentages(numeric); }, async sequence(routeId) { const out = await rows(`SELECT section_id FROM read_parquet(['route_links.parquet']) WHERE route_id = ${Math.trunc(Number(routeId))} ORDER BY pos`); return out.map((x) => Number(x.section_id)); }, close() { void conn.close(); void db.terminate(); worker.terminate(); } };
 }

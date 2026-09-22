@@ -4,6 +4,8 @@ import { createIdentifyPopupElement } from "@geolibre/map";
 import type { Layer } from "@deck.gl/core";
 import { mercatorMetersPerPixelAtZoom0 } from "@geolibre/core";
 import type { GeoLibreAppAPI, GeoLibreDeckGL, GeoLibrePlugin } from "../types";
+import type { CesiumSceneHandle } from "@geolibre/map";
+import { deriveSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
 import { ensureSharedDeckOverlay, setSharedDeckLayers } from "./shared-deck-overlay";
 import {
   articulatedVehicleFootprints,
@@ -74,6 +76,8 @@ export interface VehiclePlaybackSettings {
   tick: number;
   /** Opacity applied to every vehicle footprint, on top of its own fade. */
   opacity: number;
+  /** Global vertical offset in metres applied to every vehicle. */
+  zOffsetM: number;
   /**
    * When true, vehicles AND the network geometry draw over 3D buildings and
    * terrain instead of being occluded by them. See
@@ -112,6 +116,8 @@ export const VEHICLE_PLAYBACK_SPEED_MIN = 0.25;
 export const VEHICLE_PLAYBACK_SPEED_MAX = 20;
 export const VEHICLE_PLAYBACK_OPACITY_MIN = 0.1;
 export const VEHICLE_PLAYBACK_OPACITY_MAX = 1;
+export const VEHICLE_PLAYBACK_Z_OFFSET_MIN = -1000;
+export const VEHICLE_PLAYBACK_Z_OFFSET_MAX = 1000;
 
 export const DEFAULT_VEHICLE_PLAYBACK_SETTINGS: VehiclePlaybackSettings = {
   manifestUrl: null,
@@ -120,6 +126,7 @@ export const DEFAULT_VEHICLE_PLAYBACK_SETTINGS: VehiclePlaybackSettings = {
   loop: true,
   tick: 0,
   opacity: 0.95,
+  zOffsetM: 0,
   // Preserves the behavior this plugin shipped with: the footprints were drawn
   // with an unconditional `depthCompare: "always"`, i.e. always on top.
   seeThroughBuildings: true,
@@ -156,6 +163,12 @@ export function normalizeVehiclePlaybackSettings(
       VEHICLE_PLAYBACK_OPACITY_MAX,
       base.opacity,
     ),
+    zOffsetM: clampNumber(
+      c.zOffsetM,
+      VEHICLE_PLAYBACK_Z_OFFSET_MIN,
+      VEHICLE_PLAYBACK_Z_OFFSET_MAX,
+      base.zOffsetM,
+    ),
     seeThroughBuildings:
       typeof c.seeThroughBuildings === "boolean"
         ? c.seeThroughBuildings
@@ -176,6 +189,7 @@ function settingsEqual(a: VehiclePlaybackSettings, b: VehiclePlaybackSettings): 
     a.loop === b.loop &&
     a.tick === b.tick &&
     a.opacity === b.opacity &&
+    a.zOffsetM === b.zOffsetM &&
     a.seeThroughBuildings === b.seeThroughBuildings &&
     a.showNetwork === b.showNetwork &&
     a.showSections === b.showSections && a.showLanes === b.showLanes &&
@@ -214,6 +228,8 @@ export interface VehiclePlaybackStatus {
   hasTurns: boolean;
   /** True when the package was opened from a local folder rather than a URL. */
   localFolderName: string | null;
+  /** Best available simulation clock; manifest fallback when SIM_INFO is absent. */
+  timeline?: SimulationTimeline | null;
 }
 
 const IDLE_STATUS: VehiclePlaybackStatus = {
@@ -229,6 +245,7 @@ const IDLE_STATUS: VehiclePlaybackStatus = {
   hasLanes: false,
   hasTurns: false,
   localFolderName: null,
+  timeline: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +287,139 @@ function buildVehicleRows(samples: VehicleSample[], data: VehiclePlaybackData): 
     }
   }
   return rows;
+}
+
+/**
+ * Cesium counterpart of the deck.gl vehicle overlay.
+ *
+ * This intentionally uses the host-owned Cesium namespace and a single point
+ * primitive collection. The simulation clock, interpolation, chunk loading,
+ * and vehicle visibility all remain shared with the MapLibre renderer; this
+ * class only translates the current sampled frame into Cesium primitives.
+ */
+class CesiumVehiclePlaybackAdapter {
+  private readonly entities = new Map<string, any>();
+  private readonly entityStates = new Map<string, { ring: [number, number][]; color: [number, number, number, number]; outlineAlpha: number; height: number; extrudedHeight: number }>();
+  private lastCoverageTick = Number.NEGATIVE_INFINITY;
+  private layerOpacity = 1;
+  private destroyed = false;
+
+  constructor(
+    private readonly globe: CesiumSceneHandle,
+    private settings: VehiclePlaybackSettings,
+    private data: VehiclePlaybackData | null,
+  ) {
+    this.render();
+  }
+
+  getScene(): CesiumSceneHandle {
+    return this.globe;
+  }
+
+  setData(data: VehiclePlaybackData | null): void {
+    this.data = data;
+    this.lastCoverageTick = Number.NEGATIVE_INFINITY;
+    this.render();
+  }
+
+  applySettings(settings: VehiclePlaybackSettings): void {
+    this.settings = settings;
+    this.render();
+  }
+
+  setLayerOpacity(opacity: number): void {
+    this.layerOpacity = Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 1));
+    this.render();
+  }
+
+  applyTick(tick: number): void {
+    this.settings = { ...this.settings, tick };
+    this.render();
+  }
+
+  render(): void {
+    if (this.destroyed || this.globe.viewer.isDestroyed()) return;
+    const C = this.globe.Cesium;
+    const data = this.data;
+    if (!vehiclePlaybackLayerVisible || !data) {
+      for (const entity of this.entities.values()) entity.show = false;
+      this.globe.requestRender();
+      return;
+    }
+
+    data.setPlayhead(this.settings.tick, this.settings.playing);
+    if (Math.abs(this.settings.tick - this.lastCoverageTick) >= COVERAGE_CHECK_INTERVAL_TICKS) {
+      this.lastCoverageTick = this.settings.tick;
+      const requestedData = data;
+      void data.ensureCoverage(this.settings.tick).then(() => {
+        if (!this.destroyed && this.data === requestedData) this.render();
+      }).catch((error: unknown) => {
+        console.warn("[GeoLibre] vehicle-playback: Cesium coverage load failed", error);
+      });
+    }
+    const samples = data.sampleAt(this.settings.tick);
+    setFrameStats(samples.length, data.getLoadedFraction());
+    const rows = buildVehicleRows(samples, data);
+    const seen = new Set<string>();
+    for (const [rowIndex, row] of rows.entries()) {
+      const sample = row.sample;
+      const id = `${sample.id}:${rowIndex}`;
+      seen.add(id);
+      const [r, g, b] = vehicleColorRgb(sample.typeName, sample.lengthM);
+      const alpha = Math.max(0, Math.min(1, sample.opacity * this.settings.opacity * this.layerOpacity));
+      let entity = this.entities.get(id);
+      if (!entity) {
+        const state = {
+          ring: row.ring,
+          color: [r, g, b, alpha] as [number, number, number, number],
+          outlineAlpha: Math.min(0.75, alpha),
+          height: sample.z + this.settings.zOffsetM,
+          extrudedHeight: sample.z + this.settings.zOffsetM + sample.heightM,
+        };
+        this.entityStates.set(id, state);
+        entity = this.globe.viewer.entities.add({
+          id: `${VEHICLE_PLAYBACK_STORE_LAYER_ID}-${id}`,
+          polygon: {
+            hierarchy: new C.CallbackProperty(() => new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray(state.ring.flat())), false),
+            material: new C.ColorMaterialProperty(new C.CallbackProperty(() => new C.Color(state.color[0] / 255, state.color[1] / 255, state.color[2] / 255, state.color[3]), false)),
+            outline: true,
+            outlineColor: new C.CallbackProperty(() => new C.Color(1, 1, 1, state.outlineAlpha), false),
+            height: new C.CallbackProperty(() => state.height, false),
+            extrudedHeight: new C.CallbackProperty(() => state.extrudedHeight, false),
+            perPositionHeight: false,
+          },
+        });
+        this.entities.set(id, entity);
+      }
+      entity.show = true;
+      const state = this.entityStates.get(id);
+      if (state) {
+        state.ring = row.ring;
+        state.color = [r, g, b, alpha];
+        state.outlineAlpha = Math.min(0.75, alpha);
+        state.height = sample.z + this.settings.zOffsetM;
+        state.extrudedHeight = sample.z + this.settings.zOffsetM + sample.heightM;
+      }
+    }
+    for (const [id, entity] of this.entities) {
+      if (seen.has(id)) continue;
+      this.globe.viewer.entities.remove(entity);
+      this.entities.delete(id);
+      this.entityStates.delete(id);
+    }
+    this.globe.requestRender();
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    for (const entity of this.entities.values()) this.globe.viewer.entities.remove(entity);
+    this.entities.clear();
+    this.entityStates.clear();
+    if (!this.globe.viewer.isDestroyed()) {
+      this.globe.requestRender();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -430,8 +580,6 @@ class VehiclePlaybackEngine {
   private geometry: VehicleGeometryLayers | null = null;
   private readonly handleStyleData: () => void;
   private readonly networkClickHandlers = new Map<string, (event: any) => void>();
-  private rafId: number | null = null;
-  private lastFrame: number | null = null;
   private destroyed = false;
   private deckActive = false;
   /** Playhead at the last coverage check, to throttle the streaming calls. */
@@ -445,12 +593,12 @@ class VehiclePlaybackEngine {
     settings: VehiclePlaybackSettings,
     data: VehiclePlaybackData | null,
     getDeck: () => GeoLibreDeckGL | null,
+    private readonly onRender?: () => void,
   ) {
     this.map = map;
     this.settings = settings;
     this.data = data;
     this.getDeck = getDeck;
-    this.tick = this.tick.bind(this);
     // A basemap style swap wipes custom sources/layers; re-add them when the
     // new style settles (the idiom used by the sun and graticule plugins).
     this.handleStyleData = () => {
@@ -692,7 +840,7 @@ class VehiclePlaybackEngine {
       return;
     }
     this.render();
-    if (this.settings.playing && this.rafId === null) this.play();
+    if (this.settings.playing) this.play();
   }
 
   applySettings(settings: VehiclePlaybackSettings): void {
@@ -740,11 +888,12 @@ class VehiclePlaybackEngine {
   /** Draw the interpolated frame at the current playhead. */
   render(): void {
     if (this.destroyed) return;
-    if (!vehiclePlaybackLayerVisible) { this.clearDeck(); return; }
+    if (!vehiclePlaybackLayerVisible) { this.clearDeck(); this.onRender?.(); return; }
     const data = this.data;
     const deck = this.getDeck();
     if (!data || !deck) {
       this.clearDeck();
+      this.onRender?.();
       return;
     }
 
@@ -762,7 +911,7 @@ class VehiclePlaybackEngine {
     setFrameStats(samples.length, data.getLoadedFraction());
     const rows = buildVehicleRows(samples, data);
 
-    const globalOpacity = this.settings.opacity;
+    const globalOpacity = this.settings.opacity * vehiclePlaybackLayerOpacity;
     const layer = new deck.layers.PolygonLayer<VehicleRow>({
       id: `${VEHICLE_PLAYBACK_DECK_SOURCE}-vehicles`,
       // One layer for every vehicle in the frame: deck.gl uploads this as a
@@ -777,7 +926,7 @@ class VehiclePlaybackEngine {
       },
       // Static per vehicle type, so it needs no tick-keyed update trigger: the
       // `data` array itself is rebuilt every frame, which is the trigger.
-      getElevation: (d: VehicleRow) => d.sample.heightM,
+      getElevation: (d: VehicleRow) => d.sample.z + d.sample.heightM + this.settings.zOffsetM,
       getLineColor: [255, 255, 255, Math.round(140 * globalOpacity)],
       lineWidthUnits: "pixels",
       getLineWidth: 1,
@@ -806,6 +955,7 @@ class VehiclePlaybackEngine {
 
     setSharedDeckLayers(VEHICLE_PLAYBACK_DECK_SOURCE, [layer]);
     this.deckActive = true;
+    this.onRender?.();
   }
 
   /** Remove this engine's contribution to the shared deck overlay, if any. */
@@ -817,36 +967,12 @@ class VehiclePlaybackEngine {
   }
 
   play(): void {
-    if (this.destroyed || this.rafId !== null || !this.data) return;
-    this.lastFrame = null;
-    this.rafId = window.requestAnimationFrame(this.tick);
+    if (this.destroyed || !this.data) return;
+    startVehiclePlaybackClock();
   }
 
   pause(): void {
-    if (this.rafId !== null) {
-      window.cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
-    this.lastFrame = null;
-  }
-
-  private tick(now: number): void {
-    this.rafId = null;
-    if (this.destroyed || !this.settings.playing || !this.data) return;
-    if (this.lastFrame !== null) {
-      // Cap the delta so a long stall (backgrounded/minimized tab pauses rAF)
-      // resumes smoothly instead of jumping the playhead far ahead.
-      const elapsedSec = Math.min(0.25, (now - this.lastFrame) / 1000);
-      // Continuous float accumulation, not integer stepping: the fractional part
-      // is exactly what the sub-tick interpolator consumes.
-      const ticksPerSecond = (1 / this.data.manifest.dt) * this.settings.speed;
-      advanceVehiclePlaybackTick(elapsedSec * ticksPerSecond, this.data.manifest.maxTick);
-    }
-    this.lastFrame = now;
-    // advanceVehiclePlaybackTick may have paused playback at the end.
-    if (this.settings.playing) {
-      this.rafId = window.requestAnimationFrame(this.tick);
-    }
+    stopVehiclePlaybackClock();
   }
 }
 
@@ -855,11 +981,15 @@ class VehiclePlaybackEngine {
 // ---------------------------------------------------------------------------
 
 let engine: VehiclePlaybackEngine | null = null;
+let cesiumAdapter: CesiumVehiclePlaybackAdapter | null = null;
 let panelVisible = false;
 let settings: VehiclePlaybackSettings = { ...DEFAULT_VEHICLE_PLAYBACK_SETTINGS };
 // The loaded package lives here (not in settings): it is large and re-fetchable
 // from `manifestUrl`, so a project stores only the URL.
 let data: VehiclePlaybackData | null = null;
+let duckDbRegistered = false;
+let playbackClockTimerId: number | null = null;
+let playbackClockLastFrame: number | null = null;
 let status: VehiclePlaybackStatus = { ...IDLE_STATUS };
 // Guards against a stale load resolving after the user has moved on to another
 // manifest URL and overwriting the newer package.
@@ -867,6 +997,70 @@ let loadToken = 0;
 // The host's deck.gl bundle, resolved lazily the first time the panel attaches.
 let deckGLBundle: GeoLibreDeckGL | null = null;
 let deckGLPending = false;
+let cesiumAttachRetryId: number | null = null;
+
+function retryCesiumAttach(app: GeoLibreAppAPI): void {
+  if (cesiumAttachRetryId !== null || !panelVisible || appRef !== app) return;
+  cesiumAttachRetryId = window.setTimeout(() => {
+    cesiumAttachRetryId = null;
+    if (panelVisible && appRef === app && !engine && !cesiumAdapter) attachEngine(app);
+  }, 100);
+}
+
+function startVehiclePlaybackClock(): void {
+  if (playbackClockTimerId !== null || !data || !settings.playing) return;
+  playbackClockLastFrame = null;
+  // Do not couple simulation advancement to the map renderer's animation
+  // loop. In Cesium requestRenderMode and in MapLibre/deck overlay rebuilds
+  // can legitimately stop producing animation frames while the application
+  // is still interactive. The timer advances the shared playhead; each tick
+  // then explicitly rebuilds the polygon layer and requests a scene render.
+  playbackClockTimerId = window.setInterval(vehiclePlaybackClockTick, 16);
+}
+
+function stopVehiclePlaybackClock(): void {
+  if (playbackClockTimerId !== null) window.clearInterval(playbackClockTimerId);
+  playbackClockTimerId = null;
+  playbackClockLastFrame = null;
+}
+
+function vehiclePlaybackClockTick(): void {
+  if (!data || !settings.playing) return;
+  const now = performance.now();
+  if (playbackClockLastFrame !== null) {
+    const elapsedSec = Math.min(0.25, (now - playbackClockLastFrame) / 1000);
+    const ticksPerSecond = (1 / data.manifest.dt) * settings.speed;
+    advanceVehiclePlaybackTick(elapsedSec * ticksPerSecond, data.manifest.maxTick);
+  }
+  playbackClockLastFrame = now;
+}
+
+function renderActiveVehicleAdapter(): void {
+  if (!engine && !cesiumAdapter && appRef) attachEngine(appRef);
+  engine?.render();
+  cesiumAdapter?.render();
+}
+
+function applyActiveVehicleSettings(next: VehiclePlaybackSettings): void {
+  if (!engine && !cesiumAdapter && appRef) attachEngine(appRef);
+  engine?.applySettings(next);
+  cesiumAdapter?.applySettings(next);
+  if (next.playing) startVehiclePlaybackClock();
+  else stopVehiclePlaybackClock();
+}
+
+function applyActiveVehicleTick(tick: number): void {
+  engine?.applyTick(tick);
+  cesiumAdapter?.applyTick(tick);
+}
+
+function setActiveVehicleData(next: VehiclePlaybackData | null): void {
+  if (!engine && !cesiumAdapter && appRef) attachEngine(appRef);
+  engine?.setData(next);
+  cesiumAdapter?.setData(next);
+  if (next && settings.playing) startVehiclePlaybackClock();
+  else if (!next) stopVehiclePlaybackClock();
+}
 
 const panelListeners = new Set<() => void>();
 const stateListeners = new Set<() => void>();
@@ -909,7 +1103,7 @@ function ensureDeck(app: GeoLibreAppAPI): void {
     .then(async (bundle) => {
       deckGLBundle = bundle;
       await ensureSharedDeckOverlay(app);
-      engine?.render();
+      renderActiveVehicleAdapter();
     })
     .catch((error) => {
       console.warn("[GeoLibre] vehicle-playback: deck.gl unavailable", error);
@@ -921,33 +1115,72 @@ function ensureDeck(app: GeoLibreAppAPI): void {
 
 function attachEngine(app: GeoLibreAppAPI): boolean {
   const map = app.getMap?.();
-  if (!map) return false;
-  if (engine && engine.getMapInstance() !== map) detachEngine();
-  if (!engine) {
-    engine = new VehiclePlaybackEngine(map, settings, data, () => deckGLBundle);
+  if (map) {
+    if (cesiumAdapter) {
+      cesiumAdapter.destroy();
+      cesiumAdapter = null;
+    }
+    if (engine && engine.getMapInstance() !== map) detachEngine();
+    if (!engine) {
+      engine = new VehiclePlaybackEngine(map, settings, data, () => deckGLBundle, () => cesiumAdapter?.render());
+    }
+    ensureDeck(app);
+    return true;
   }
-  ensureDeck(app);
+  const globe = app.getCesiumScene?.();
+  if (!globe?.primary) {
+    retryCesiumAttach(app);
+    return false;
+  }
+  if (engine) {
+    engine.destroy();
+    engine = null;
+  }
+  if (!cesiumAdapter || cesiumAdapter.getScene().viewer !== globe.viewer) {
+    cesiumAdapter?.destroy();
+    cesiumAdapter = new CesiumVehiclePlaybackAdapter(globe, settings, data);
+  }
+  if (data?.manifest.bounds) app.fitBounds?.(data.manifest.bounds);
+  if (settings.playing && data) startVehiclePlaybackClock();
   return true;
 }
 
 function detachEngine(): void {
+  if (cesiumAttachRetryId !== null) window.clearTimeout(cesiumAttachRetryId);
+  cesiumAttachRetryId = null;
   engine?.destroy();
   engine = null;
+  cesiumAdapter?.destroy();
+  cesiumAdapter = null;
+}
+
+/** True when the host is tearing down one renderer to mount the other. */
+function isVehicleRendererSwap(app: GeoLibreAppAPI): boolean {
+  const renderer = app.getMapRenderer?.();
+  return Boolean(
+    (engine && renderer === "cesium") ||
+    (cesiumAdapter && renderer === "maplibre"),
+  );
 }
 
 /** Open the vehicle-playback panel and attach the engine. Idempotent. */
 export function openVehiclePlaybackPanel(app: GeoLibreAppAPI): void {
   appRef = app;
-  app.registerExternalNativeLayer?.({ id: VEHICLE_PLAYBACK_STORE_LAYER_ID, name: "Vehicle Playback", type: "geojson", nativeLayerIds: [], paintMode: "plugin", metadata: { customLayerType: "deck.gl" }, paintBridge: { setVisibility: (visible) => { vehiclePlaybackLayerVisible = visible; engine?.render(); } } });
-  registerDuckDbLayer({
-    pluginId: "vehicle-playback",
-    dispose: () => {
-      detachEngine();
-      data?.destroy();
-      data = null;
-      pendingManifest = null;
-    },
-  });
+  app.registerExternalNativeLayer?.({ id: VEHICLE_PLAYBACK_STORE_LAYER_ID, name: "Vehicle Playback", type: "geojson", nativeLayerIds: [], paintMode: "plugin", metadata: { customLayerType: "deck.gl" }, paintBridge: { setVisibility: (visible) => { vehiclePlaybackLayerVisible = visible; renderActiveVehicleAdapter(); }, setOpacity: (opacity) => { vehiclePlaybackLayerOpacity = Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 1)); cesiumAdapter?.setLayerOpacity(vehiclePlaybackLayerOpacity); engine?.render(); } } });
+  if (!duckDbRegistered) {
+    duckDbRegistered = true;
+    registerDuckDbLayer({
+      pluginId: "vehicle-playback",
+      dispose: () => {
+        duckDbRegistered = false;
+        stopVehiclePlaybackClock();
+        detachEngine();
+        data?.destroy();
+        data = null;
+        pendingManifest = null;
+      },
+    });
+  }
   if (!panelVisible) {
     panelVisible = true;
     notifyPanel();
@@ -964,10 +1197,12 @@ export function openVehiclePlaybackPanel(app: GeoLibreAppAPI): void {
  */
 export function closeVehiclePlaybackPanel(_app?: GeoLibreAppAPI): void {
   releaseDuckDbLayer("vehicle-playback");
+  duckDbRegistered = false;
   appRef?.unregisterExternalNativeLayer?.(VEHICLE_PLAYBACK_STORE_LAYER_ID);
   if (settings.playing) {
     settings = { ...settings, playing: false };
   }
+  stopVehiclePlaybackClock();
   detachEngine();
   loadToken += 1;
   data?.destroy();
@@ -1032,7 +1267,7 @@ export function setVehiclePlaybackSettings(next: Partial<VehiclePlaybackSettings
   );
   if (settingsEqual(normalized, settings)) return false;
   settings = normalized;
-  engine?.applySettings(settings);
+  applyActiveVehicleSettings(settings);
   notifyState();
   return true;
 }
@@ -1057,7 +1292,7 @@ export function setVehiclePlaybackTick(tick: number): void {
   const clamped = Math.max(0, Math.min(status.maxTick, tick));
   if (!Number.isFinite(clamped) || clamped === settings.tick) return;
   settings = { ...settings, tick: clamped };
-  engine?.applyTick(clamped);
+  applyActiveVehicleTick(clamped);
   notifyState();
 }
 
@@ -1075,13 +1310,13 @@ export function advanceVehiclePlaybackTick(deltaTicks: number, maxTick: number):
       next = maxTick > 0 ? next % maxTick : 0;
     } else {
       settings = { ...settings, tick: maxTick, playing: false };
-      engine?.applySettings(settings);
+      applyActiveVehicleSettings(settings);
       notifyState();
       return;
     }
   }
   settings = { ...settings, tick: next };
-  engine?.applyTick(next);
+  applyActiveVehicleTick(next);
   notifyState();
 }
 
@@ -1102,10 +1337,11 @@ export async function setVehiclePlaybackManifestUrl(url: string): Promise<void> 
 
   data?.destroy();
   data = null;
-  engine?.setData(null);
+  setActiveVehicleData(null);
 
   if (!trimmed) {
     settings = { ...settings, manifestUrl: null, playing: false, tick: 0 };
+    applyActiveVehicleSettings(settings);
     status = { ...IDLE_STATUS };
     notifyState();
     notifyStatus();
@@ -1113,13 +1349,14 @@ export async function setVehiclePlaybackManifestUrl(url: string): Promise<void> 
   }
 
   settings = { ...settings, manifestUrl: trimmed, playing: false, tick: 0 };
+  applyActiveVehicleSettings(settings);
   notifyState();
   patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0 });
 
   try {
     const raw = await fetchVehicleManifestJson(trimmed);
     if (token !== loadToken) return;
-    const scenarios = listVehicleManifestScenarios(raw);
+    const scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
     // Remember the manifest so a scenario switch needs no second fetch.
     pendingManifest = { raw, scenarios, url: trimmed, directory: null };
     // Single-scenario packages auto-select, which is byte-for-byte the old
@@ -1161,14 +1398,19 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
 
   data?.destroy();
   data = null;
-  engine?.setData(null);
+  setActiveVehicleData(null);
 
   const capability = capabilityAvailable(pending.raw, "animation");
   if (!capability.available) throw new Error(capability.reason ?? "Animation is unavailable.");
   const source: VehiclePackageSource = pending.directory
     ? createDirectoryPackageSource(pending.directory)
     : createHttpPackageSource(pending.url ?? "");
-  const animationManifest = await loadScenarioAnimationManifest(pending.raw, source, scenarioIndex);
+  const animationManifest = await loadScenarioAnimationManifest(
+    pending.raw,
+    source,
+    scenarioIndex,
+    pending.scenarios[scenarioIndex],
+  );
   const loaded = pending.directory
     ? new VehiclePlaybackData(parseVehicleManifest(pending.raw, null, scenarioIndex, animationManifest), source)
     : new VehiclePlaybackData(parseVehicleManifest(pending.raw, pending.url, scenarioIndex, animationManifest), source);
@@ -1185,13 +1427,17 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     maxTick: loaded.manifest.maxTick,
     dt: loaded.manifest.dt,
     scenarios: pending.scenarios,
-    scenarioIndex: loaded.manifest.scenarioIndex,
+    // A per-animation manifest is flat and therefore normalizes its own
+    // parser index to 0. Preserve the logical selectable variant index here
+    // so switching AMPK <-> PMPK remains reliable.
+    scenarioIndex,
     hasSections: Boolean(loaded.manifest.geometry.sections),
     hasLanes: Boolean(loaded.manifest.geometry.lanes),
     hasTurns: Boolean(loaded.manifest.geometry.turns),
     localFolderName: pending.directory?.name ?? null,
+    timeline: deriveSimulationTimeline({ durationSeconds: loaded.manifest.maxTick * loaded.manifest.dt, intervalDurationSeconds: loaded.manifest.dt, source: "manifest" }),
   });
-  engine?.setData(loaded);
+  setActiveVehicleData(loaded);
 
   // Network geometry is a backdrop: never let it block or fail playback.
   void loadVehicleGeometry(loaded.source, loaded.manifest.geometry)
@@ -1206,7 +1452,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
   // Cover the start before the first frame, then fill in the rest lazily.
   await loaded.ensureCoverage(0);
   if (token !== loadToken) return;
-  engine?.render();
+  renderActiveVehicleAdapter();
   loaded.startBackgroundLoad();
   // Frame the package so the vehicles are not off-screen on first play.
   if (loaded.manifest.bounds) fitVehiclePlaybackBounds(loaded.manifest.bounds);
@@ -1227,6 +1473,7 @@ export async function setVehiclePlaybackScenario(scenarioIndex: number): Promise
 
   const token = (loadToken += 1);
   settings = { ...settings, playing: false, tick: 0 };
+  applyActiveVehicleSettings(settings);
   notifyState();
   patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0 });
   try {
@@ -1279,10 +1526,11 @@ export async function loadLocalVehiclePlaybackFolder(): Promise<void> {
   const token = (loadToken += 1);
   data?.destroy();
   data = null;
-  engine?.setData(null);
+  setActiveVehicleData(null);
   // A local package has no URL; clear the persisted one so a project reload
   // does not try to re-fetch a manifest that never came from the network.
   settings = { ...settings, manifestUrl: null, playing: false, tick: 0 };
+  applyActiveVehicleSettings(settings);
   notifyState();
   patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0 });
 
@@ -1293,7 +1541,7 @@ export async function loadLocalVehiclePlaybackFolder(): Promise<void> {
     createDirectoryPackageSource(directory);
     pendingManifest = {
       raw,
-      scenarios: listVehicleManifestScenarios(raw),
+      scenarios: listVehicleManifestScenarios(raw, { includeAnimationVariants: true }),
       url: null,
       directory,
     };
@@ -1317,6 +1565,7 @@ export async function loadLocalVehiclePlaybackFolder(): Promise<void> {
 // has no app handle of its own) can still frame the package.
 let appRef: GeoLibreAppAPI | null = null;
 let vehiclePlaybackLayerVisible = true;
+let vehiclePlaybackLayerOpacity = 1;
 
 function fitVehiclePlaybackBounds(bounds: [number, number, number, number]): void {
   appRef?.fitBounds?.(bounds);
@@ -1340,6 +1589,31 @@ export function restoreVehiclePlayback(app: GeoLibreAppAPI, state?: unknown): bo
   });
   next.playing = false;
 
+  const shouldOpen = Boolean(
+    state && typeof state === "object" && (state as { open?: unknown }).open,
+  );
+  // Renderer changes call restoreProjectState after the plugin manager has
+  // detached the old renderer. Preserve the live package and transient
+  // playhead in that case; re-fetching here made Play appear to reset the
+  // panel immediately after a MapLibre ↔ Cesium switch.
+  if (
+    shouldOpen && panelVisible && data &&
+    (!next.manifestUrl || next.manifestUrl === settings.manifestUrl)
+  ) {
+    settings = {
+      ...next,
+      // A renderer/project restore may omit the URL while the live package is
+      // still compatible. Keep the committed URL so the Data Source tab stays
+      // bound to the package represented by the preserved in-memory data.
+      manifestUrl: settings.manifestUrl ?? next.manifestUrl,
+      playing: settings.playing,
+      tick: settings.tick,
+    };
+    applyActiveVehicleSettings(settings);
+    attachEngine(app);
+    return false;
+  }
+
   // Drop the previous project's package so nothing draws stale vehicles while
   // the new one loads. This always destroys any currently-loaded package, so
   // the re-fetch below must not be gated on whether the URL text changed from
@@ -1348,20 +1622,17 @@ export function restoreVehiclePlayback(app: GeoLibreAppAPI, state?: unknown): bo
   // the right URL with no data ever re-fetched.
   data?.destroy();
   data = null;
-  engine?.setData(null);
+  setActiveVehicleData(null);
   status = { ...IDLE_STATUS };
   notifyStatus();
 
-  const shouldOpen = Boolean(
-    state && typeof state === "object" && (state as { open?: unknown }).open,
-  );
   let changed = false;
   if (!settingsEqual(next, settings)) {
     settings = next;
     notifyState();
     changed = true;
   }
-  engine?.applySettings(settings);
+  applyActiveVehicleSettings(settings);
 
   const wasVisible = panelVisible;
   if (shouldOpen) openVehiclePlaybackPanel(app);
@@ -1389,11 +1660,21 @@ export const maplibreVehiclePlaybackPlugin: GeoLibrePlugin = {
   name: "Vehicle Playback",
   version: "1.0.0",
   activeByDefault: false,
+  engines: ["maplibre", "cesium"],
   activate: (app: GeoLibreAppAPI) => {
     appRef = app;
     openVehiclePlaybackPanel(app);
   },
-  deactivate: (app: GeoLibreAppAPI) => closeVehiclePlaybackPanel(app),
+  deactivate: (app: GeoLibreAppAPI) => {
+    if (isVehicleRendererSwap(app)) {
+      // Keep the package, panel state, and playhead alive while the host swaps
+      // canvases. The next compatible attach binds the same data to Cesium or
+      // MapLibre; ordinary user deactivation still takes the full close path.
+      detachEngine();
+      return;
+    }
+    closeVehiclePlaybackPanel(app);
+  },
   // Persist the panel-open flag plus settings (including the manifest URL, so a
   // saved project reopens on the same package) but never the chunk data itself.
   // Nothing is stored while closed and at defaults. `playing` is never persisted

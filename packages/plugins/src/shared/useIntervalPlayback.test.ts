@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveIntervalPlayback, stepInterval, toggleAggregateInterval } from "./useIntervalPlayback";
+import { deriveIntervalPlayback, normalizePlaybackSemantics, stepInterval, stepPlaybackIndex, toggleAggregateInterval } from "./useIntervalPlayback";
 
 test("deriveIntervalPlayback filters out the aggregate sentinel", () => {
   const result = deriveIntervalPlayback([0, 10, 20, 30], 20);
@@ -20,6 +20,12 @@ test("deriveIntervalPlayback with no real intervals reports hasRealIntervals fal
   const result = deriveIntervalPlayback([0], 0);
   assert.deepEqual(result.realIntervals, []);
   assert.equal(result.hasRealIntervals, false);
+});
+
+test("playback semantics clamp speed and stop at non-looping boundaries", () => {
+  assert.deepEqual(normalizePlaybackSemantics({ speed: 99, loop: false }), { playing: false, speed: 16, loop: false });
+  assert.deepEqual(stepPlaybackIndex(2, 3, 1, false), { index: 2, playing: false });
+  assert.deepEqual(stepPlaybackIndex(2, 3, 1, true), { index: 0, playing: true });
 });
 
 test("stepInterval returns null with fewer than two real intervals", () => {

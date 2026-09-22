@@ -145,6 +145,8 @@ export interface TestudoDatasetProvider {
   readonly metadata: TestudoDatasetMetadata;
   describe(): TestudoDatasetMetadata;
   query(request: TestudoDatasetQuery): Promise<TestudoDatasetQueryResult>;
+  /** Cached SIM_INFO access for playback timelines. */
+  readSimulationInfo(selection?: { scenarioId?: string | number; did?: number }): Promise<TestudoDatasetQueryResult>;
   close(): Promise<void>;
 }
 
@@ -381,6 +383,7 @@ class TestudoDatasetProviderImpl implements TestudoDatasetProvider {
   private sqliteOpening: Promise<TestudoSqliteDatabase> | null = null;
   private closed = false;
   private closePromise: Promise<void> | null = null;
+  private readonly simulationInfoCache = new Map<string, Promise<TestudoDatasetQueryResult>>();
 
   constructor(
     source: TestudoDatasetSource,
@@ -397,6 +400,15 @@ class TestudoDatasetProviderImpl implements TestudoDatasetProvider {
   }
 
   describe(): TestudoDatasetMetadata { return this.metadata; }
+
+  readSimulationInfo(selection: { scenarioId?: string | number; did?: number } = {}): Promise<TestudoDatasetQueryResult> {
+    const key = `${String(selection.scenarioId ?? "")}:${String(selection.did ?? "")}`;
+    const cached = this.simulationInfoCache.get(key);
+    if (cached) return cached;
+    const pending = this.query({ dataset: "SIM_INFO", ...selection, columns: ["did", "scid", "from_time", "duration", "simstatintervals", "totalstatintervals"], limit: 8 });
+    this.simulationInfoCache.set(key, pending);
+    return pending;
+  }
 
   async query(request: TestudoDatasetQuery): Promise<TestudoDatasetQueryResult> {
     if (this.closed) throw new Error("The Testudo dataset provider is closed.");
@@ -611,7 +623,7 @@ export async function openTestudoDatasetProvider(
     warnings: unique(warnings),
   };
   if (!metadata.datasets.length && resultsPath) {
-    metadata.datasets = ["MISECT", "MILANE", "MITURN", "MINODE", "MIPTPO", "MISECTIEM"].map((table) => ({
+    metadata.datasets = ["SIM_INFO", "MISECT", "MILANE", "MITURN", "MINODE", "MIPTPO", "MISECTIEM"].map((table) => ({
       id: table,
       table,
       format: format === "sqlite-gzip" ? "sqlite-gzip" : "sqlite",

@@ -755,6 +755,12 @@ export function DesktopShell({
   const dropMessageTimeoutRef = useRef<number | null>(null);
   const materializingRef = useRef(false);
   const togglingGeometryEditRef = useRef(false);
+  // A map/style reinitialisation must reattach active plugins, but it must not
+  // restore the saved project snapshot again. Runtime-loaded package URLs are
+  // plugin state and are intentionally not written back on every panel load;
+  // replaying the older snapshot here would clear those URLs and make the
+  // post-load Data Source/Style/Playback tabs disappear.
+  const restoredPluginProjectGenerationRef = useRef<number | null>(null);
   const addGeoJsonLayer = useAppStore((s) => s.addGeoJsonLayer);
   const addImageOverlayLayer = useAppStore((s) => s.addImageOverlayLayer);
   const addTileLayer = useAppStore((s) => s.addTileLayer);
@@ -1285,20 +1291,25 @@ export function DesktopShell({
     if (!externalPluginsReady || !mapReadyGeneration || !engine) return;
     const appAPI = createAppAPI(mapControllerRef);
     const pluginManager = getPluginManager();
-    pluginManager.restoreProjectState(useAppStore.getState().projectPlugins, appAPI);
-    // Immediately after the restore, so a project that persisted the geo-editor
-    // as active cannot re-arm editing inside a read-only viewer embed.
-    enforceViewerPlugins();
-    const search = window.location.search;
-    void pluginManager
-      .handleUrlParameters(new URLSearchParams(search), appAPI, `${projectGeneration}:${search}`)
-      // `handleUrlParameters` activates plugins asynchronously, so it can land
-      // after the synchronous pass above. No blocked plugin registers a URL
-      // handler today, but "every activation path is covered" is the whole
-      // point of the guard, so re-assert it once this settles rather than
-      // leaving the next one to notice.
-      .catch(console.error)
-      .finally(enforceViewerPlugins);
+    const needsProjectRestore =
+      restoredPluginProjectGenerationRef.current !== projectGeneration;
+    if (needsProjectRestore) {
+      pluginManager.restoreProjectState(useAppStore.getState().projectPlugins, appAPI);
+      restoredPluginProjectGenerationRef.current = projectGeneration;
+      // Immediately after the restore, so a project that persisted the geo-editor
+      // as active cannot re-arm editing inside a read-only viewer embed.
+      enforceViewerPlugins();
+      const search = window.location.search;
+      void pluginManager
+        .handleUrlParameters(new URLSearchParams(search), appAPI, `${projectGeneration}:${search}`)
+        // `handleUrlParameters` activates plugins asynchronously, so it can land
+        // after the synchronous pass above. No blocked plugin registers a URL
+        // handler today, but "every activation path is covered" is the whole
+        // point of the guard, so re-assert it once this settles rather than
+        // leaving the next one to notice.
+        .catch(console.error)
+        .finally(enforceViewerPlugins);
+    }
     // The environment plugins have a branch for each renderer (#2287): the
     // effects engine drives Cesium's sky box and atmosphere, the sun simulation
     // its lighting and clock, the flight simulator its camera. They rebind the
@@ -1347,6 +1358,10 @@ export function DesktopShell({
     // because the handle it wants is the globe's, which that gate excludes.
     // Reattach only — the per-feed toggles come from its applyProjectState.
     reattachGodsEyeView(appAPI);
+    // Vehicle Playback can render through either MapLibre or Cesium. Keep this
+    // reattachment above the native-map gate so a renderer switch to Cesium
+    // binds an already-open playback panel to the globe as well.
+    reattachVehiclePlayback(appAPI);
     if (!engine.capabilities.nativeMapInstance) {
       if (engine.kind === "mapbox" || engine.kind === "arcgis") restoreRasterLayers(appAPI);
       if (engine.kind === "arcgis") restoreArcgisZarrLayers();
@@ -1382,7 +1397,6 @@ export function DesktopShell({
     // (for its deck.gl overlay), so rebind it after a re-init/basemap swap
     // without deriving open/closed state (project loads handle that via
     // applyProjectState).
-    reattachVehiclePlayback(appAPI);
     // The network KPI engine also owns a deck.gl overlay tied to the live map;
     // rebind it after map re-initialisation without changing panel visibility.
     reattachNetworkKpi(appAPI);

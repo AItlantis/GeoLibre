@@ -1,5 +1,5 @@
 import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from "@geolibre/ui";
-import { FolderOpen, Loader2, X, Square, Box, Eye, PanelBottomClose, PanelBottomOpen } from "lucide-react";
+import { FolderOpen, Loader2, X, Square, Box, Eye, PanelBottomClose, PanelBottomOpen, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -13,10 +13,12 @@ import {
   removePathAnalysisSection,
   setPathAnalysisManifestUrl,
   setPathAnalysisSettings,
+  applyPathAnalysisVisualSettings,
   subscribePathAnalysis,
   subscribePathAnalysisPanel,
   useManifestUrlDraft,
   useViewModeToggle,
+  useIntervalPlayback,
 } from "@geolibre/plugins";
 export function PathAnalysisPanel() {
   const v = useSyncExternalStore(subscribePathAnalysisPanel, isPathAnalysisPanelVisible, isPathAnalysisPanelVisible);
@@ -27,7 +29,9 @@ function Card() {
   const s = useSyncExternalStore(subscribePathAnalysis, getPathAnalysisSnapshot, getPathAnalysisSnapshot);
   const [collapsed, setCollapsed] = useState(false);
   const ramp = PATH_RAMPS[s.settings.metric];
-  const hasPackage = s.settings.manifestUrl != null && s.settings.manifestUrl.length > 0;
+  // Local folder loads intentionally keep manifestUrl null; a populated path
+  // summary still means the package is loaded and should expose Style.
+  const hasPackage = (s.settings.manifestUrl != null && s.settings.manifestUrl.length > 0) || s.summary != null;
 
   const { urlDraft, setUrlDraft, loadPackage, handleKeyDown } = useManifestUrlDraft(
     s.settings.manifestUrl,
@@ -53,6 +57,8 @@ function Card() {
   // below), and this panel only ever shows an aggregate count/total, matching
   // how network-kpi keeps its per-feature values off-panel too.
   const matchCount = s.matches.length, totalTrips = s.matches.reduce((sum, m) => sum + m.demand, 0);
+  const intervalPlayback = useIntervalPlayback({ intervals: s.intervals ?? [], interval: s.settings.interval ?? 0, onIntervalChange: (interval) => setPathAnalysisSettings({ interval }), onStep: (direction) => { const values = (s.intervals ?? []).filter((value) => value !== 0); const index = values.indexOf(s.settings.interval ?? 0); const next = index < 0 ? (direction === 1 ? 0 : values.length - 1) : (index + direction + values.length) % values.length; if (values.length) setPathAnalysisSettings({ interval: values[next] }); }, onTogglePlaying: () => setPathAnalysisSettings({ intervalPlaying: !s.settings.intervalPlaying }) });
+  const playbackContent = intervalPlayback.hasRealIntervals ? <div className="space-y-2"><span className="block text-xs text-muted-foreground">Interval playback</span><input className="h-5 w-full accent-sky-500" type="range" min={0} max={intervalPlayback.realIntervals.length - 1} value={intervalPlayback.scrubberIndex} disabled={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setScrubberIndex(Number(e.currentTarget.value))} /><div className="flex items-center gap-1.5"><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => intervalPlayback.step(-1)}><SkipBack className="h-4 w-4" /></Button><Button variant="secondary" size="icon" className="h-9 w-9" onClick={intervalPlayback.togglePlaying}>{s.settings.intervalPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => intervalPlayback.step(1)}><SkipForward className="h-4 w-4" /></Button><label className="ms-auto flex items-center gap-1 text-xs"><input type="checkbox" checked={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setAggregate(e.currentTarget.checked)} />Whole period</label></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><label className="flex-1">Speed <input className="w-20 accent-sky-500" type="range" min="0.25" max="8" step="0.25" value={s.settings.playbackSpeed ?? 1} onChange={(e) => setPathAnalysisSettings({ playbackSpeed: Number(e.currentTarget.value) })} /></label><span>{s.settings.playbackSpeed ?? 1}×</span><label className="flex items-center gap-1"><input type="checkbox" checked={s.settings.loop ?? true} onChange={(e) => setPathAnalysisSettings({ loop: e.currentTarget.checked })} />Loop</label></div></div> : null;
 
   const dataSourceContent = (
     <div className="space-y-3">
@@ -82,6 +88,20 @@ function Card() {
 
   const styleContent = (
     <div className="space-y-3">
+      <div className="rounded-md border border-border p-2 text-xs">
+        <div className="mb-1 font-medium">Selected sections</div>
+        {s.selectedSections.length === 0 ? (
+          <span className="text-muted-foreground">Click a section on the map to select it.</span>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {s.selectedSections.map((id) => (
+              <button key={id} type="button" className="rounded bg-muted px-2 py-1 hover:bg-accent" onClick={() => removePathAnalysisSection(id)}>
+                {id} ×
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="flex gap-1.5">
         <Button size="sm" variant={s.settings.rule === "or" ? "secondary" : "ghost"} onClick={() => setPathAnalysisSettings({ rule: "or" })}>{t("toolbar.pathAnalysis.or")}</Button>
         <Button size="sm" variant={s.settings.rule === "and" ? "secondary" : "ghost"} onClick={() => setPathAnalysisSettings({ rule: "and" })}>{t("toolbar.pathAnalysis.and")}</Button>
@@ -93,6 +113,14 @@ function Card() {
           <Button key={m} size="sm" variant={s.settings.metric === m ? "secondary" : "ghost"} onClick={() => setPathAnalysisSettings({ metric: m })}>{t(`toolbar.pathAnalysis.metric.${m}`)}</Button>
         ))}
       </div>
+      <label className="grid gap-1 text-xs">
+        <span className="flex justify-between"><span>Label size</span><span>{s.settings.labelSize}px</span></span>
+        <input type="range" min="8" max="24" step="1" value={s.settings.labelSize} onChange={(e) => { const labelSize = Number(e.currentTarget.value); setPathAnalysisSettings({ labelSize }); applyPathAnalysisVisualSettings({ labelSize, visible: s.settings.visible }); }} />
+      </label>
+      <label className="flex cursor-pointer items-center gap-2 text-xs">
+        <input type="checkbox" checked={s.settings.visible} onChange={(e) => { const visible = e.currentTarget.checked; setPathAnalysisSettings({ visible }); applyPathAnalysisVisualSettings({ labelSize: s.settings.labelSize, visible }); }} />
+        <span>Show path analysis layer</span>
+      </label>
       <label className="flex cursor-pointer items-center gap-2 text-xs">
         <input
           type="checkbox"
@@ -134,15 +162,19 @@ function Card() {
             dataSourceContent
           ) : (
             <Tabs defaultValue="data-source">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="data-source">{t("toolbar.pathAnalysis.tabs.dataSource")}</TabsTrigger>
                 <TabsTrigger value="style">{t("toolbar.pathAnalysis.tabs.style")}</TabsTrigger>
+                <TabsTrigger value="playback">Playback</TabsTrigger>
               </TabsList>
               <TabsContent value="data-source" className="space-y-3">
                 {dataSourceContent}
               </TabsContent>
               <TabsContent value="style" className="space-y-3">
                 {styleContent}
+              </TabsContent>
+              <TabsContent value="playback" className="space-y-3">
+                {playbackContent ?? <p className="text-xs text-muted-foreground">No interval data is available.</p>}
               </TabsContent>
             </Tabs>
           )}

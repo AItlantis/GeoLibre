@@ -132,8 +132,27 @@ async function runEnsureSharedDeckOverlay(
   deckGL ??= await app.getDeckGL();
 
   const arcgisView = app.getArcgisView?.() ?? null;
-  const map = app.getMap?.() ?? app.getMapboxMap?.() ?? arcgisView;
-  if (overlay && boundMap === map) {
+  const map = app.getMap?.() ?? app.getMapboxMap?.() ?? null;
+  // Cesium exposes the renderer-neutral app API, but it has no MapLibre
+  // control host and cannot consume @deck.gl/mapbox's interleaved overlay.
+  // Keep the producer layers queued while the globe is active; they will be
+  // rebound when MapLibre/Mapbox/ArcGIS becomes the active renderer.
+  if (!map && !arcgisView) {
+    if (overlay) {
+      try {
+        overlay.finalize();
+      } catch (error) {
+        console.debug("[GeoLibre] shared-deck-overlay: renderer cleanup", error);
+      }
+    }
+    overlay = null;
+    overlayMounted = false;
+    boundMap = undefined;
+    device = null;
+    return null;
+  }
+  const renderTarget = map ?? arcgisView;
+  if (overlay && boundMap === renderTarget) {
     // Already bound to this map; just refresh the rendered layers.
     renderSharedDeckOverlay();
     return overlay;
@@ -152,7 +171,18 @@ async function runEnsureSharedDeckOverlay(
       console.debug("[GeoLibre] shared-deck-overlay: cleanup", error);
     }
   }
-  boundMap = map;
+  boundMap = renderTarget;
+  // A deck Layer is stateful after it has been initialized. Reusing the same
+  // instances with a newly-created overlay can make deck.gl assert while it
+  // tries to initialize an already-owned layer. Clone each producer's root
+  // layer once per overlay rebind; normal renders continue to reuse the
+  // producer-owned instances and therefore keep deck's diffing efficient.
+  for (const [source, layers] of layersBySource) {
+    layersBySource.set(
+      source,
+      layers.map((layer) => layer.clone({})),
+    );
+  }
   loadErrors.clear();
   device = null;
   if (arcgisView?.type === "3d" && arcgisView.viewingMode !== "local") {

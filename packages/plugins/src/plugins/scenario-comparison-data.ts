@@ -1,9 +1,11 @@
-export interface ComparisonInput { key: string | number; flow: number | null; density: number | null; speed?: number | null; }
+export interface ComparisonInput { key: string | number; flow: number | null; density: number | null; speed?: number | null; delay?: number | null; }
 export type ComparisonFlowSign = "negative" | "zero" | "positive" | "unknown";
 export type ComparisonFlowDensityQuadrant = "more_flow_more_density" | "more_flow_less_density" | "less_flow_less_density" | "less_flow_more_density" | "unknown";
 export interface ComparisonRow extends ComparisonInput {
   flow_delta: number | null;
   density_delta: number | null;
+  speed_delta: number | null;
+  delay_delta: number | null;
   flow_pct_delta: number | null;
   density_pct_delta: number | null;
   flow_density_product_delta: number | null;
@@ -29,11 +31,13 @@ export function buildScenarioComparisonRows(a: readonly ComparisonInput[], b: re
   for (const key of keys) {
     const first = left.get(key);
     const other = right.get(key);
-    const fd = delta(first?.flow, other?.flow);
-    const dd = delta(first?.density, other?.density);
+    // Scenario A is the reference and scenario B is the compared case.
+    // All deltas intentionally use Compared - Reference (B - A).
+    const fd = delta(other?.flow, first?.flow);
+    const dd = delta(other?.density, first?.density);
     const productDelta = first?.flow == null || first.density == null || other?.flow == null || other.density == null
       ? null
-      : first.flow * first.density - other.flow * other.density;
+      : other.flow * other.density - first.flow * first.density;
     out.push({
       key: first?.key ?? other!.key,
       flow: first?.flow ?? null,
@@ -41,8 +45,10 @@ export function buildScenarioComparisonRows(a: readonly ComparisonInput[], b: re
       speed: first?.speed ?? null,
       flow_delta: fd,
       density_delta: dd,
-      flow_pct_delta: percentageDelta(first?.flow, other?.flow),
-      density_pct_delta: percentageDelta(first?.density, other?.density),
+      speed_delta: delta(other?.speed, first?.speed),
+      delay_delta: delta(other?.delay, first?.delay),
+      flow_pct_delta: percentageDelta(other?.flow, first?.flow),
+      density_pct_delta: percentageDelta(other?.density, first?.density),
       flow_density_product_delta: productDelta,
       cmp_flow_sign: fd == null ? "unknown" : fd > 0 ? "positive" : fd < 0 ? "negative" : "zero",
       cmp_flow_density_quadrant: fd == null || dd == null

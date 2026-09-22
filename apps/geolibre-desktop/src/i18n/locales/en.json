@@ -2533,6 +2533,7 @@
       "loop": "Loop playback",
       "speed": "Playback speed",
       "opacity": "Vehicle opacity",
+      "zOffset": "Vehicle Z offset",
       "simTimeNote": "Times shown are simulated time.",
       "close": "Close",
       "loadFolder": "Load local folder",

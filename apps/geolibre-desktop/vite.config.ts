@@ -764,7 +764,7 @@ function stripDuckDbWorkerSourcemapPlugin(): Plugin {
 
         const workerFile = path.join(
           __dirname,
-          "../../node_modules",
+          "node_modules",
           decodedPath.slice(decodedPath.indexOf(DUCKDB_WORKER_PATH_PART) + 1),
         );
         const source = readFileSync(workerFile, "utf8").replace(DUCKDB_WORKER_SOURCE_MAP_RE, "");

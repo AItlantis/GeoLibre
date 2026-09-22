@@ -1,0 +1,4 @@
+interface:
+  display_name: "GeoLibre Plugin Screenshot"
+  short_description: "Run a plugin and capture its rendered screenshot"
+  default_prompt: "Open the requested GeoLibre plugin, load the supplied manifest, start playback, and save a screenshot."

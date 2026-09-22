@@ -28,6 +28,7 @@ import {
 } from "@geolibre/plugins";
 import { Button, Slider, Tabs, TabsContent, TabsList, TabsTrigger } from "@geolibre/ui";
 import { BarChart3, Box, Eye, FolderOpen, Loader2, PanelBottomClose, PanelBottomOpen, Pause, Play, SkipBack, SkipForward, Square, X } from "lucide-react";
+import { PlaybackTimelineReadout, intervalCurrentSeconds } from "./PlaybackTimelineReadout";
 import {
   type PointerEvent as ReactPointerEvent,
   useEffect,
@@ -95,10 +96,13 @@ function NetworkKpiCard() {
     scenarioIndex,
     replications,
     localFolderName,
+    timeline,
   } = status;
   const canLoadFolder = canLoadLocalNetworkKpiPackage();
   const ramp = KPI_RAMPS[metric];
-  const hasPackage = manifestUrl != null && manifestUrl.length > 0;
+  // Local folder packages intentionally have no manifest URL; they are still
+  // fully loaded packages and must expose Style/Playback just like URL loads.
+  const hasPackage = (manifestUrl != null && manifestUrl.length > 0) || localFolderName != null;
 
   const { urlDraft, setUrlDraft, loadPackage, handleKeyDown } = useManifestUrlDraft(
     manifestUrl,
@@ -386,6 +390,7 @@ function NetworkKpiCard() {
 
   const playbackContent = intervalPlayback.hasRealIntervals ? (
     <div className="space-y-1">
+      <PlaybackTimelineReadout timeline={timeline} currentSeconds={intervalCurrentSeconds(timeline, intervals, interval)} intervalSeconds={timeline?.intervalDurationSeconds} />
       <span className="block text-xs text-muted-foreground">
         {t("toolbar.networkKpi.interval")}
       </span>
@@ -395,6 +400,11 @@ function NetworkKpiCard() {
         <Button variant="secondary" size="icon" className="h-9 w-9" aria-label={intervalPlaying ? t("toolbar.networkKpi.intervalPause") : t("toolbar.networkKpi.intervalPlay")} onClick={intervalPlayback.togglePlaying} disabled={loading}>{intervalPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
         <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("toolbar.networkKpi.intervalNext")} onClick={() => intervalPlayback.step(1)} disabled={loading}><SkipForward className="h-4 w-4" /></Button>
         <label className="ms-auto flex items-center gap-2 text-xs"><input type="checkbox" checked={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setAggregate(e.currentTarget.checked)} />{t("toolbar.networkKpi.intervalAggregateToggle")}</label>
+      </div>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <label className="flex-1">Speed <input className="w-20 accent-sky-500" type="range" min="0.25" max="8" step="0.25" value={settings.playbackSpeed} onChange={(e) => setNetworkKpiSettings({ playbackSpeed: Number(e.currentTarget.value) })} /></label>
+        <span>{settings.playbackSpeed}×</span>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={settings.loop} onChange={(e) => setNetworkKpiSettings({ loop: e.currentTarget.checked })} />Loop</label>
       </div>
     </div>
   ) : null;

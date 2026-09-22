@@ -2,7 +2,8 @@
 
 export interface GeolibreCapability { state: "available" | "unavailable" | string; reason?: string }
 export interface GeolibreReplication { did: number; didname?: string; xid?: number; xname?: string }
-export interface GeolibreScenario { name?: string; scid: number | string; replications: GeolibreReplication[] }
+export interface GeolibreAnimation { name?: string; manifestPath?: string; scid?: number | string; did?: number | string }
+export interface GeolibreScenario { name?: string; scid: number | string; replications: GeolibreReplication[]; animations?: GeolibreAnimation[] }
 export interface GeolibrePackage { schemaVersion?: string; capabilities: Record<string, GeolibreCapability>; scenarios: GeolibreScenario[]; resultsPath: string | null; resultsChecksum: { algorithm?: string; value?: string } | null; resultsCatalogRelative: string | null; resultsFormat: string | null; resultsTableSelection: string[]; dataContracts: Record<string, unknown>; legacyManifestPath: string | null }
 
 const envelopeKey = "__geolibrePackage";
@@ -16,7 +17,16 @@ export function parseGeolibrePackage(raw: unknown): GeolibrePackage {
     const reps = Array.isArray(x.replications) ? x.replications.map((r) => {
       const y = record(r); return { did: Number(y.did), didname: typeof y.didname === "string" ? y.didname : undefined, xid: Number(y.xid), xname: typeof y.xname === "string" ? y.xname : undefined };
     }).filter((r) => Number.isFinite(r.did)) : [];
-    return { name: typeof x.name === "string" ? x.name : undefined, scid: typeof x.scid === "string" || typeof x.scid === "number" ? x.scid : "", replications: reps };
+    const animations = Array.isArray(x.animations) ? x.animations.map((animation) => {
+      const value = record(animation);
+      return {
+        name: typeof value.name === "string" ? value.name : undefined,
+        manifestPath: typeof value.manifestPath === "string" ? value.manifestPath : undefined,
+        scid: typeof value.scid === "string" || typeof value.scid === "number" ? value.scid : undefined,
+        did: typeof value.did === "string" || typeof value.did === "number" ? value.did : undefined,
+      };
+    }).filter((animation) => Boolean(animation.manifestPath || animation.scid !== undefined || animation.did !== undefined)) : undefined;
+    return { name: typeof x.name === "string" ? x.name : undefined, scid: typeof x.scid === "string" || typeof x.scid === "number" ? x.scid : "", replications: reps, animations };
   }).filter((s) => s.scid !== "") : [];
   const environment = record(root.environment);
   const sidecars = record(results.sidecars);

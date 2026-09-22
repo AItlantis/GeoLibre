@@ -252,6 +252,46 @@ export interface VehicleManifestScenario {
   nTicks: number;
   /** Simulation step in seconds. */
   dt: number;
+  /** Explicit package-relative per-animation manifest, when available. */
+  manifestPath?: string;
+  /** Authoritative scenario id associated with this animation, when declared. */
+  scid?: number | string;
+  /** Authoritative replication id associated with this animation, when declared. */
+  did?: number | string;
+  /** Root `animations[]` index used by legacy/named-FZP manifests. */
+  rootAnimationIndex?: number;
+}
+
+export interface VehicleManifestScenarioOptions {
+  /** Include one selectable entry per animation/FZP under a GeoLibre scenario. */
+  includeAnimationVariants?: boolean;
+}
+
+function sameIdentifier(a: unknown, b: unknown): boolean {
+  return a !== undefined && a !== null && b !== undefined && b !== null && String(a) === String(b);
+}
+
+function animationMetadata(animation: Record<string, unknown>, rootMetadata: Record<string, unknown>): Record<string, unknown> {
+  return ((animation.metadata ?? rootMetadata) ?? {}) as Record<string, unknown>;
+}
+
+function animationPath(animation: Record<string, unknown>): string | undefined {
+  const path = animation.path;
+  return typeof path === "string" && path.trim() ? path.trim() : undefined;
+}
+
+function animationId(animation: Record<string, unknown>, index: number): string {
+  const rawId = animation.id ?? animation.name ?? animation.path;
+  return typeof rawId === "string" && rawId.trim() ? rawId.trim() : `scenario_${index}`;
+}
+
+function animationMatchesScenario(
+  animation: Record<string, unknown>,
+  scenario: { scid?: number | string; replications?: Array<{ did?: number | string }> },
+): boolean {
+  if (sameIdentifier(animation.scid, scenario.scid)) return true;
+  return Array.isArray(scenario.replications)
+    && scenario.replications.some((replication) => sameIdentifier(animation.did, replication.did));
 }
 
 /**
@@ -260,14 +300,90 @@ export interface VehicleManifestScenario {
  * A flat `manifest.chunks` package yields exactly one entry, so callers treat
  * both layouts identically and only surface a picker when `length > 1`.
  */
-export function listVehicleManifestScenarios(raw: unknown): VehicleManifestScenario[] {
+export function listVehicleManifestScenarios(
+  raw: unknown,
+  options: VehicleManifestScenarioOptions = {},
+): VehicleManifestScenario[] {
   const root = (raw ?? {}) as Record<string, unknown>;
   const pkg = getGeolibrePackage(raw);
-  if (pkg?.scenarios.length) return pkg.scenarios.map((s, index) => ({ index, id: String(s.scid), label: s.name ?? `Scenario ${s.scid}`, nTicks: 1, dt: 1 }));
   const animations = Array.isArray(root.animations)
     ? (root.animations as Record<string, unknown>[])
     : [];
   const rootMetadata = (root.metadata ?? {}) as Record<string, unknown>;
+
+  if (pkg?.scenarios.length && !options.includeAnimationVariants) {
+    return pkg.scenarios.map((s, index) => ({
+      index,
+      id: String(s.scid),
+      label: s.name ?? `Scenario ${s.scid}`,
+      nTicks: 1,
+      dt: 1,
+      scid: s.scid,
+      did: s.replications[0]?.did,
+    }));
+  }
+
+  if (pkg?.scenarios.length && options.includeAnimationVariants) {
+    const variants: VehicleManifestScenario[] = [];
+    for (const scenario of pkg.scenarios) {
+      const declaredAnimations = scenario.animations?.filter((animation) => Boolean(animation.manifestPath));
+      if (declaredAnimations?.length) {
+        for (const declared of declaredAnimations) {
+          const rootIndex = animations.findIndex((animation) => animationPath(animation) === declared.manifestPath);
+          const rootAnimation = rootIndex >= 0 ? animations[rootIndex] : undefined;
+          const metadata = rootAnimation ? animationMetadata(rootAnimation, rootMetadata) : rootMetadata;
+          const id = declared.name ?? (rootAnimation ? animationId(rootAnimation, variants.length) : declared.manifestPath!);
+          variants.push({
+            index: variants.length,
+            id,
+            label: scenarioLabel(rootAnimation ?? { name: id }, metadata, variants.length),
+            nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
+            dt: Math.max(0.0001, safeNumber(metadata.dt, 1)),
+            manifestPath: declared.manifestPath,
+            scid: declared.scid ?? scenario.scid,
+            did: declared.did ?? scenario.replications[0]?.did,
+            rootAnimationIndex: rootIndex >= 0 ? rootIndex : undefined,
+          });
+        }
+        continue;
+      }
+
+      // Older packages may keep named FZP paths only in the root manifest.
+      // Use explicit scid/did matches when present; with one package scenario,
+      // the declared root entries are still safe selectable animation variants
+      // even when the producer could not map their names to an id.
+      const matched = animations.filter((animation) => animationPath(animation)
+        && (animationMatchesScenario(animation, scenario) || pkg.scenarios.length === 1));
+      if (matched.length) {
+        for (const animation of matched) {
+          const rootIndex = animations.indexOf(animation);
+          const metadata = animationMetadata(animation, rootMetadata);
+          variants.push({
+            index: variants.length,
+            id: animationId(animation, variants.length),
+            label: scenarioLabel(animation, metadata, variants.length),
+            nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
+            dt: Math.max(0.0001, safeNumber(metadata.dt, 1)),
+            manifestPath: animationPath(animation),
+            scid: typeof animation.scid === "number" || typeof animation.scid === "string" ? animation.scid : scenario.scid,
+            did: typeof animation.did === "number" || typeof animation.did === "string" ? animation.did : undefined,
+            rootAnimationIndex: rootIndex,
+          });
+        }
+      } else {
+        variants.push({
+          index: variants.length,
+          id: String(scenario.scid),
+          label: scenario.name ?? `Scenario ${scenario.scid}`,
+          nTicks: 1,
+          dt: 1,
+          scid: scenario.scid,
+          did: scenario.replications[0]?.did,
+        });
+      }
+    }
+    if (variants.length) return variants;
+  }
 
   if (Array.isArray(root.chunks) || animations.length === 0) {
     return [
@@ -282,14 +398,17 @@ export function listVehicleManifestScenarios(raw: unknown): VehicleManifestScena
   }
 
   return animations.map((animation, index) => {
-    const metadata = ((animation.metadata ?? rootMetadata) ?? {}) as Record<string, unknown>;
-    const rawId = animation.id ?? animation.name;
+    const metadata = animationMetadata(animation, rootMetadata);
     return {
       index,
-      id: typeof rawId === "string" && rawId.trim() ? rawId.trim() : `scenario_${index}`,
+      id: animationId(animation, index),
       label: scenarioLabel(animation, metadata, index),
       nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
       dt: Math.max(0.0001, safeNumber(metadata.dt, 1)),
+      scid: typeof animation.scid === "number" || typeof animation.scid === "string" ? animation.scid : undefined,
+      did: typeof animation.did === "number" || typeof animation.did === "string" ? animation.did : undefined,
+      manifestPath: animationPath(animation),
+      rootAnimationIndex: index,
     };
   });
 }
@@ -387,7 +506,7 @@ export function parseVehicleManifest(
     ? 0
     : Math.min(Math.max(0, Math.trunc(scenarioIndex) || 0), animations.length - 1);
   const scope = flat ? root : animations[selectedIndex];
-  const metadata = ((scope.metadata ?? root.metadata) ?? {}) as Record<string, unknown>;
+  const metadata = { ...((root.metadata ?? {}) as Record<string, unknown>), ...((scope.metadata ?? {}) as Record<string, unknown>) };
 
   const dt = Math.max(0.0001, safeNumber(metadata.dt, 1));
   const nTicks = Math.max(1, safeInt(metadata.n_ticks, 1));
@@ -455,14 +574,61 @@ export function parseVehicleManifest(
 }
 
 /** Fetch the v2.1 per-scenario animation manifest, when declared by the package. */
-export async function loadScenarioAnimationManifest(raw: unknown, source: VehiclePackageSource, scenarioIndex: number): Promise<unknown> {
+export async function loadScenarioAnimationManifest(
+  raw: unknown,
+  source: VehiclePackageSource,
+  scenarioIndex: number,
+  selectedScenario?: VehicleManifestScenario,
+): Promise<unknown> {
   const root = (raw ?? {}) as Record<string, unknown>;
   if (Array.isArray(root.chunks) && root.chunks.length > 0) return raw;
   const pkg = getGeolibrePackage(raw);
-  const scenario = pkg?.scenarios[scenarioIndex];
-  if (!scenario) return raw;
-  const path = `chunks/${scenario.scid}/animation.json`;
-  try { return JSON.parse(new TextDecoder().decode(await source.read(path))); } catch { return raw; }
+  const scenario = selectedScenario?.scid !== undefined
+    ? pkg?.scenarios.find((candidate) => sameIdentifier(candidate.scid, selectedScenario.scid)) ?? pkg?.scenarios[scenarioIndex]
+    : selectedScenario?.did !== undefined
+      ? pkg?.scenarios.find((candidate) => candidate.replications.some((replication) => sameIdentifier(replication.did, selectedScenario.did))) ?? pkg?.scenarios[scenarioIndex]
+      : pkg?.scenarios[scenarioIndex];
+  const rootAnimations = Array.isArray(root.animations)
+    ? root.animations as Record<string, unknown>[]
+    : [];
+  const declaredPaths: string[] = [];
+  if (selectedScenario?.manifestPath) declaredPaths.push(selectedScenario.manifestPath);
+  if (selectedScenario?.rootAnimationIndex !== undefined) {
+    const indexedAnimation = rootAnimations[selectedScenario.rootAnimationIndex];
+    const path = indexedAnimation ? animationPath(indexedAnimation) : undefined;
+    if (path) declaredPaths.push(path);
+  }
+  if (selectedScenario?.id) {
+    const named = rootAnimations.find((animation) => animationId(animation, -1) === selectedScenario.id);
+    const path = named ? animationPath(named) : undefined;
+    if (path) declaredPaths.push(path);
+  }
+  if (selectedScenario?.scid !== undefined || selectedScenario?.did !== undefined) {
+    const authoritative = rootAnimations.find((animation) =>
+      sameIdentifier(animation.scid, selectedScenario.scid)
+      || sameIdentifier(animation.did, selectedScenario.did));
+    const path = authoritative ? animationPath(authoritative) : undefined;
+    if (path) declaredPaths.push(path);
+  }
+  const indexedAnimation = rootAnimations[scenarioIndex];
+  const indexedPath = indexedAnimation ? animationPath(indexedAnimation) : undefined;
+  if (indexedPath) declaredPaths.push(indexedPath);
+  for (const animation of scenario?.animations ?? []) {
+    if (animation.manifestPath) declaredPaths.push(animation.manifestPath);
+  }
+  if (selectedScenario?.did !== undefined) declaredPaths.push(`chunks/${selectedScenario.did}/animation.json`);
+  if (selectedScenario?.scid !== undefined) declaredPaths.push(`chunks/${selectedScenario.scid}/animation.json`);
+  if (scenario?.replications[0]?.did !== undefined) declaredPaths.push(`chunks/${scenario.replications[0].did}/animation.json`);
+  if (scenario) declaredPaths.push(`chunks/${scenario.scid}/animation.json`);
+
+  // Prefer an explicit manifest pointer from the package envelope or the
+  // legacy root animation entry.  The SCID-derived path is only a fallback:
+  // valid packages may use named FZP directories when the producer cannot
+  // authoritatively map every animation to a scenario.
+  for (const path of [...new Set(declaredPaths)]) {
+    try { return JSON.parse(new TextDecoder().decode(await source.read(path))); } catch { /* try the next declared/fallback path */ }
+  }
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -489,17 +655,62 @@ export interface VehiclePackageSource {
   read(path: string): Promise<ArrayBuffer>;
 }
 
+function packageAssetPath(source: VehiclePackageSource, path: string): string {
+  if (!source.baseUrl) return path;
+  try {
+    return new URL(path, source.baseUrl).toString();
+  } catch {
+    return path;
+  }
+}
+
+function packageAssetError(
+  source: VehiclePackageSource,
+  path: string,
+  kind: "read" | "empty" | "json",
+  error?: unknown,
+): Error {
+  const asset = packageAssetPath(source, path);
+  const detail = error instanceof Error ? error.message : error === undefined ? "" : String(error);
+  const suffix = detail ? `: ${detail}` : "";
+  const description = kind === "empty"
+    ? "the file is empty"
+    : kind === "json"
+      ? "the file is not valid JSON"
+      : "the asset could not be read";
+  return new Error(`Vehicle playback asset ${asset}: ${description}${suffix}`);
+}
+
 /** Read a package served over HTTP, resolving paths against the manifest URL. */
 export function createHttpPackageSource(manifestUrl: string): VehiclePackageSource {
   return {
     baseUrl: manifestUrl,
     async read(path: string): Promise<ArrayBuffer> {
       const url = new URL(path, manifestUrl).toString();
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch ${url}: ${response.status}`);
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          // Chunk files are immutable within a manifest, but dev servers and
+          // object stores can briefly close a large response mid-transfer.
+          const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}playback_retry=${attempt}`, { cache: "no-store" });
+          if (!response.ok) {
+            const viteFsBlock = response.status === 403 && /\/@fs\//i.test(url);
+            throw new Error(
+              viteFsBlock
+                ? `HTTP 403 from the Vite dev server for an external local package path. Use GeoLibre's "Load folder" action for ${url}.`
+                : `HTTP ${response.status} ${response.statusText || ""}`.trim(),
+            );
+          }
+          // Await body consumption inside the retry boundary. Returning the
+          // promise lets a truncated/failed body escape the catch and makes
+          // chunk retries ineffective in Chromium.
+          return await response.arrayBuffer();
+        } catch (error) {
+          lastError = error;
+          if (attempt < 3) await delay(250 * attempt);
+        }
       }
-      return response.arrayBuffer();
+      throw new Error(`Failed to fetch playback asset ${url}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
     },
   };
 }
@@ -771,6 +982,10 @@ async function decodeChunkBody(buffer: ArrayBuffer, sourcePath = ""): Promise<un
   } else {
     text = new TextDecoder("utf-8").decode(bytes);
   }
+  // Empty chunk files are valid for sparse/partitioned exports: they carry no
+  // events but should not turn an otherwise usable playback into a parse
+  // failure (JSON.parse("") throws "Unexpected end of JSON input").
+  if (text.trim() === "") return { events: {} };
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -1095,7 +1310,7 @@ export class VehiclePlaybackData {
             this.statusById.set(chunkId, "failed");
             return false;
           }
-          throw readError;
+          throw packageAssetError(this.source, chunk.url, "read", readError);
         }
         const payload = (await decodeChunkBody(body, chunk.url)) as {
           events?: Record<string, unknown[]>;
@@ -1811,9 +2026,21 @@ export async function loadVehicleGeometry(
     if (!path) return null;
     try {
       const bytes = await source.read(path);
-      return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+      if (bytes.byteLength === 0) {
+        throw packageAssetError(source, path, "empty");
+      }
+      const text = new TextDecoder("utf-8").decode(bytes);
+      if (!text.trim()) {
+        throw packageAssetError(source, path, "empty");
+      }
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        throw packageAssetError(source, path, "json", error);
+      }
     } catch (error) {
-      console.warn(`[GeoLibre] vehicle-playback: ${label} geometry unavailable`, error);
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[GeoLibre] vehicle-playback: ${label} geometry unavailable (${packageAssetPath(source, path)}): ${message}`);
       return null;
     }
   };

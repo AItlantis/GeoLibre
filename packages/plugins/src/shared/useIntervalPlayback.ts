@@ -62,6 +62,43 @@ export function stepInterval(
     : realIntervals[(currentIndex + direction + realIntervals.length) % realIntervals.length];
 }
 
+/** Shared timer controller for module-level interval playback. */
+export interface IntervalPlaybackController {
+  sync(playing: boolean, intervalMs?: number): void;
+  dispose(): void;
+}
+
+export interface PlaybackSemantics {
+  playing: boolean;
+  speed: number;
+  loop: boolean;
+}
+
+export const DEFAULT_PLAYBACK_SEMANTICS: PlaybackSemantics = { playing: false, speed: 1, loop: true };
+
+export function normalizePlaybackSemantics(value: Partial<PlaybackSemantics> | null | undefined): PlaybackSemantics {
+  const speed = Number(value?.speed);
+  return {
+    playing: value?.playing === true,
+    speed: Number.isFinite(speed) ? Math.min(16, Math.max(0.1, speed)) : 1,
+    loop: value?.loop !== false,
+  };
+}
+
+export function stepPlaybackIndex(index: number, count: number, direction: 1 | -1, loop: boolean): { index: number; playing: boolean } {
+  if (count <= 0) return { index: 0, playing: false };
+  const next = index + direction;
+  if (next >= 0 && next < count) return { index: next, playing: true };
+  if (loop) return { index: (next + count) % count, playing: true };
+  return { index: Math.min(count - 1, Math.max(0, next)), playing: false };
+}
+
+export function createIntervalPlaybackController(onStep: () => void, intervalMs = 1000): IntervalPlaybackController {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const dispose = () => { if (timer) clearInterval(timer); timer = null; };
+  return { sync(playing, nextIntervalMs = intervalMs) { dispose(); if (playing) timer = setInterval(onStep, Math.max(50, nextIntervalMs)); }, dispose };
+}
+
 /**
  * Toggle the aggregate checkbox: checking it selects the `0` sentinel;
  * unchecking it falls back to the first real interval (or `0` again if there

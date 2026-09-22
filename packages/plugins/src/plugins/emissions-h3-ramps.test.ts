@@ -14,6 +14,20 @@ test("emissions metrics always resolve to a ramp", () => {
   assert.equal(normalizeEmissionsH3Metric("invalid"), "noise");
 });
 
+test("noise ramp follows the green-to-red 55–80 dB reference bands", () => {
+  const ramp = EMISSIONS_H3_RAMPS.noise;
+  assert.deepEqual(ramp.stops, [35, 45, 55, 60, 65, 70, 75, 80]);
+  assert.equal(ramp.colors[0], "#00b050");
+  assert.equal(ramp.colors.at(-1), "#7f0000");
+});
+
+test("CO2 ramp follows the pale-warm-to-dark-blue map reference", () => {
+  const ramp = EMISSIONS_H3_RAMPS.co2;
+  assert.deepEqual(ramp.stops, [1, 10, 30, 100, 300, 1000, 3000, 10000]);
+  assert.equal(ramp.colors[0], "#fff7f3");
+  assert.equal(ramp.colors.at(-1), "#111c5c");
+});
+
 test("clampEmissionsH3Resolution accepts any resolution within the supported band", () => {
   assert.equal(clampEmissionsH3Resolution(5), 5);
   assert.equal(clampEmissionsH3Resolution(EMISSIONS_H3_RESOLUTION_MIN), EMISSIONS_H3_RESOLUTION_MIN);

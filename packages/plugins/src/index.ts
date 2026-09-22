@@ -41,6 +41,7 @@ export {
   reattachPathAnalysis,
   setPathAnalysisManifestUrl,
   setPathAnalysisSettings,
+  applyPathAnalysisVisualSettings,
   clearPathAnalysisSelection,
   removePathAnalysisSection,
   loadLocalPathAnalysisFolder,
@@ -48,9 +49,10 @@ export {
   subscribePathAnalysisPanel,
   type PathAnalysisSettings,
   type PathAnalysisSnapshot,
+  PATH_ANALYSIS_STORE_LAYER_ID,
 } from "./plugins/maplibre-path-analysis";
 export { PATH_METRICS, PATH_RAMPS, pathColorRgb, pathElevation, type PathMetric } from "./plugins/path-analysis-ramps";
-export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
+export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_STORE_LAYER_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, swapScenarioComparisonSides, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
 export { buildScenarioComparisonRows, type ComparisonInput, type ComparisonRow } from "./plugins/scenario-comparison-data";
 export { parseComparisonRamps, comparisonCategoricalRamp, type ComparisonMetric, type CategoricalRamp } from "./plugins/comparison-ramps";
 export {
@@ -969,6 +971,13 @@ export {
   type UseIntervalPlaybackResult,
 } from "./shared/useIntervalPlayback";
 export {
+  deriveSimulationTimeline,
+  formatSimulationTime,
+  readSimulationTimeline,
+  timelineTimeAtSliceIndex,
+  type SimulationTimeline,
+} from "./shared/simulation-timeline";
+export {
   formatSimClock,
   tickTimelineProps,
   useTickPlayback,
@@ -1328,7 +1337,7 @@ export {
   type NetworkKpiResults,
 } from "./plugins/network-kpi-data";
 export {
-  EMISSIONS_H3_PLUGIN_ID, DEFAULT_EMISSIONS_H3_SETTINGS, maplibreEmissionsH3Plugin,
+  EMISSIONS_H3_PLUGIN_ID, EMISSIONS_H3_STORE_LAYER_ID, DEFAULT_EMISSIONS_H3_SETTINGS, maplibreEmissionsH3Plugin,
   EMISSIONS_H3_RESOLUTION_MIN, EMISSIONS_H3_RESOLUTION_MAX,
   openEmissionsH3Panel, closeEmissionsH3Panel, reattachEmissionsH3,
   isEmissionsH3PanelVisible, subscribeEmissionsH3Panel, getEmissionsH3Snapshot,
@@ -1364,6 +1373,8 @@ export {
   VEHICLE_PLAYBACK_OPACITY_MAX,
   VEHICLE_PLAYBACK_OPACITY_MIN,
   VEHICLE_PLAYBACK_PLUGIN_ID,
+  VEHICLE_PLAYBACK_Z_OFFSET_MAX,
+  VEHICLE_PLAYBACK_Z_OFFSET_MIN,
   VEHICLE_PLAYBACK_SPEED_MAX,
   VEHICLE_PLAYBACK_SPEED_MIN,
   type VehicleNetworkView,

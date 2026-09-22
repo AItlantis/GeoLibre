@@ -1329,22 +1329,42 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
     // calls reuse one resolved module set.
     getDeckGL: (() => {
       let cached: Promise<GeoLibreDeckGL> | undefined;
-      return () =>
-        (cached ??= Promise.all([
+      return () => {
+        if (cached) return cached;
+        cached = Promise.all([
           import("@deck.gl/core"),
           import("@deck.gl/layers"),
           import("@deck.gl/aggregation-layers"),
           import("@deck.gl/geo-layers"),
           import("@deck.gl/mesh-layers"),
           import("@deck.gl/mapbox"),
-        ]).then(([core, layers, aggregationLayers, geoLayers, meshLayers, mapbox]) => ({
-          core,
-          layers,
-          aggregationLayers,
-          geoLayers,
-          meshLayers,
-          mapbox,
-        })));
+        ]).then(([core, layers, aggregationLayers, geoLayers, meshLayers, mapbox]) => {
+          if (typeof window !== "undefined") {
+            window.sessionStorage.removeItem("geolibre:deck-gl-optimizer-reload");
+          }
+          return { core, layers, aggregationLayers, geoLayers, meshLayers, mapbox };
+        }).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          const staleOptimizerFailure =
+            !import.meta.env.PROD &&
+            typeof window !== "undefined" &&
+            /Failed to fetch dynamically imported module/i.test(message) &&
+            /\/node_modules\/\.vite\/deps\//i.test(message);
+          if (staleOptimizerFailure) {
+            const reloadKey = "geolibre:deck-gl-optimizer-reload";
+            if (window.sessionStorage.getItem(reloadKey) !== "1") {
+              window.sessionStorage.setItem(reloadKey, "1");
+              window.location.reload();
+            }
+          }
+          // Vite can invalidate an optimized dependency while the app is
+          // running. Do not permanently cache that transient rejection;
+          // later plugin activation should be able to retry the import.
+          cached = undefined;
+          throw error;
+        });
+        return cached;
+      };
     })(),
     // Hand external plugins GeoLibre's own maplibre-gl-raster module so they
     // render COGs on the host's single deck.gl/luma.gl instance. A bundled

@@ -3,6 +3,8 @@ import {
   VEHICLE_PLAYBACK_OPACITY_MIN,
   VEHICLE_PLAYBACK_SPEED_MAX,
   VEHICLE_PLAYBACK_SPEED_MIN,
+  VEHICLE_PLAYBACK_Z_OFFSET_MAX,
+  VEHICLE_PLAYBACK_Z_OFFSET_MIN,
   canLoadLocalVehiclePackage,
   closeVehiclePlaybackPanel,
   getVehiclePlaybackSnapshot,
@@ -34,6 +36,7 @@ import {
   registerVehiclePlaybackLegend,
   unregisterVehiclePlaybackLegend,
 } from "../../lib/vehicle-playback-legend";
+import { PlaybackTimelineReadout } from "./PlaybackTimelineReadout";
 
 const PANEL_WIDTH = 360;
 const EDGE_MARGIN = 12;
@@ -80,6 +83,7 @@ function VehiclePlaybackCard() {
     loop,
     tick,
     opacity,
+    zOffsetM,
     manifestUrl,
     seeThroughBuildings,
     showNetwork,
@@ -98,6 +102,7 @@ function VehiclePlaybackCard() {
     hasLanes,
     hasTurns,
     localFolderName,
+    timeline: simulationTimeline,
   } = status;
   const hasPackage = maxTick > 0;
   const canLoadFolder = canLoadLocalVehiclePackage();
@@ -266,6 +271,26 @@ function VehiclePlaybackCard() {
         onChange={(v) => setVehiclePlaybackSettings({ opacity: v })}
       />
 
+      <label className="flex items-center justify-between gap-3 text-xs">
+        <span className="text-muted-foreground">{t("toolbar.vehiclePlayback.zOffset")}</span>
+        <span className="flex items-center gap-1">
+          <input
+            className="h-7 w-20 rounded border border-input bg-background px-2 text-right text-xs tabular-nums"
+            type="number"
+            min={VEHICLE_PLAYBACK_Z_OFFSET_MIN}
+            max={VEHICLE_PLAYBACK_Z_OFFSET_MAX}
+            step={0.5}
+            value={zOffsetM}
+            aria-label={t("toolbar.vehiclePlayback.zOffset")}
+            onChange={(e) => {
+              const value = Number(e.currentTarget.value);
+              if (Number.isFinite(value)) setVehiclePlaybackSettings({ zOffsetM: value });
+            }}
+          />
+          <span className="text-muted-foreground">m</span>
+        </span>
+      </label>
+
       <label className="flex cursor-pointer items-center gap-2 text-xs">
         <input
           type="checkbox"
@@ -310,6 +335,7 @@ function VehiclePlaybackCard() {
   const playbackContent = (
     <div className="space-y-3">
       <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
+        <PlaybackTimelineReadout timeline={simulationTimeline} currentSeconds={tick * dt} intervalSeconds={dt} />
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-lg font-semibold tabular-nums">{clock}</span>
           <span className="text-xs tabular-nums text-muted-foreground">

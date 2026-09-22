@@ -287,10 +287,26 @@ export const maplibreGeoEditorPlugin: GeoLibrePlugin = {
     unbindGeomanEditSync();
 
     if (!geoEditorControl) return;
-    app.removeMapControl(geoEditorControl);
+    const control = geoEditorControl;
+    const geoman = geomanInstance;
     geoEditorControl = null;
-    void geomanInstance?.destroy({ removeSources: true });
     geomanInstance = null;
+    // GeoEditor.onRemove() and Geoman.destroy() both disable active modes.
+    // Run the first cleanup to completion before invoking the second one so
+    // Geoman does not try to unregister an already-removed `_gm` handler.
+    void (async () => {
+      try {
+        await geoman?.disableAllModes();
+      } catch {
+        // The map may already be tearing down; control removal remains safe.
+      }
+      app.removeMapControl(control);
+      try {
+        await geoman?.destroy({ removeSources: true });
+      } catch {
+        // Geoman teardown is best-effort during engine/plugin shutdown.
+      }
+    })();
   },
   getMapControlPosition: () => geoEditorPosition,
   setMapControlPosition: (app: GeoLibreAppAPI, position: GeoLibreMapControlPosition) => {

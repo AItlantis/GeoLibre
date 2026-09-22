@@ -2,6 +2,7 @@ import type * as duckdb from "@duckdb/duckdb-wasm";
 import { getDatabase, registerParquetCatalogEntry, type CatalogEntry } from "./network-kpi-parquet-data";
 import { computeNoiseSource, type EmissionsRow } from "./emissions-h3-data";
 export type { EmissionsRow } from "./emissions-h3-data";
+export { loadEmissionsH3Geometry } from "./emissions-h3-geometry";
 import { createNetworkKpiHttpSource, createNetworkKpiDirectorySource, fetchNetworkKpiManifestJson, readLocalNetworkKpiManifestJson, loadNetworkKpiGeometry, parseNetworkKpiManifest, type NetworkKpiPackageSource, type NetworkKpiDirectoryHandle, type NetworkKpiGeometry, type NetworkKpiManifest } from "./network-kpi-data";
 import { openTestudoDatasetProvider, type TestudoDatasetProvider, type TestudoDatasetSource } from "./testudo-dataset-provider";
 
@@ -22,6 +23,14 @@ export async function openEmissionsDatasetProvider(
   return openTestudoDatasetProvider({ source, manifest });
 }
 
+/**
+ * Load only the section centerlines required by the H3 renderer.
+ *
+ * The shared network geometry loader also fetches lanes, turns, and nodes for
+ * Network KPI. H3 never consumes those layers; requesting them made a large
+ * package (notably Abu Dhabi) wait on a multi-gigabyte turns asset before the
+ * emissions layer could render.
+ */
 function rowNumber(row: Row, key: string): number | null {
   const value = Number(row[key]);
   return Number.isFinite(value) ? value : null;
@@ -33,14 +42,51 @@ function rowKey(row: Row): string {
 
 function contractEmissionTables(provider: TestudoDatasetProvider, did: number): string[] {
   const emissions = provider.metadata.dataContracts.emissions;
-  if (!emissions || typeof emissions !== "object") return ["MIPTPO", "MISECTIEM"];
-  const tableSelection = (emissions as Record<string, unknown>).table_selection;
-  if (!tableSelection || typeof tableSelection !== "object") return ["MIPTPO", "MISECTIEM"];
-  const perDid = (tableSelection as Record<string, unknown>).per_did;
-  if (!Array.isArray(perDid)) return ["MIPTPO", "MISECTIEM"];
-  const selected = perDid.find((entry) => entry && typeof entry === "object" && Number((entry as Record<string, unknown>).did) === did);
-  const selectedTable = selected && typeof selected === "object" ? (selected as Record<string, unknown>).selected_table : null;
-  return selectedTable === "MIPTPO" || selectedTable === "MISECTIEM" ? [selectedTable] : [];
+  const candidates: string[] = [];
+  const add = (value: unknown): void => {
+    if (typeof value !== "string") return;
+    const table = value.trim().toUpperCase();
+    if ((table === "MIPTPO" || table === "MISECTIEM") && !candidates.includes(table)) candidates.push(table);
+  };
+  if (emissions && typeof emissions === "object") {
+    const contract = emissions as Record<string, unknown>;
+    add(contract.selected_table);
+    add(contract.preferred_table);
+    const fallbackOrder = contract.fallback_order;
+    if (Array.isArray(fallbackOrder)) fallbackOrder.forEach(add);
+    const tableSelection = contract.table_selection;
+    if (tableSelection && typeof tableSelection === "object") {
+      const selection = tableSelection as Record<string, unknown>;
+      add(selection.selected_table);
+      const perDid = selection.per_did;
+      if (Array.isArray(perDid)) {
+        const selected = perDid.find((entry) => entry && typeof entry === "object" && Number((entry as Record<string, unknown>).did) === did);
+        if (selected && typeof selected === "object") add((selected as Record<string, unknown>).selected_table);
+      }
+    }
+  }
+  // The catalog is authoritative for newer packages, while older manifests
+  // put the same selection under environment.data_contracts. Keep both
+  // paths usable and only query tables actually declared by the provider.
+  for (const dataset of provider.metadata.datasets) add(dataset.table);
+  for (const fallback of ["MIPTPO", "MISECTIEM"]) add(fallback);
+  return candidates;
+}
+
+function normalizedColumnName(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function pickEmissionColumn(columns: string[], metric: "co2" | "nox"): string | null {
+  const target = metric === "co2" ? "co2" : "nox";
+  const exact = columns.find((column) => normalizedColumnName(column) === target);
+  if (exact) return exact;
+  // Accept exporter variants such as CO2_D, co2_emission, NOX, or
+  // nox_interurban while avoiding unrelated pollutant columns.
+  return columns.find((column) => {
+    const normalized = normalizedColumnName(column);
+    return normalized.startsWith(target) || normalized.includes(`${target}emission`) || normalized.includes(`${target}interurban`);
+  }) ?? null;
 }
 
 /**
@@ -97,13 +143,25 @@ export async function readEmissionsRowsFromProvider(
       filters: [{ column: "ent", op: "=", value: ent }],
     });
   } catch {
-    hasMicroscopicColumns = false;
-    result = await provider.query({
-      ...base,
-      scenarioId,
-      columns: ["oid", "eid", "sid", "ent"],
-      filters: [{ column: "ent", op: "=", value: ent }],
-    });
+    // Some microscopic exporters omit optional stop metrics while still
+    // providing the flow/speed statistics required by this plugin. Do not
+    // misclassify those packages as non-microscopic.
+    try {
+      result = await provider.query({
+        ...base,
+        scenarioId,
+        columns: ["oid", "eid", "sid", "ent", "flow", "speed"],
+        filters: [{ column: "ent", op: "=", value: ent }],
+      });
+    } catch {
+      hasMicroscopicColumns = false;
+      result = await provider.query({
+        ...base,
+        scenarioId,
+        columns: ["oid", "eid", "sid", "ent"],
+        filters: [{ column: "ent", op: "=", value: ent }],
+      });
+    }
   }
   if (result.truncated) throw new Error("Environment result query exceeded its bounded query limit.");
   const byKey = new Map<string, { aggregate?: Row; classes: Row[] }>();
@@ -116,17 +174,26 @@ export async function readEmissionsRowsFromProvider(
   const emissionValues = new Map<string, { co2: number | null; nox: number | null }>();
   for (const table of contractEmissionTables(provider, did)) {
     try {
+      // Query the schema first when the package did not expose a complete
+      // data-contract envelope. This also handles harmless casing/variant
+      // differences without falling back to SQLite.
+      const schema = await provider.query({ dataset: table, did, scenarioId, limit: 1 });
+      const co2Column = pickEmissionColumn(schema.columns, "co2");
+      const noxColumn = pickEmissionColumn(schema.columns, "nox");
+      if (!co2Column && !noxColumn) continue;
       const emissionResult = await provider.query({
         dataset: table,
         did,
         scenarioId,
-        columns: ["oid", "eid", "sid", "ent", "CO2", "NOx"],
+        columns: ["oid", "eid", "sid", "ent", ...(co2Column ? [co2Column] : []), ...(noxColumn ? [noxColumn] : [])],
         filters: [{ column: "ent", op: "=", value: ent }, { column: "sid", op: "=", value: 0 }],
         limit: 250_000,
       });
       for (const row of emissionResult.rows) {
-        const co2 = row.CO2 === null || row.CO2 === undefined || row.CO2 === "" ? null : Number(row.CO2);
-        const nox = row.NOx === null || row.NOx === undefined || row.NOx === "" ? null : Number(row.NOx);
+        const co2Value = co2Column ? row[co2Column] : null;
+        const noxValue = noxColumn ? row[noxColumn] : null;
+        const co2 = co2Value === null || co2Value === undefined || co2Value === "" ? null : Number(co2Value);
+        const nox = noxValue === null || noxValue === undefined || noxValue === "" ? null : Number(noxValue);
         if (Number.isFinite(co2) || Number.isFinite(nox)) emissionValues.set(rowKey(row), { co2: Number.isFinite(co2) ? co2 : null, nox: Number.isFinite(nox) ? nox : null });
       }
       if (emissionResult.truncated) throw new Error("Environment emissions query exceeded its bounded query limit.");

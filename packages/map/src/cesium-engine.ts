@@ -536,6 +536,14 @@ export class CesiumEngine implements MapEngine {
       );
       return;
     }
+    // Bounds flights are programmatic camera moves, but they are still the
+    // caller's requested focus. Mark the flight as owning the camera before
+    // starting it so asynchronous terrain tile settling cannot treat the
+    // previous stored view as authoritative and fly the globe back to it.
+    // The moveEnd publisher will read the settled bounds view and update the
+    // shared map view once the flight completes.
+    this.userOwnsCamera = true;
+    this.userMoved = false;
     viewer.camera.flyTo({
       destination: this.Cesium.Rectangle.fromDegrees(west, south, east, north),
       duration: FLY_SECONDS,

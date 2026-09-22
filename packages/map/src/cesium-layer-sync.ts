@@ -940,7 +940,6 @@ export class CesiumLayerSync {
     string,
     {
       collection: PointPrimitiveCollection;
-      primitives: WeakSet<object>;
       descriptions: readonly MovingPointFeatureDescription[];
     }
   >();
@@ -955,7 +954,7 @@ export class CesiumLayerSync {
       const entry = this.entries.get(entity.geolibreLayerId);
       const moving = this.movingPointLayers.get(entity.geolibreLayerId);
       const movingPoint =
-        entity.primitive && moving?.primitives.has(entity.primitive as unknown as object);
+        entity.primitive && moving?.collection.contains(entity.primitive as never);
       if (
         !entry ||
         entry.cancelled ||
@@ -1079,12 +1078,10 @@ export class CesiumLayerSync {
     collection: PointPrimitiveCollection,
     descriptions: readonly MovingPointFeatureDescription[] = [],
   ): () => void {
-    const primitives = new WeakSet<object>();
-    for (let index = 0; index < collection.length; index += 1) {
-      const point = collection.get(index);
-      if (point) primitives.add(point as unknown as object);
-    }
-    this.movingPointLayers.set(layerId, { collection, primitives, descriptions });
+    // Membership is intentionally checked against the live collection rather
+    // than snapshotted here: moving-point plugins may add/remove vehicles as a
+    // streamed animation advances after registration.
+    this.movingPointLayers.set(layerId, { collection, descriptions });
     const entry = this.entries.get(layerId);
     if (entry) collection.show = entry.layer.visible;
     return () => {

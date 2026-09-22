@@ -191,3 +191,16 @@ export {
 } from "./qml-export";
 export { applyQmlImport, parseQml, type QmlImportResult } from "./qml-import";
 export { loadMarkerSvgImage } from "./markers";
+export {
+  metricRampCssGradient,
+  metricRampExpression,
+  sampleMetricRamp,
+  type NumericColorRamp,
+} from "./metric-ramp";
+export {
+  buildMetricLabelFeatures,
+  formatMetricLabel,
+  lineMetricLabelAnchor,
+  metricLabelLayerLayout,
+  type MetricLabelCandidate,
+} from "./metric-labels";

@@ -18,6 +18,7 @@ import {
   type NetworkFeatureCollection,
 } from "./network-kpi-data";
 import { ParquetResultsDatabase } from "./network-kpi-parquet-data";
+import type { SimulationTimeline } from "../shared/simulation-timeline";
 import {
   laneWidthMetersExpression,
   metersLineWidthExpression,
@@ -115,6 +116,8 @@ export interface NetworkKpiSettings {
   /** Which time interval (`ent`) is shown; 0 is the whole-period aggregate. */
   interval: number;
   intervalPlaying: boolean;
+  playbackSpeed: number;
+  loop: boolean;
   did: number | null;
   seeThroughBuildings: boolean;
   showNetwork: boolean;
@@ -137,6 +140,8 @@ export const DEFAULT_NETWORK_KPI_SETTINGS: NetworkKpiSettings = {
   opacity: 0.85,
   interval: 0,
   intervalPlaying: false,
+  playbackSpeed: 1,
+  loop: true,
   did: null,
   seeThroughBuildings: true,
   showNetwork: true,
@@ -177,6 +182,8 @@ export function normalizeNetworkKpiSettings(
         ? Math.max(0, Math.trunc(c.interval))
         : base.interval,
     intervalPlaying: typeof c.intervalPlaying === "boolean" ? c.intervalPlaying : base.intervalPlaying,
+    playbackSpeed: clampNumber(c.playbackSpeed, 0.25, 8, base.playbackSpeed),
+    loop: typeof c.loop === "boolean" ? c.loop : base.loop,
     did: typeof c.did === "number" && Number.isFinite(c.did) ? Math.trunc(c.did) : base.did,
     seeThroughBuildings: typeof c.seeThroughBuildings === "boolean" ? c.seeThroughBuildings : base.seeThroughBuildings,
     showNetwork: typeof c.showNetwork === "boolean" ? c.showNetwork : base.showNetwork,
@@ -196,6 +203,7 @@ function settingsEqual(a: NetworkKpiSettings, b: NetworkKpiSettings): boolean {
     a.opacity === b.opacity &&
     a.interval === b.interval
     && a.intervalPlaying === b.intervalPlaying
+    && a.playbackSpeed === b.playbackSpeed && a.loop === b.loop
     && a.did === b.did
     && a.seeThroughBuildings === b.seeThroughBuildings
     && a.showNetwork === b.showNetwork
@@ -228,6 +236,7 @@ export interface NetworkKpiStatus {
   did: number | null;
   /** True when the package was opened from a local folder rather than a URL. */
   localFolderName: string | null;
+  timeline?: SimulationTimeline | null;
 }
 
 const IDLE_STATUS: NetworkKpiStatus = {
@@ -652,7 +661,14 @@ function setFrameStats(featureCount: number, detailed: boolean): void {
 }
 
 function ensureDeck(app: GeoLibreAppAPI): void {
-  if (deckGLBundle || deckGLPending || !app.getDeckGL) return;
+  if (deckGLPending || !app.getDeckGL) return;
+  if (deckGLBundle) {
+    // The shared overlay is renderer-bound even though the deck module is
+    // cached. Rebind it after a Cesium/MapLibre switch before redrawing KPI
+    // layers; otherwise the plugin keeps a valid bundle but no mounted layer.
+    void ensureSharedDeckOverlay(app).then(() => engine?.render());
+    return;
+  }
   deckGLPending = true;
   void app
     .getDeckGL()
@@ -874,7 +890,7 @@ function clearLoaded(): void {
 
 function syncIntervalTimer(): void {
   if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
-  if (settings.intervalPlaying) intervalTimer = setInterval(() => stepNetworkKpiInterval(1), 1000);
+  if (settings.intervalPlaying) intervalTimer = setInterval(() => stepNetworkKpiInterval(1), Math.max(100, 1000 / settings.playbackSpeed));
 }
 
 export function toggleNetworkKpiIntervalPlaying(): void {
@@ -894,9 +910,18 @@ export function stepNetworkKpiInterval(direction: 1 | -1): void {
   const currentIndex = values.indexOf(settings.interval);
   // On the aggregate (or any value outside the real slices), start the
   // sequence at its first frame rather than stepping relative to nothing.
+  const nextIndex = currentIndex === -1
+    ? (direction === 1 ? 0 : values.length - 1)
+    : currentIndex + direction;
+  if (!settings.loop && (nextIndex < 0 || nextIndex >= values.length)) {
+    settings = { ...settings, intervalPlaying: false };
+    syncIntervalTimer();
+    notifyState();
+    return;
+  }
   const next = currentIndex === -1
     ? values[direction === 1 ? 0 : values.length - 1]
-    : values[(currentIndex + direction + values.length) % values.length];
+    : values[(nextIndex + values.length) % values.length];
   setNetworkKpiSettings({ interval: next });
 }
 
@@ -933,13 +958,15 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
   let openError: string | null = null;
   if (manifest.resultsCatalogRelative) {
     try {
-      const db = await ParquetResultsDatabase.open(source, manifest.resultsCatalogRelative);
+      const db = await ParquetResultsDatabase.open(source, manifest.resultsCatalogRelative, pending.raw);
       if (token !== loadToken) {
         db.close();
         return;
       }
       database = db;
       results = await db.read({ interval: settings.interval, did: settings.did });
+      let timeline: SimulationTimeline | null = null; try { timeline = await db.readSimulationTimeline(results.did); } catch (error) { console.warn("[GeoLibre] network-kpi: SIM_INFO timing unavailable", error); }
+      if (timeline) status = { ...status, timeline };
     } catch (error) {
       openError = error instanceof Error ? error.message : String(error);
     }
@@ -1128,6 +1155,22 @@ export function restoreNetworkKpi(app: GeoLibreAppAPI, state?: unknown): boolean
   appRef = app;
   const next = normalizeNetworkKpiSettings(state, { ...DEFAULT_NETWORK_KPI_SETTINGS });
 
+  const shouldOpen = Boolean(
+    state && typeof state === "object" && (state as { open?: unknown }).open,
+  );
+  // A delayed project/renderer restore can arrive after a user starts loading a
+  // package, even before its manifest resolves. Keep the live URL, settings,
+  // database and load token for a compatible restore so the load can finish
+  // without losing the panel tabs or restarting playback. An explicit close or
+  // a different manifest still takes the normal restore path below.
+  if (
+    shouldOpen && panelVisible && (loadedPackage || status.loading) &&
+    (!next.manifestUrl || next.manifestUrl === settings.manifestUrl)
+  ) {
+    attachEngine(app);
+    return false;
+  }
+
   // Drop the previous project's package so nothing draws stale results while the
   // new one loads. Since this always clears, the re-fetch below must not be
   // gated on whether the URL text changed.
@@ -1135,9 +1178,6 @@ export function restoreNetworkKpi(app: GeoLibreAppAPI, state?: unknown): boolean
   status = { ...IDLE_STATUS };
   notifyStatus();
 
-  const shouldOpen = Boolean(
-    state && typeof state === "object" && (state as { open?: unknown }).open,
-  );
   let changed = false;
   if (!settingsEqual(next, settings)) {
     settings = next;
