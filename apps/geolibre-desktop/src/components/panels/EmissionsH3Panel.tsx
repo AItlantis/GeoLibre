@@ -181,7 +181,7 @@ function EmissionsH3Card() {
 
   const dataSourceContent = (
     <div className="space-y-2">
-      <div className="space-y-1">
+      <div hidden={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo"} className="space-y-1">
         <span className="block text-xs text-muted-foreground">
           {t("toolbar.emissionsH3.manifestUrl")}
         </span>

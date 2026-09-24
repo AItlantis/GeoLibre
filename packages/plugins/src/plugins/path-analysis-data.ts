@@ -8,12 +8,13 @@ import { createDirectoryPackageSource, loadVehicleGeometry, supportsLocalPackage
 import { attachGeolibrePackage, capabilityAvailable } from "./geolibre-package-loader";
 import { normalizeSelectedPathPercentages } from "./path-analysis-ramps";
 import { aggregatePathSectionVolumes, type PositionalRouteLink } from "./path-analysis-section-volumes";
+import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
 
 export interface PathAnalysisManifest { pathIndex: string | null; geometry: { sections: string | null; lanes: string | null; turns: string | null; nodes: string | null }; bounds: [number, number, number, number] | null; available: boolean; unavailableReason: string | null; }
 export interface PathAnalysisSummary { path_count?: number; route_links_count?: number; unique_sections_count?: number; total_demand?: number; [key: string]: unknown; }
 export interface PathMatch { route_id: number; demand: number; percentage: number; origin: number; destination: number; vehicle: number; interval: number; }
 export type PathRule = "or" | "and";
-export type PathSectionVolume = { section_id: number; volume: number; percentage: number; role: "upstream" | "selected" | "downstream" };
+export type PathSectionVolume = { section_id: number; volume: number; totalVolume: number; percentage: number; role: "upstream" | "selected" | "downstream" };
 export type PathAnalysisQueryResult = { matches: PathMatch[]; selectedVolume: number; sections: PathSectionVolume[] };
 export interface PathAnalysisData { summary: PathAnalysisSummary; geometry: VehicleGeometryLayers; intervals: number[]; query(sectionIds: number[], rule: PathRule, interval?: number): Promise<PathMatch[]>; querySectionVolumes(sectionIds: number[], rule: PathRule, interval: number, selectedSection: number): Promise<PathAnalysisQueryResult>; sequence(routeId: number): Promise<number[]>; close(): void; }
 let activePathInterval = 0;
@@ -80,7 +81,14 @@ async function makeDb(files: Record<string, ArrayBuffer>, urls: Record<string, s
   const worker = new Worker(bundle.mainWorker!, { type: "module" }); const logger = new duckdb.ConsoleLogger();
   const db = new duckdb.AsyncDuckDB(logger, worker); await db.instantiate(bundle.mainModule, bundle.pthreadWorker); await db.open({});
   const extensionConnection = await db.connect();
-  try { await extensionConnection.query("LOAD parquet"); } finally { await extensionConnection.close(); }
+  try {
+    // Match Network KPI's lazy signed-extension setup. DuckDB autoloads its
+    // signed Parquet extension on the first read_parquet query; explicit LOAD
+    // here bypassed that autoload path and rejected the locally hosted WASM as
+    // unsigned in the browser.
+    const repository = getDuckDbExtensionRepository();
+    await extensionConnection.query(`SET custom_extension_repository = '${repository.replaceAll("'", "''")}'`);
+  } finally { await extensionConnection.close(); }
   for (const [name, bytes] of Object.entries(files)) {
     const url = urls[name];
     if (url) await db.registerFileURL(name, url, duckdb.DuckDBDataProtocol.HTTP, true);
@@ -113,12 +121,14 @@ export async function loadPathAnalysis(source: VehiclePackageSource, manifest: P
   const intervalRows = await rows("SELECT DISTINCT interval FROM read_parquet(['routes.parquet']) ORDER BY interval");
   const intervals = [...new Set(intervalRows.map((x) => Number(x.interval)).filter(Number.isFinite))].sort((a,b) => a-b);
   const normalizedIds = (sectionIds: number[]) => [...new Set(sectionIds.map((id) => Math.trunc(Number(id))).filter(Number.isFinite))];
-  const fetchMatches = async (ids: number[], rule: PathRule, interval: number, anchor?: number): Promise<PathMatch[]> => {
+  const fetchMatches = async (ids: number[], rule: PathRule, interval: number, anchor?: number, filterIds = ids): Promise<PathMatch[]> => {
     if (!ids.length) return [];
-    const inClause = ids.join(",");
-    const matched = rule === "and"
-      ? `SELECT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause}) GROUP BY route_id HAVING COUNT(DISTINCT section_id) = ${ids.length}`
-      : `SELECT DISTINCT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause})`;
+    const inClause = filterIds.join(",");
+    const matched = filterIds.length === 0
+      ? `SELECT DISTINCT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id = ${Math.trunc(Number(anchor))}`
+      : rule === "and"
+        ? `SELECT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause}) GROUP BY route_id HAVING COUNT(DISTINCT section_id) = ${filterIds.length}`
+        : `SELECT DISTINCT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause})`;
     const anchorClause = Number.isFinite(anchor)
       ? ` AND EXISTS (SELECT 1 FROM read_parquet(['link_to_routes.parquet']) anchor WHERE anchor.route_id = r.route_id AND anchor.section_id = ${Math.trunc(anchor!)})`
       : "";
@@ -143,7 +153,12 @@ export async function loadPathAnalysis(source: VehiclePackageSource, manifest: P
       }
       // The clicked section anchors the cohort in addition to OR/AND matching
       // the selected set (notably, OR alone could otherwise admit unrelated routes).
-      const matches = await fetchMatches(ids, rule, interval, selected);
+      const additionalFilters = ids.filter((id) => id !== selected);
+      // The reference is a mandatory cohort anchor; the remaining selection
+      // is an OR/AND filter of its own. With no additional filters, query only
+      // routes through the reference.
+      const filters = additionalFilters;
+      const matches = await fetchMatches(ids, rule, interval, selected, filters);
       if (!matches.length) return { matches, selectedVolume: 0, sections: [] };
       const routeIds = [...new Set(matches.map((match) => match.route_id))];
       const routeIdClause = routeIds.join(",");

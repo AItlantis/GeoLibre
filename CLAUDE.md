@@ -151,3 +151,6 @@ and the server ships untested.
 - Reference docs: `docs/architecture.md`, `docs/project-format.md`,
   `docs/plugin-api.md`, `docs/python.md`, `docs/mcp.md`, `docs/agent-skill.md`,
   `docs/i18n.md`, `docs/maintenance.md`, `docs/contributing.md`.
+- Shared, cross-repo agent skills (not specific to this repo) live in
+  `F:\repos\skills`, separate from this repo's own `skills/geolibre/` agent
+  skill.

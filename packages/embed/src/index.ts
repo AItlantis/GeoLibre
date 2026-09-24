@@ -1,3 +1,5 @@
+import type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoBootstrap, TestudoCapability } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -51,6 +53,7 @@ export interface AddDataOptions {
 
 export type EmbedEventMap = {
   ready: { version: string };
+  testudoStateChanged: TestudoViewerState;
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack
@@ -78,6 +81,10 @@ export interface ConnectOptions {
 }
 
 export interface GeoLibreEmbedClient {
+  testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
+  testudoSetPlugin(payload: { id: TestudoCapabilityId }): Promise<TestudoViewerState>;
+  testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
+  testudoGetState(): Promise<TestudoViewerState>;
   loadProject(url: string): Promise<void>;
   setView(target: ViewTarget): Promise<void>;
   highlightFeature(payload: {
@@ -166,6 +173,10 @@ export function connect(
   });
 
   const client: GeoLibreEmbedClient = {
+    testudoLoadPackage: (payload) => send<TestudoViewerState>("testudoLoadPackage", { ...payload }),
+    testudoSetPlugin: (payload) => send<TestudoViewerState>("testudoSetPlugin", payload),
+    testudoSetPreset: (payload) => send<TestudoViewerState>("testudoSetPreset", payload),
+    testudoGetState: () => send<TestudoViewerState>("testudoGetState"),
     loadProject: (url) => send("loadProject", { url }),
     setView: (target) => send("setView", target as unknown as Record<string, unknown>),
     highlightFeature: (payload) =>

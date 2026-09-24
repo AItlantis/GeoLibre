@@ -20,6 +20,14 @@ afterEach(() => {
 });
 
 describe("layoutOptionsFromLocation", () => {
+  it("hides desktop chrome in the dedicated Testudo profile", () => {
+    withSearch("?layout=testudo");
+    const options = layoutOptionsFromLocation(DEFAULT_DESKTOP_LAYOUT_SETTINGS);
+    assert.equal(options.toolbarVisible, false);
+    assert.equal(options.statusBarVisible, false);
+    assert.equal(options.panelsHidden, true);
+    assert.equal(options.compact, true);
+  });
   it("keeps all chrome visible without query params", () => {
     withSearch("");
     const options = layoutOptionsFromLocation(DEFAULT_DESKTOP_LAYOUT_SETTINGS);

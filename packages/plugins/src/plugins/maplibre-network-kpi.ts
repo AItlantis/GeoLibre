@@ -1,6 +1,7 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 import * as maplibregl from "maplibre-gl";
 import { createIdentifyPopupElement } from "@geolibre/map";
+import { createNetworkKpiSectionPopup } from "./network-kpi-section-popup";
 import type { Layer } from "@deck.gl/core";
 import type { GeoLibreAppAPI, GeoLibreDeckGL, GeoLibrePlugin } from "../types";
 import { ensureSharedDeckOverlay, setSharedDeckLayers } from "./shared-deck-overlay";
@@ -574,7 +575,40 @@ class NetworkKpiEngine {
     if (!this.map.getLayer(`${highlightSource}-circle`)) this.map.addLayer({ id: `${highlightSource}-circle`, type: "circle", source: highlightSource, paint: { "circle-color": "#facc15", "circle-radius": 6, "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
     for (const [id, name] of [["network-kpi-sections", "Sections"], ["network-kpi-lanes", "Lanes"], ["network-kpi-turns", "Turns"], ["network-kpi-nodes", "Nodes"]] as const) {
       if (this.networkClickHandlers.has(id)) continue;
-      const handler = (event: any) => { const feature = event.features?.[0]; if (!feature) return; (this.map.getSource(highlightSource) as any)?.setData({ type: "FeatureCollection", features: [feature] }); new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat(event.lngLat).setDOMContent(createIdentifyPopupElement(name, feature.properties ?? {}, feature.id)).addTo(this.map); };
+      const handler = (event: any) => {
+        const feature = event.features?.[0];
+        if (!feature) return;
+        (this.map.getSource(highlightSource) as any)?.setData({ type: "FeatureCollection", features: [feature] });
+        const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat(event.lngLat);
+        if (id !== "network-kpi-sections") {
+          popup.setDOMContent(createIdentifyPopupElement(name, feature.properties ?? {}, feature.id)).addTo(this.map);
+          return;
+        }
+        popup.addClassName("geolibre-network-kpi-popup");
+        const loading = document.createElement("div");
+        loading.className = "geolibre-network-kpi-section-popup network-kpi-section-loading";
+        loading.textContent = "Loading section statistics…";
+        popup.setDOMContent(loading).addTo(this.map);
+        const properties = feature.properties ?? {};
+        const rawId = properties.oid ?? properties.section_id ?? properties.sectionId ?? feature.id;
+        const sectionId = Number(rawId);
+        const sectionName = String(properties.name ?? properties.section_name ?? properties.road_name ?? "");
+        const activeDatabase = database;
+        if (!Number.isFinite(sectionId) || !activeDatabase) {
+          popup.setDOMContent(createNetworkKpiSectionPopup({ sectionId: Number.isFinite(sectionId) ? sectionId : -1, sectionName, series: [], currentStats: loadedPackage?.results?.sections.get(sectionId) ?? null, timeline: status.timeline ?? null, selectedInterval: settings.interval }));
+          return;
+        }
+        void activeDatabase.readSectionTimeSeries(sectionId, { did: settings.did, sid: loadedPackage?.results?.sid ?? 0 }).then((series) => {
+          if (!popup.isOpen()) return;
+          popup.setDOMContent(createNetworkKpiSectionPopup({ sectionId, sectionName, series, currentStats: loadedPackage?.results?.sections.get(sectionId) ?? null, timeline: status.timeline ?? null, selectedInterval: settings.interval }));
+        }).catch((error: unknown) => {
+          if (!popup.isOpen()) return;
+          const failure = document.createElement("div");
+          failure.className = "geolibre-network-kpi-section-popup network-kpi-section-empty";
+          failure.textContent = `Could not load section statistics: ${error instanceof Error ? error.message : String(error)}`;
+          popup.setDOMContent(failure);
+        });
+      };
       this.networkClickHandlers.set(id, handler); this.map.on("click", id, handler);
     }
     const beforeId = this.settings.seeThroughBuildings ? undefined : this.firstExtrusionLayerId();
@@ -951,8 +985,12 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     ? createNetworkKpiDirectorySource(pending.directory)
     : createNetworkKpiHttpSource(pending.url ?? "");
 
-  const geometry = await loadNetworkKpiGeometry(source, manifest.geometry);
-  if (token !== loadToken) return;
+  // Geometry is optional backdrop data. Start it alongside the required
+  // results work so a slow/missing geometry asset does not delay Parquet reads.
+  const geometryTask = loadNetworkKpiGeometry(source, manifest.geometry).then(
+    geometry => ({ geometry, error: null as unknown }),
+    error => ({ geometry: null, error }),
+  );
 
   let results: NetworkKpiResults | null = null;
   let openError: string | null = null;
@@ -974,7 +1012,10 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     openError = "This package's manifest declares no Parquet results catalog.";
   }
 
+  const geometryLoad = await geometryTask;
   if (token !== loadToken) return;
+  if (geometryLoad.error) throw geometryLoad.error;
+  const geometry = geometryLoad.geometry!;
 
   // `read()` may have resolved a different interval/did than requested (e.g.
   // the stale default `0` on a package with no whole-period aggregate row) —
@@ -1065,8 +1106,8 @@ export function canLoadLocalNetworkKpiPackage(): boolean {
  * directory handle instead of the network, so a package never has to be served
  * over HTTP to be inspected. A cancelled picker resolves quietly.
  */
-export async function loadLocalNetworkKpiFolder(): Promise<void> {
-  if (!supportsLocalPackageFolders()) {
+export async function loadLocalNetworkKpiFolder(selectedDirectory?: VehicleDirectoryHandle): Promise<void> {
+  if (!selectedDirectory && !supportsLocalPackageFolders()) {
     patchStatus({
       loading: false,
       error: "This browser cannot open local folders. Use Chrome or Edge, or load a URL.",
@@ -1076,7 +1117,7 @@ export async function loadLocalNetworkKpiFolder(): Promise<void> {
 
   let directory: VehicleDirectoryHandle;
   try {
-    directory = await (
+    directory = selectedDirectory ?? await (
       window as unknown as { showDirectoryPicker: () => Promise<VehicleDirectoryHandle> }
     ).showDirectoryPicker();
   } catch (error) {

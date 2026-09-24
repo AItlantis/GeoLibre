@@ -1,3 +1,4 @@
+import { TestudoControls } from "./TestudoControls";
 // @refresh reset
 import { localFileName, useAppStore, type GeoLibreLayer } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
@@ -2931,6 +2932,7 @@ export function DesktopShell({
           >
             <FlightSimulatorPanel />
           </SectionErrorBoundary>
+          {new URLSearchParams(window.location.search).get("layout") === "testudo" && <TestudoControls app={mapAppAPI} />}
           <PathAnalysisPanel />
           <ScenarioComparisonPanel />
           <KnowledgeCardConsentDialog

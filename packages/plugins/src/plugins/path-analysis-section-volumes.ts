@@ -38,8 +38,7 @@ export function aggregatePathSectionVolumes(
   }
 
   let selectedVolume = 0;
-  const volumes = new Map<number, number>();
-  const sideVolumes = new Map<number, { upstream: number; downstream: number }>();
+  const volumes = new Map<number, { total: number; upstream: number; selected: number; downstream: number }>();
   for (const [routeId, match] of uniqueMatches) {
     const routeDemand = Number(match.demand);
     const demand = Number.isFinite(routeDemand) && routeDemand > 0 ? routeDemand : 0;
@@ -47,47 +46,36 @@ export function aggregatePathSectionVolumes(
     const referenceIndexes = ordered.flatMap((link, index) => link.section_id === reference ? [index] : []);
     if (!referenceIndexes.length) continue; // Anchor every contribution to the selected section.
     selectedVolume += demand;
-    const firstReference = referenceIndexes[0];
-    const lastReference = referenceIndexes[referenceIndexes.length - 1];
-
     // Collapse repeated route_links occurrences before accumulating demand.
-    const perRoute = new Map<number, "upstream" | "downstream" | "selected">();
+    // For loops, classify each section by its nearest occurrence of the
+    // selected link; ties are resolved upstream for stable results.
+    const perRoute = new Map<number, Set<"upstream" | "downstream" | "selected">>();
     for (let index = 0; index < ordered.length; index += 1) {
       const sectionId = ordered[index].section_id;
-      let role: "upstream" | "downstream" | "selected";
-      if (sectionId === reference) role = "selected";
-      else if (index < firstReference) role = "upstream";
-      else if (index > lastReference) role = "downstream";
-      else {
-        // A loop may revisit the reference between occurrences. Attribute a
-        // section between them to its nearest reference occurrence.
-        const before = index - firstReference;
-        const after = lastReference - index;
-        role = before <= after ? "upstream" : "downstream";
-      }
-      const existing = perRoute.get(sectionId);
-      if (!existing || role === "selected") perRoute.set(sectionId, role);
-      else if (existing !== role) perRoute.set(sectionId, "upstream");
+      const distances = referenceIndexes.map((referenceIndex) => ({ distance: Math.abs(index - referenceIndex), role: index < referenceIndex ? "upstream" as const : index > referenceIndex ? "downstream" as const : "selected" as const }));
+      distances.sort((a, b) => a.distance - b.distance || (a.role === b.role ? 0 : a.role === "upstream" ? -1 : b.role === "upstream" ? 1 : a.role === "selected" ? -1 : 1));
+      const roles = perRoute.get(sectionId) ?? new Set<"upstream" | "downstream" | "selected">();
+      roles.add(distances[0].role);
+      perRoute.set(sectionId, roles);
     }
 
-    for (const [sectionId, role] of perRoute) {
-      volumes.set(sectionId, (volumes.get(sectionId) ?? 0) + demand);
-      if (role === "selected") continue;
-      const sides = sideVolumes.get(sectionId) ?? { upstream: 0, downstream: 0 };
-      sides[role] += demand;
-      sideVolumes.set(sectionId, sides);
+    for (const [sectionId, roles] of perRoute) {
+      const entry = volumes.get(sectionId) ?? { total: 0, upstream: 0, selected: 0, downstream: 0 };
+      entry.total += demand;
+      for (const role of roles) entry[role] += demand;
+      volumes.set(sectionId, entry);
     }
   }
 
   if (!(selectedVolume > 0)) return { selectedVolume: 0, sections: [] };
-  const sections: PathSectionVolume[] = [...volumes.entries()].map(([section_id, volume]) => {
-    const role = section_id === reference
-      ? "selected"
-      : (sideVolumes.get(section_id)?.upstream ?? 0) >= (sideVolumes.get(section_id)?.downstream ?? 0)
-        ? "upstream"
-        : "downstream";
-    return { section_id, volume, percentage: role === "selected" ? 100 : volume / selectedVolume * 100, role };
-  });
+  const sections: PathSectionVolume[] = [];
+  for (const [section_id, entry] of volumes) {
+    if (section_id === reference) sections.push({ section_id, volume: entry.total, totalVolume: entry.total, percentage: 100, role: "selected" });
+    else {
+      if (entry.upstream > 0) sections.push({ section_id, volume: entry.upstream, totalVolume: entry.total, percentage: entry.upstream / selectedVolume * 100, role: "upstream" });
+      if (entry.downstream > 0) sections.push({ section_id, volume: entry.downstream, totalVolume: entry.total, percentage: entry.downstream / selectedVolume * 100, role: "downstream" });
+    }
+  }
   sections.sort((a, b) => a.section_id - b.section_id);
   return { selectedVolume, sections };
 }

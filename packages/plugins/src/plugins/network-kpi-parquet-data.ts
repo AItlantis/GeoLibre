@@ -6,9 +6,10 @@ import mvpWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url
 import { DuckDBDataProtocol } from "@duckdb/duckdb-wasm";
 import type { NetworkKpiPackageSource } from "./network-kpi-data";
 import { deriveSimulationTimeline, readSimulationTimeline as readProviderSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
-import { laneKey, type KpiRow, type NetworkKpiResults } from "./network-kpi-data";
+import { laneKey, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample } from "./network-kpi-data";
 import { catalogDid, pickDefaultDid, type CatalogEntry } from "./parquet-catalog";
 import { openTestudoDatasetProvider, type TestudoDatasetProvider } from "./testudo-dataset-provider";
+import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
 
 export type { CatalogEntry } from "./parquet-catalog";
 export { pickDefaultDid } from "./parquet-catalog";
@@ -22,6 +23,14 @@ async function createDatabase(): Promise<duckdb.AsyncDuckDB> {
   const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING), worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
   await db.open({});
+  // DuckDB-Wasm autoloads Parquet on the first read_parquet query. Keep its
+  // signed extension on the Testudo origin so a cold browser needs no CDN.
+  const extension = await db.connect();
+  try {
+    await extension.query(`SET custom_extension_repository = ${q(getDuckDbExtensionRepository())}`);
+  } finally {
+    await extension.close();
+  }
   return db;
 }
 export function getDatabase(): Promise<duckdb.AsyncDuckDB> {
@@ -166,6 +175,66 @@ export class ParquetResultsDatabase {
     } finally { await con.close(); }
   }
 
+  /** Load the selected section's complete interval series from the active slice. */
+  async readSectionTimeSeries(
+    oid: number,
+    options: { did?: number | null; sid?: number } = {},
+  ): Promise<NetworkKpiSectionSample[]> {
+    if (this.closed) throw new Error("The results database is closed.");
+    if (!Number.isFinite(oid)) return [];
+    if (this.parquetDisabled) return this.readFallbackSectionTimeSeries(oid, options);
+    const did = options.did ?? pickDefaultDid(this.catalog);
+    const entries = this.entries(did).filter((entry) => String(entry.table ?? "").toUpperCase() === "MISECT");
+    if (!entries.length) return [];
+    try {
+      const handles = await Promise.all(entries.map((entry) => this.register(entry)));
+      const table = handles.length === 1
+        ? `read_parquet(${q(handles[0])})`
+        : `read_parquet([${handles.map(q).join(",")}])`;
+      const con = await this.db.connect();
+      try {
+        const didSql = did === null ? "NULL" : String(did);
+        const sid = options.sid ?? 0;
+        const select = (aggregate: boolean) => `SELECT ent, flow, density, speed FROM ${table} WHERE did = ${didSql} AND sid = ${sid} AND oid = ${oid}${aggregate ? " AND ent = 0" : " AND ent <> 0"} ORDER BY ent`;
+        let result = rows(await con.query(select(false)));
+        // Some packages contain only the whole-period aggregate. Show that as
+        // a single sample rather than making a valid section look unqueryable.
+        if (!result.length) result = rows(await con.query(select(true)));
+        return toSectionSamples(result);
+      } finally {
+        await con.close();
+      }
+    } catch (error) {
+      this.parquetDisabled = true;
+      console.warn("[GeoLibre] network-kpi: section time-series Parquet query failed; using the SQLite compatibility fallback.", error);
+      return this.readFallbackSectionTimeSeries(oid, options);
+    }
+  }
+
+  private async readFallbackSectionTimeSeries(
+    oid: number,
+    options: { did?: number | null; sid?: number },
+  ): Promise<NetworkKpiSectionSample[]> {
+    const provider = await this.getFallback();
+    const metadata = provider.describe();
+    const descriptor = metadata.datasets.find((item) => item.table.toUpperCase() === "MISECT");
+    const did = options.did ?? descriptor?.dids?.[0];
+    const filters = [
+      { column: "sid" as const, op: "=" as const, value: options.sid ?? 0 },
+      { column: "oid" as const, op: "=" as const, value: oid },
+    ];
+    const query = (aggregate: boolean) => provider.query({
+      dataset: "MISECT",
+      ...(did == null ? {} : { did }),
+      columns: ["ent", "flow", "density", "speed"],
+      filters: [...filters, { column: "ent" as const, op: aggregate ? "=" as const : "!=" as const, value: 0 }],
+      limit: 100_000,
+    });
+    let result = await query(false);
+    if (!result.rows.length) result = await query(true);
+    return toSectionSamples(result.rows);
+  }
+
   private async getFallback(): Promise<TestudoDatasetProvider> {
     if (this.fallback) return this.fallback;
     if (!this.manifest) throw new Error("Network KPI Parquet data is unavailable and no package manifest was supplied for the SQLite fallback.");
@@ -244,4 +313,21 @@ export class ParquetResultsDatabase {
     this.registered.clear();
     if (this.fallback) await this.fallback.close();
   }
+}
+
+function toSectionSamples(rows: Row[]): NetworkKpiSectionSample[] {
+  const value = (row: Row, key: string): number | null => {
+    const number = Number(row[key]);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  };
+  return rows
+    .map((row) => ({
+      interval: Number(row.ent),
+      flow: value(row, "flow"),
+      density: value(row, "density"),
+      speed: value(row, "speed"),
+      delay: null,
+    }))
+    .filter((row) => Number.isFinite(row.interval))
+    .sort((a, b) => a.interval - b.interval);
 }

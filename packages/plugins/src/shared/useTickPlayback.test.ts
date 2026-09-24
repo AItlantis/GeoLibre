@@ -2,22 +2,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { formatSimClock, tickTimelineProps } from "./useTickPlayback";
 
-test("formatSimClock formats whole minutes and seconds", () => {
-  assert.equal(formatSimClock(0, 1), "0:00");
-  assert.equal(formatSimClock(65, 1), "1:05");
-  assert.equal(formatSimClock(3661, 1), "61:01");
+test("formatSimClock formats the scenario clock as hours, minutes, and seconds", () => {
+  assert.equal(formatSimClock(0, 1), "00:00:00");
+  assert.equal(formatSimClock(65, 1), "00:01:05");
+  assert.equal(formatSimClock(3661, 1), "01:01:01");
 });
 
 test("formatSimClock scales by dt seconds-per-tick", () => {
-  assert.equal(formatSimClock(30, 2), "1:00"); // 30 ticks * 2s/tick = 60s
+  assert.equal(formatSimClock(30, 2), "00:01:00"); // 30 ticks * 2s/tick = 60s
+});
+
+test("formatSimClock uses the selected scenario's initial simulation time", () => {
+  assert.equal(formatSimClock(5, 2, 28_800), "08:00:10");
 });
 
 test("formatSimClock clamps negative results to zero", () => {
-  assert.equal(formatSimClock(-5, 1), "0:00");
+  assert.equal(formatSimClock(-5, 1), "00:00:00");
 });
 
 test("formatSimClock rounds fractional seconds", () => {
-  assert.equal(formatSimClock(1.6, 1), "0:02");
+  assert.equal(formatSimClock(1.6, 1), "00:00:02");
 });
 
 test("tickTimelineProps guards against a zero-width range before a package loads", () => {

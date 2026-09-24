@@ -198,6 +198,7 @@ function NetworkKpiCard() {
 
   const dataSourceContent = (
     <div className="space-y-1">
+      <div hidden={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo"}>
       <span className="block text-xs text-muted-foreground">
         {t("toolbar.networkKpi.manifestUrl")}
       </span>
@@ -247,6 +248,7 @@ function NetworkKpiCard() {
           {t("toolbar.networkKpi.loadFolderUnsupported")}
         </p>
       )}
+      </div>
       {localFolderName && (
         <p className="truncate text-xs text-muted-foreground">
           {t("toolbar.networkKpi.localFolder", { name: localFolderName })}

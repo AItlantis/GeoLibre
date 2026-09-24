@@ -164,3 +164,23 @@ describe("@geolibre/embed client", () => {
     client.disconnect();
   });
 });
+
+
+it("Testudo commands use existing origin-checked acknowledgement and state events", async () => {
+  const { iframe, receive, sent } = harness();
+  const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });
+  receive("ready", {});
+  const client = await pending;
+  const state = { package: null, selectedPlugin: null, capabilities: [], status: "empty" };
+  const result = client.testudoSetPlugin({ id: "network-kpi" });
+  const request = sent.at(-1)!.message;
+  assert.equal(request.type, "testudoSetPlugin");
+  assert.deepEqual(request.payload, { id: "network-kpi" });
+  receive("ack", { requestId: request.requestId, ok: true, result: state });
+  assert.deepEqual(await result, state);
+  let observed: unknown;
+  client.on("testudoStateChanged", value => { observed = value; });
+  receive("testudoStateChanged", state);
+  assert.deepEqual(observed, state);
+  client.disconnect();
+});

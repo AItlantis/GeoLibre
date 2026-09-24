@@ -65,6 +65,7 @@ export function useEmbedApi(
 ): void {
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("layout") === "testudo") return;
     // `ready` promises that every command is usable. Plugin-backed data loaders
     // join the API only after the map has initialized, so do not advertise the
     // bridge during the earlier render where that API is still absent.

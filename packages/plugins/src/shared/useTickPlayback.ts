@@ -1,5 +1,7 @@
+import { formatSimulationTime } from "./simulation-timeline";
+
 /**
- * Format a tick position as `mm:ss` of simulated time.
+ * Format a tick position as the scenario-local simulation clock.
  *
  * Extracted verbatim from `formatSimClock` in VehiclePlaybackPanel.tsx, which
  * is the only panel with this tick/dt-based clock — Network KPI, Emissions H3
@@ -7,11 +9,8 @@
  * `useIntervalPlayback.ts`), a genuinely different state shape. Kept as a
  * standalone function so it is directly unit-testable without React.
  */
-export function formatSimClock(tick: number, dt: number): string {
-  const totalSeconds = Math.max(0, Math.round(tick * dt));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+export function formatSimClock(tick: number, dt: number, initialTimeSeconds = 0): string {
+  return formatSimulationTime(Math.max(0, initialTimeSeconds + tick * dt));
 }
 
 export interface TickTimelineProps {
@@ -43,12 +42,13 @@ export function tickTimelineProps(tick: number, maxTick: number, hasPackage: boo
 export interface UseTickPlaybackArgs {
   tick: number;
   dt: number;
+  initialTimeSeconds?: number;
   maxTick: number;
   hasPackage: boolean;
 }
 
 export interface UseTickPlaybackResult {
-  /** `mm:ss` formatted simulated-time clock for the current tick. */
+  /** Scenario-local clock formatted as `HH:MM:SS`. */
   clock: string;
   /** Props ready to spread onto the timeline `<input type="range">`. */
   timeline: TickTimelineProps;
@@ -66,9 +66,9 @@ export interface UseTickPlaybackResult {
  * code reuse.
  */
 export function useTickPlayback(args: UseTickPlaybackArgs): UseTickPlaybackResult {
-  const { tick, dt, maxTick, hasPackage } = args;
+  const { tick, dt, initialTimeSeconds = 0, maxTick, hasPackage } = args;
   return {
-    clock: formatSimClock(tick, dt),
+    clock: formatSimClock(tick, dt, initialTimeSeconds),
     timeline: tickTimelineProps(tick, maxTick, hasPackage),
   };
 }

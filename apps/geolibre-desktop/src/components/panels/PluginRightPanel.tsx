@@ -311,7 +311,7 @@ export function PluginRightPanel({ dock, contentEl, width, onWidthChange }: Plug
             </Button>
           </div>
         </div>
-        <div ref={contentRef} className="min-h-0 flex-1 overflow-auto" />
+        <div ref={contentRef} className="plugin-panel-scroll min-h-0 flex-1 overflow-auto" />
       </aside>
       {panelRail}
     </>

@@ -58,7 +58,7 @@ test("network KPI query construction keeps MISECT and MILANE unions separate", (
   const source = fs.readFileSync(path.join(process.cwd(), "src/plugins/network-kpi-parquet-data.ts"), "utf8");
   assert.match(source, /const misect = subquery\("MISECT"\)/);
   assert.match(source, /const milane = subquery\("MILANE"\)/);
-  assert.match(source, /FROM \(\$\{misect\}\)/);
-  assert.match(source, /FROM \(\$\{milane\}\)/);
+  assert.match(source, /FROM \$\{misect\} x/);
+  assert.match(source, /FROM \$\{milane\} x/);
   assert.doesNotMatch(source, /const tables = .*UNION ALL/);
 });

@@ -25,12 +25,10 @@ type PresetScheme = (typeof PRESET_SCHEME_IDS)[number];
 export type ThemeScheme = PresetScheme | "custom";
 
 /**
- * The default scheme matches the base `:root` / `.dark` tokens already shipped in
- * `globals.css`, so no `data-theme` attribute is set for it. Invariant: if this
- * ever changes to another preset, add a `[data-theme="<old default>"]` block in
- * `globals.css` for the now-non-default scheme (see `applyThemeScheme`).
+ * Amber is the initial scheme. The stylesheet has an explicit amber block, so
+ * this stays independent of the blue base tokens in `globals.css`.
  */
-export const DEFAULT_THEME_SCHEME: PresetScheme = "blue";
+export const DEFAULT_THEME_SCHEME: PresetScheme = "amber";
 
 /** Seed color for the custom picker before the user changes it (a teal-cyan). */
 export const DEFAULT_CUSTOM_COLOR = "#0ea5e9";
@@ -215,10 +213,9 @@ export function applyThemeScheme(scheme: ThemeScheme, customColor?: string): voi
     return;
   }
 
-  // The default scheme has no `[data-theme]` block — its tokens equal the base
-  // `:root` / `.dark` rules, so clearing the attribute applies them (see the
-  // invariant on DEFAULT_THEME_SCHEME). Every other preset has a matching block.
-  if (scheme === DEFAULT_THEME_SCHEME) {
+  // Blue is the base `:root` / `.dark` palette. Every other preset, including
+  // the initial amber scheme, has a matching `[data-theme]` block.
+  if (scheme === "blue") {
     root.removeAttribute("data-theme");
   } else {
     root.setAttribute("data-theme", scheme);

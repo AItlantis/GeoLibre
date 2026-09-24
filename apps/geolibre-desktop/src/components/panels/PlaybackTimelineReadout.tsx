@@ -9,7 +9,7 @@ export function PlaybackTimelineReadout({ timeline, currentSeconds, intervalSeco
       <span>Start <b className="text-foreground">{formatSimulationTime(timeline.initialTimeSeconds)}</b></span>
       <span>Current <b className="text-foreground">{formatSimulationTime(current)}</b></span>
       <span>End <b className="text-foreground">{formatSimulationTime(timeline.finalTimeSeconds)}</b></span>
-      {intervalSeconds != null && <span className="col-span-3">Interval <b className="text-foreground">{Math.round(intervalSeconds)} s</b></span>}
+      {intervalSeconds != null && <span className="col-span-3">Interval <b className="text-foreground">{intervalSeconds.toLocaleString(undefined, { maximumFractionDigits: 3 })} s</b></span>}
     </div>
   );
 }
