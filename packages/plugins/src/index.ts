@@ -64,6 +64,8 @@ export {
   type PathAnalysisManifest,
   type PathMatch,
   type PathAnalysisSummary,
+  type PathSectionVolume,
+  type PathAnalysisQueryResult,
 } from "./plugins/path-analysis-data";
 export {
   registerRightPanel,

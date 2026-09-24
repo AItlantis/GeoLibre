@@ -7,12 +7,15 @@ import mvpWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url
 import { createDirectoryPackageSource, loadVehicleGeometry, supportsLocalPackageFolders, type VehicleDirectoryHandle, type VehiclePackageSource, type VehicleGeometryLayers } from "./vehicle-playback-data";
 import { attachGeolibrePackage, capabilityAvailable } from "./geolibre-package-loader";
 import { normalizeSelectedPathPercentages } from "./path-analysis-ramps";
+import { aggregatePathSectionVolumes, type PositionalRouteLink } from "./path-analysis-section-volumes";
 
 export interface PathAnalysisManifest { pathIndex: string | null; geometry: { sections: string | null; lanes: string | null; turns: string | null; nodes: string | null }; bounds: [number, number, number, number] | null; available: boolean; unavailableReason: string | null; }
 export interface PathAnalysisSummary { path_count?: number; route_links_count?: number; unique_sections_count?: number; total_demand?: number; [key: string]: unknown; }
 export interface PathMatch { route_id: number; demand: number; percentage: number; origin: number; destination: number; vehicle: number; interval: number; }
 export type PathRule = "or" | "and";
-export interface PathAnalysisData { summary: PathAnalysisSummary; geometry: VehicleGeometryLayers; intervals: number[]; query(sectionIds: number[], rule: PathRule, interval?: number): Promise<PathMatch[]>; sequence(routeId: number): Promise<number[]>; close(): void; }
+export type PathSectionVolume = { section_id: number; volume: number; percentage: number; role: "upstream" | "selected" | "downstream" };
+export type PathAnalysisQueryResult = { matches: PathMatch[]; selectedVolume: number; sections: PathSectionVolume[] };
+export interface PathAnalysisData { summary: PathAnalysisSummary; geometry: VehicleGeometryLayers; intervals: number[]; query(sectionIds: number[], rule: PathRule, interval?: number): Promise<PathMatch[]>; querySectionVolumes(sectionIds: number[], rule: PathRule, interval: number, selectedSection: number): Promise<PathAnalysisQueryResult>; sequence(routeId: number): Promise<number[]>; close(): void; }
 let activePathInterval = 0;
 export function setPathAnalysisQueryInterval(interval: number): void { activePathInterval = Number.isFinite(Number(interval)) ? Math.max(0, Math.trunc(Number(interval))) : 0; }
 
@@ -109,5 +112,50 @@ export async function loadPathAnalysis(source: VehiclePackageSource, manifest: P
   const geometry = await loadVehicleGeometry(source, manifest.geometry);
   const intervalRows = await rows("SELECT DISTINCT interval FROM read_parquet(['routes.parquet']) ORDER BY interval");
   const intervals = [...new Set(intervalRows.map((x) => Number(x.interval)).filter(Number.isFinite))].sort((a,b) => a-b);
-  return { summary: JSON.parse(new TextDecoder().decode(meta)), geometry, intervals, async query(sectionIds, rule, interval = 0) { const ids = [...new Set(sectionIds.map((id) => Math.trunc(Number(id))).filter(Number.isFinite))]; if (!ids.length) return []; const inClause = ids.join(","); const matched = rule === "and" ? `SELECT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause}) GROUP BY route_id HAVING COUNT(DISTINCT section_id) = ${ids.length}` : `SELECT DISTINCT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause})`; const intervalWhere = ` WHERE r.interval = ${Math.trunc(Number(interval))}`; const out = await rows(`SELECT r.route_id, r.demand, r.percentage, r.origin, r.destination, r.vehicle, r.interval FROM (${matched}) m JOIN read_parquet(['routes.parquet']) r USING (route_id)${intervalWhere} ORDER BY r.demand DESC`); const numeric = out.map((x) => Object.fromEntries(Object.entries(x).map(([k,v]) => [k, Number(v)]))) as PathMatch[]; return normalizeSelectedPathPercentages(numeric); }, async sequence(routeId) { const out = await rows(`SELECT section_id FROM read_parquet(['route_links.parquet']) WHERE route_id = ${Math.trunc(Number(routeId))} ORDER BY pos`); return out.map((x) => Number(x.section_id)); }, close() { void conn.close(); void db.terminate(); worker.terminate(); } };
+  const normalizedIds = (sectionIds: number[]) => [...new Set(sectionIds.map((id) => Math.trunc(Number(id))).filter(Number.isFinite))];
+  const fetchMatches = async (ids: number[], rule: PathRule, interval: number, anchor?: number): Promise<PathMatch[]> => {
+    if (!ids.length) return [];
+    const inClause = ids.join(",");
+    const matched = rule === "and"
+      ? `SELECT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause}) GROUP BY route_id HAVING COUNT(DISTINCT section_id) = ${ids.length}`
+      : `SELECT DISTINCT route_id FROM read_parquet(['link_to_routes.parquet']) WHERE section_id IN (${inClause})`;
+    const anchorClause = Number.isFinite(anchor)
+      ? ` AND EXISTS (SELECT 1 FROM read_parquet(['link_to_routes.parquet']) anchor WHERE anchor.route_id = r.route_id AND anchor.section_id = ${Math.trunc(anchor!)})`
+      : "";
+    // A malformed/duplicated routes row must not duplicate a route's demand.
+    const out = await rows(`SELECT route_id, demand, percentage, origin, destination, vehicle, interval FROM (SELECT r.route_id, r.demand, r.percentage, r.origin, r.destination, r.vehicle, r.interval, ROW_NUMBER() OVER (PARTITION BY r.route_id ORDER BY r.demand DESC) AS route_rank FROM (${matched}) m JOIN read_parquet(['routes.parquet']) r USING (route_id) WHERE r.interval = ${Math.trunc(Number(interval))}${anchorClause}) ranked WHERE route_rank = 1 ORDER BY demand DESC`);
+    const numeric = out.map((x) => Object.fromEntries(Object.entries(x).map(([k, v]) => [k, Number(v)]))) as PathMatch[];
+    return normalizeSelectedPathPercentages(numeric);
+  };
+  return {
+    summary: JSON.parse(new TextDecoder().decode(meta)), geometry, intervals,
+    async query(sectionIds, rule, interval = 0) {
+      return fetchMatches(normalizedIds(sectionIds), rule, interval);
+    },
+    async querySectionVolumes(sectionIds, rule, interval, selectedSection) {
+      const ids = normalizedIds(sectionIds);
+      const selected = Math.trunc(Number(selectedSection));
+      if (!ids.length) return { matches: [], selectedVolume: 0, sections: [] };
+      // Preserve matching paths for clients even if the reference is invalid
+      // for this selection; no section values can be normalized in that case.
+      if (!Number.isFinite(selected) || !ids.includes(selected)) {
+        return { matches: await fetchMatches(ids, rule, interval), selectedVolume: 0, sections: [] };
+      }
+      // The clicked section anchors the cohort in addition to OR/AND matching
+      // the selected set (notably, OR alone could otherwise admit unrelated routes).
+      const matches = await fetchMatches(ids, rule, interval, selected);
+      if (!matches.length) return { matches, selectedVolume: 0, sections: [] };
+      const routeIds = [...new Set(matches.map((match) => match.route_id))];
+      const routeIdClause = routeIds.join(",");
+      const linkRows = await rows(`SELECT route_id, section_id, pos FROM read_parquet(['route_links.parquet']) WHERE route_id IN (${routeIdClause}) ORDER BY route_id, pos`);
+      const routeLinks = linkRows.map((row) => ({ route_id: Number(row.route_id), section_id: Number(row.section_id), pos: Number(row.pos) })) as PositionalRouteLink[];
+      const aggregate = aggregatePathSectionVolumes(matches, routeLinks, selected);
+      return { matches, ...aggregate };
+    },
+    async sequence(routeId) {
+      const out = await rows(`SELECT section_id FROM read_parquet(['route_links.parquet']) WHERE route_id = ${Math.trunc(Number(routeId))} ORDER BY pos`);
+      return out.map((x) => Number(x.section_id));
+    },
+    close() { void conn.close(); void db.terminate(); worker.terminate(); },
+  };
 }
