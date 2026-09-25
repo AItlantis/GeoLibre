@@ -154,3 +154,8 @@ and the server ships untested.
 - Shared, cross-repo agent skills (not specific to this repo) live in
   `F:\repos\skills`, separate from this repo's own `skills/geolibre/` agent
   skill.
+- **AItlantis-fork-only governance** (this fork's relationship to
+  `AItlantis/testudo`, issue/PR mechanics for AItlantis-internal work here)
+  lives in `AITLANTIS.md` at this repo's root, kept deliberately OUT of this
+  file since upstream (`opengeos/GeoLibre`) actively edits `CLAUDE.md` (e.g.
+  #2120, #2133) and a fork-only section here would conflict on every sync.
