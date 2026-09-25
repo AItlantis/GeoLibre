@@ -55,7 +55,7 @@ export interface EffectsSettings {
 }
 
 export const DEFAULT_EFFECTS_SETTINGS: EffectsSettings = {
-  haloColor: "#1f3019",
+  haloColor: "#4d9fe6",
   haloExtent: 2.8,
   haloOpacity: 1,
   spaceColor: "#0c1b33",
