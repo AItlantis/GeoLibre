@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoBootstrap, TestudoCapability } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoSetGuestCapability } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -52,7 +52,7 @@ export interface AddDataOptions {
 }
 
 export type EmbedEventMap = {
-  ready: { version: string };
+  ready: { version: string; challenge?: string };
   testudoStateChanged: TestudoViewerState;
   /**
    * Every command already returns a promise the client settles from this ack,
@@ -81,8 +81,10 @@ export interface ConnectOptions {
 }
 
 export interface GeoLibreEmbedClient {
+  testudoSetGuestCapability(payload: Omit<TestudoSetGuestCapability, "challenge">): Promise<{ protocol: 1; challenge: string; expiresAt: number }>;
   testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
   testudoSetPlugin(payload: { id: TestudoCapabilityId }): Promise<TestudoViewerState>;
+  testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
   testudoGetState(): Promise<TestudoViewerState>;
   loadProject(url: string): Promise<void>;
@@ -139,6 +141,7 @@ export function connect(
   if (!target) return Promise.reject(new Error("The iframe has no contentWindow"));
 
   let sequence = 0;
+  let testudoChallenge: string | null = null;
   let disconnected = false;
   const pending = new Map<string, Pending>();
   const listeners = new Map<EventName, Set<(payload: never) => void>>();
@@ -173,10 +176,12 @@ export function connect(
   });
 
   const client: GeoLibreEmbedClient = {
-    testudoLoadPackage: (payload) => send<TestudoViewerState>("testudoLoadPackage", { ...payload }),
-    testudoSetPlugin: (payload) => send<TestudoViewerState>("testudoSetPlugin", payload),
-    testudoSetPreset: (payload) => send<TestudoViewerState>("testudoSetPreset", payload),
-    testudoGetState: () => send<TestudoViewerState>("testudoGetState"),
+    testudoSetGuestCapability: (payload) => sendTestudo("testudoSetGuestCapability", payload),
+    testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", { ...payload }),
+    testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
+    testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
+    testudoSetPreset: (payload) => sendTestudo<TestudoViewerState>("testudoSetPreset", payload),
+    testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
     loadProject: (url) => send("loadProject", { url }),
     setView: (target) => send("setView", target as unknown as Record<string, unknown>),
     highlightFeature: (payload) =>
@@ -207,6 +212,23 @@ export function connect(
     },
   };
 
+  const sendTestudo = <T>(type: string, payload: Record<string, unknown> = {}): Promise<T> => {
+    if (disconnected) return Promise.reject(new Error("The GeoLibre client is disconnected"));
+    if (!testudoChallenge || !/^[a-f0-9]{32}$/.test(testudoChallenge)) return Promise.reject(new Error("The Testudo viewer challenge is unavailable"));
+    const requestId = `testudo-${Date.now()}-${++sequence}`;
+    target.postMessage({ v: EMBED_API_VERSION, source: "testudo", type, payload: { ...payload, challenge: testudoChallenge }, requestId }, origin);
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pending.delete(requestId);
+        reject(new Error(`Timed out waiting for a response to "${type}"`));
+      }, options.requestTimeoutMs ?? 15_000);
+      pending.set(requestId, {
+        resolve: value => { window.clearTimeout(timer); resolve(value as T); },
+        reject: reason => { window.clearTimeout(timer); reject(reason); },
+      });
+    });
+  };
+
   const receive = (event: MessageEvent) => {
     if (event.source !== target || event.origin !== origin) return;
     const data = event.data as Record<string, unknown> | null;
@@ -226,6 +248,8 @@ export function connect(
         else request.reject(new Error(String(payload.error ?? "GeoLibre request failed")));
       }
     } else if (type === "ready") {
+      const challenge = typeof payload.challenge === "string" ? payload.challenge : null;
+      testudoChallenge = challenge && /^[a-f0-9]{32}$/.test(challenge) ? challenge : null;
       readyResolve?.(client);
     }
     for (const listener of listeners.get(type) ?? []) listener(payload as never);

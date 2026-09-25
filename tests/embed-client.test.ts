@@ -169,18 +169,28 @@ describe("@geolibre/embed client", () => {
 it("Testudo commands use existing origin-checked acknowledgement and state events", async () => {
   const { iframe, receive, sent } = harness();
   const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });
-  receive("ready", {});
+  const challenge = "0123456789abcdef0123456789abcdef";
+  receive("ready", { challenge });
   const client = await pending;
   const state = { package: null, selectedPlugin: null, capabilities: [], status: "empty" };
   const result = client.testudoSetPlugin({ id: "network-kpi" });
   const request = sent.at(-1)!.message;
   assert.equal(request.type, "testudoSetPlugin");
-  assert.deepEqual(request.payload, { id: "network-kpi" });
+  assert.deepEqual(request.payload, { id: "network-kpi", challenge });
   receive("ack", { requestId: request.requestId, ok: true, result: state });
   assert.deepEqual(await result, state);
   let observed: unknown;
   client.on("testudoStateChanged", value => { observed = value; });
   receive("testudoStateChanged", state);
   assert.deepEqual(observed, state);
+  client.disconnect();
+});
+
+it("Testudo commands reject when the ready event carries no valid challenge", async () => {
+  const { iframe, receive } = harness();
+  const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });
+  receive("ready", {});
+  const client = await pending;
+  await assert.rejects(client.testudoSetPlugin({ id: "network-kpi" }), /challenge is unavailable/i);
   client.disconnect();
 });

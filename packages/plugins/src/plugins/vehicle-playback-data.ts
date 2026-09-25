@@ -264,6 +264,8 @@ export interface VehicleManifestScenario {
   did?: number | string;
   /** Root `animations[]` index used by legacy/named-FZP manifests. */
   rootAnimationIndex?: number;
+  /** One root-level playback stream with no scenario identity. */
+  packageRootStream?: true;
 }
 
 export interface VehicleManifestScenarioOptions {
@@ -383,9 +385,20 @@ export function listVehicleManifestScenarios(
       }
     }
     if (variants.length) return variants;
-    // Package scenario metadata is not evidence of a scenario-specific vehicle
-    // stream. Never present a shared root catalog as if it belonged to any one
-    // of several scenarios; callers report the missing per-scenario export.
+    // A root-level chunk catalog is an explicitly package-scoped playback
+    // stream. It has no scenario identity, so expose it once (without scid/did)
+    // rather than pretending it belongs to one of the package scenarios.
+    if (Array.isArray(root.chunks) && root.chunks.length > 0) {
+      return [{
+        index: 0,
+        id: typeof root.id === "string" && root.id ? root.id : "package_animation",
+        label: scenarioLabel(root, rootMetadata, 0),
+        nTicks: Math.max(1, safeInt(rootMetadata.n_ticks, 1)),
+        dt: Math.max(0.0001, safeNumber(rootMetadata.dt, 1)),
+        packageRootStream: true,
+      }];
+    }
+    // Package scenario metadata alone is not evidence of a vehicle stream.
     if (pkg.scenarios.length > 1) return [];
     if (Array.isArray(root.chunks) && root.chunks.length > 0) {
       return [{
@@ -607,6 +620,7 @@ export async function loadScenarioAnimationManifest(
   selectedScenario?: VehicleManifestScenario,
 ): Promise<unknown> {
   const root = (raw ?? {}) as Record<string, unknown>;
+  if (selectedScenario?.packageRootStream && Array.isArray(root.chunks) && root.chunks.length > 0) return raw;
   const rootAnimations = Array.isArray(root.animations)
     ? root.animations as Record<string, unknown>[]
     : [];

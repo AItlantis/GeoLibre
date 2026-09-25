@@ -8,7 +8,9 @@ import { readdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const app = join(root, "apps/geolibre-desktop");
-const output = join(app, "dist-testudo");
+const outputArg = process.argv.findIndex(value => value === "--out-dir");
+if (outputArg >= 0 && !process.argv[outputArg + 1]) throw new Error("--out-dir requires a path");
+const output = outputArg >= 0 ? resolve(process.argv[outputArg + 1]) : join(app, "dist-testudo");
 const require = createRequire(join(app, "package.json"));
 const origins = process.env.VITE_GEOLIBRE_EMBED_ORIGINS;
 const bytes = process.env.VITE_TESTUDO_BYTE_ORIGINS;
@@ -35,7 +37,7 @@ const run = (file, args, cwd = root) => {
 const tsc = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
 run(tsc, ["-p", "packages/embed/tsconfig.build.json"]);
 run(tsc, ["-b", "apps/geolibre-desktop"]);
-run(join(dirname(require.resolve("vite/package.json")), "bin/vite.js"), ["build", "--outDir", "dist-testudo"], app);
+run(join(dirname(require.resolve("vite/package.json")), "bin/vite.js"), ["build", "--outDir", output, "--emptyOutDir"], app);
 require("esbuild").buildSync({ entryPoints: [join(root, "packages/embed/src/index.ts")], outfile: join(output, "embed-client.js"), bundle: true, format: "esm", platform: "browser", target: "es2022" });
 copyFileSync(join(root, "LICENSE"), join(output, "GEOLIBRE-LICENSE.txt"));
 const hash = value => createHash("sha256").update(value).digest("hex");

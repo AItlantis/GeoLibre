@@ -85,7 +85,7 @@ test("vehicle playback keeps named root manifests usable when package metadata h
   assert.equal(scenarios[0]?.manifestPath, "chunks/AM_FZP/animation.json");
 });
 
-test("scenario metadata without scenario animation manifests does not create fake playback choices", () => {
+test("root package animation stream remains playable when multiple result scenarios are declared", async () => {
   const raw = attachGeolibrePackage({
     metadata: { n_ticks: 21, dt: 0.8 },
     chunks: [{ index: 0, path: "chunks/shared-vehicle-stream.json.gz", start_tick: 0, end_tick: 21 }],
@@ -97,7 +97,20 @@ test("scenario metadata without scenario animation manifests does not create fak
   });
 
   const scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
-  assert.deepEqual(scenarios, []);
+  assert.equal(scenarios.length, 1);
+  assert.equal(scenarios[0]?.id, "package_animation");
+  assert.equal(scenarios[0]?.packageRootStream, true);
+  assert.equal(scenarios[0]?.scid, undefined);
+  assert.equal(scenarios[0]?.did, undefined);
+  assert.strictEqual(await loadScenarioAnimationManifest(raw, source({}), 0, scenarios[0]), raw);
+  const parsed = parseVehicleManifest(raw, null, 0);
+  assert.equal(parsed.chunks[0]?.url, "chunks/shared-vehicle-stream.json.gz");
+  const playback = new VehiclePlaybackData(parsed, source({ "chunks/shared-vehicle-stream.json.gz": { events: {} } }));
+  try {
+    assert.equal(await playback.ensureCoverage(0), true);
+  } finally {
+    playback.destroy();
+  }
 });
 
 test("vehicle coverage loads only the chunk needed by the requested playback tick", async () => {

@@ -1,4 +1,5 @@
 import type { VehicleDirectoryHandle, VehiclePackageSource } from "@geolibre/plugins";
+import { TESTUDO_GUEST_TOKEN_RE } from "./testudo-protocol";
 
 export function packagePath(value: string): string {
   let decoded = value;
@@ -16,7 +17,9 @@ export function packagePath(value: string): string {
 export interface SignedSourceOptions {
   origin: string;
   artifactEndpoint: string;
-  bearerToken: string;
+  bearerToken?: string;
+  guestEmbedToken?: string;
+  getGuestEmbedToken?: () => string;
   byteOrigins: string[];
   signal: AbortSignal;
   fetch?: typeof fetch;
@@ -24,11 +27,20 @@ export interface SignedSourceOptions {
 
 /** No base URL: DuckDB must consume authenticated buffers, never bypass this source. */
 export function createSignedPackageSource(options: SignedSourceOptions): VehiclePackageSource {
+  const guest = typeof options.guestEmbedToken === "string" || typeof options.getGuestEmbedToken === "function";
+  if (guest === Boolean(options.bearerToken) || (typeof options.guestEmbedToken === "string" && !TESTUDO_GUEST_TOKEN_RE.test(options.guestEmbedToken))) {
+    throw new Error("Provide exactly one valid Testudo package credential");
+  }
   const endpoint = new URL(options.artifactEndpoint, options.origin);
   if (endpoint.origin !== options.origin || !/^\/api\/v1\/view\/[^/]+\/artifact\/$/.test(endpoint.pathname) || endpoint.search || endpoint.hash) {
     throw new Error("Invalid Testudo artifact endpoint");
   }
   const request = options.fetch ?? fetch;
+  const guestToken = () => {
+    const token = options.getGuestEmbedToken?.() ?? options.guestEmbedToken;
+    if (!token || !TESTUDO_GUEST_TOKEN_RE.test(token)) throw new Error("Guest package capability expired; reload this demo to continue.");
+    return token;
+  };
   // The bootstrap validation and the selected plugin both read these immutable
   // package manifests. Reuse their bytes so loading does not repeat signed URL
   // issuance and a second cross-origin transfer for the same package.
@@ -38,19 +50,21 @@ export function createSignedPackageSource(options: SignedSourceOptions): Vehicle
     const relative = path.split("/").map(encodeURIComponent).join("/");
     for (let attempt = 0; attempt < 2; attempt++) {
       const descriptorResponse = await request(new URL(relative, endpoint), {
-        headers: { Authorization: `Bearer ${options.bearerToken}` },
+        headers: { Authorization: guest ? `Testudo-Embed ${guestToken()}` : `Bearer ${options.bearerToken}` },
         signal, cache: "no-store", credentials: "omit", redirect: "error",
       });
       if (!descriptorResponse.ok) throw new Error(`Package permission or artifact lookup failed (${descriptorResponse.status})`);
-      const descriptor = await descriptorResponse.json() as { signed_url?: string; expires_at?: number };
-      const signed = new URL(descriptor.signed_url ?? "");
+      const descriptor = await descriptorResponse.json() as { url?: string; signed_url?: string; expires_at?: number };
+      const signed = new URL(descriptor.url ?? descriptor.signed_url ?? "");
       if (!options.byteOrigins.includes(signed.origin) || signed.username || signed.password
-        || (signed.protocol !== "https:" && !(signed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(signed.hostname)))) {
+        || (signed.protocol !== "https:" && !(signed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(signed.hostname)))
+        || (guest && (signed.search || signed.hash))) {
         throw new Error("Untrusted package byte origin");
       }
       if (!Number.isFinite(descriptor.expires_at)) throw new Error("Invalid signed artifact expiry");
       if (descriptor.expires_at! * 1000 <= Date.now() && attempt === 0) continue;
-      const response = await request(signed, { signal, credentials: "omit", redirect: "error", cache: "no-store" });
+      const response = await request(signed, { signal, credentials: "omit", redirect: "error", cache: "no-store",
+        ...(guest ? { headers: { Authorization: `Testudo-Embed ${guestToken()}` } } : {}) });
       if ([401, 403].includes(response.status) && attempt === 0) continue;
       if (!response.ok) throw new Error(`Package artifact read failed (${response.status})`);
       return response.arrayBuffer();
