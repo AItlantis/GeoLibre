@@ -12,7 +12,9 @@ import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 
-const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
+/** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
+ * chat previously existed only in the legacy viewer, with zero entry in this list). */
+export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai"];
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoCapabilityId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
   { id: "flow", label: "Flow", plugin: "network-kpi" },
@@ -26,6 +28,7 @@ const handlers = {
   "path-analysis": { open: plugins.openPathAnalysisPanel, close: plugins.closePathAnalysisPanel, load: plugins.loadLocalPathAnalysisFolder, status: plugins.getPathAnalysisSnapshot, settings: plugins.setPathAnalysisSettings },
   "emissions-h3": { open: plugins.openEmissionsH3Panel, close: plugins.closeEmissionsH3Panel, load: plugins.loadLocalEmissionsH3Folder, status: plugins.getEmissionsH3Status, settings: plugins.setEmissionsH3Settings },
   "scenario-comparison": { open: plugins.openScenarioComparisonPanel, close: plugins.closeScenarioComparisonPanel, load: plugins.loadLocalScenarioComparisonFolder, status: plugins.getScenarioComparisonStatus, settings: plugins.setScenarioComparisonSettings },
+  "geoai": { open: plugins.openGeoAiChatPanel, close: plugins.closeGeoAiChatPanel, load: plugins.loadGeoAiChat, status: plugins.getGeoAiChatStatus, settings: plugins.setGeoAiChatSettings },
 };
 
 /** Curated native runtime. The host owns navigation; these plugins own their map layers. */
@@ -136,6 +139,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       selectionGeneration++;
       abort.abort(); abort = new AbortController();
       close(); directory = null; bootstrap = null;
+      plugins.resetGeoAiChat();
       update({ ...empty });
     };
     const load = async (payload: TestudoLoadPackage) => {
@@ -151,6 +155,10 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           return guestCredential.token;
         } } : { bearerToken: payload.transport!.bearerToken }), byteOrigins, signal: abort.signal });
       directory = sourceDirectory(source, candidate.label);
+      // Guest-embed sessions have no principal bearer token, so GeoAI chat is left unconfigured
+      // for them: `/api/v1/ai/chat` only accepts `Authorization: Bearer <principal>`, not the
+      // `Testudo-Embed` guest scheme used for package bytes.
+      plugins.initGeoAiChat({ origin, bearerToken: payload.transport?.bearerToken, packageId: candidate.packageId });
       update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: candidate.capabilities, status: "loading" });
       const raw = await readLocalNetworkKpiManifestJson(directory);
       const pkg = getGeolibrePackage(raw);
@@ -185,12 +193,17 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         const pkg = getGeolibrePackage(raw);
         if (!pkg) throw new Error("Choose a built Testudo package containing manifest.json and geolibre/package.json. Raw models must be built first.");
         reset(); directory = selected;
-        const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results" };
+        // Local folder loads have no Testudo session (no origin, no bearer token), so GeoAI chat
+        // cannot reach `/api/v1/ai/chat` here — the alias intentionally never matches a
+        // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
+        const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "" };
         const emissions = pkg.dataContracts.emissions as { status?: string } | undefined;
         const comparisonCount = pkg.scenarios.reduce((count, scenario) => count + Math.max(1, scenario.replications.length), 0);
-        const capabilities = ids.map(id => ({ id, available: pkg.capabilities[aliases[id]]?.state === "available"
+        const capabilities = ids.map(id => ({ id, available: id !== "geoai" && pkg.capabilities[aliases[id]]?.state === "available"
           && (id !== "emissions-h3" || emissions?.status === "available")
-          && (id !== "scenario-comparison" || comparisonCount > 1), reason: id === "emissions-h3"
+          && (id !== "scenario-comparison" || comparisonCount > 1), reason: id === "geoai"
+            ? "GeoAI chat is only available for packages loaded from Testudo, not local folders."
+            : id === "emissions-h3"
             ? "No usable emissions data is declared for this package." : pkg.capabilities[aliases[id]]?.reason ?? "No compatible dataset declared." }));
         const root = raw as Record<string, unknown>;
         const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
