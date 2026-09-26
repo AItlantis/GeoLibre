@@ -1,0 +1,1 @@
+import{X as a}from"./context-3oYPMP1x.js";var e={name:"panel-left",size:24,node:[["rect",{width:"18",height:"18",x:"3",y:"3",rx:"2",key:"afitv7"}],["path",{d:"M9 3v18",key:"fh3hqa"}]],aliases:["sidebar"]};e.node;var t=a(e);export{t};

@@ -1,0 +1,1 @@
+import{a as o}from"./error-CgsyLo7K.js";function t(e){return new Proxy({},{get(n,r){if(typeof r!="symbol")throw new o(`\`${e}.${r}\` is not available in this environment; it needs a Node.js-compatible runtime`)}})}t("child_process"),t("crypto");var a=t("fs");t("os");var i=t("path");t("stream"),t("util");export{a as fs,i as path};
