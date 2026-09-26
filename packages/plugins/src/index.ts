@@ -1353,6 +1353,14 @@ export {
 export { computeNoiseSource, energyWeightedDb } from "./plugins/emissions-h3-data";
 export { EMISSIONS_H3_METRICS, EMISSIONS_H3_RAMPS, type EmissionsH3Metric } from "./plugins/emissions-h3-ramps";
 export {
+  GEOAI_CHAT_PLUGIN_ID, geoAiChatPlugin,
+  initGeoAiChat, isGeoAiChatConfigured, resetGeoAiChat,
+  openGeoAiChatPanel, closeGeoAiChatPanel, isGeoAiChatPanelVisible, subscribeGeoAiChatPanel,
+  loadGeoAiChat, checkGeoAiAvailability, sendGeoAiChat,
+  getGeoAiChatStatus, subscribeGeoAiChat, getGeoAiChatSnapshot, setGeoAiChatSettings,
+  type GeoAiChatMessage, type GeoAiChatSettings, type GeoAiChatStatus,
+} from "./plugins/geoai-chat";
+export {
   advanceVehiclePlaybackTick,
   canLoadLocalVehiclePackage,
   closeVehiclePlaybackPanel,

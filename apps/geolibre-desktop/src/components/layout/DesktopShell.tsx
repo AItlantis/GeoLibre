@@ -195,6 +195,7 @@ import { NetworkKpiPanel } from "../panels/NetworkKpiPanel";
 import { ScenarioComparisonPanel } from "../panels/ScenarioComparisonPanel";
 import { EmissionsH3Panel } from "../panels/EmissionsH3Panel";
 import { PathAnalysisPanel } from "../panels/PathAnalysisPanel";
+import { GeoAiChatPanel } from "../panels/GeoAiChatPanel";
 import { FlightSimulatorPanel } from "../panels/FlightSimulatorPanel";
 import {
   PluginRightPanel,
@@ -2935,6 +2936,9 @@ export function DesktopShell({
           {new URLSearchParams(window.location.search).get("layout") === "testudo" && <TestudoControls app={mapAppAPI} />}
           <PathAnalysisPanel />
           <ScenarioComparisonPanel />
+          <SectionErrorBoundary label="GeoAI chat panel" displayName={t("shell.section.geoAiChatPanel", "GeoAI chat panel")}>
+            <GeoAiChatPanel />
+          </SectionErrorBoundary>
           <KnowledgeCardConsentDialog
             open={knowledgeNoticeOpen}
             onOpenChange={(open) => {
