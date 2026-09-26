@@ -32,7 +32,7 @@ export function ScenarioComparisonPanel() {
   const status = useSyncExternalStore(subscribeScenarioComparisonStatus, getScenarioComparisonStatus, getScenarioComparisonStatus);
   const [collapsed, setCollapsed] = useState(false);
 
-  const hasPackage = s.manifestUrl != null && s.manifestUrl.length > 0;
+  const hasPackage = (s.manifestUrl != null && s.manifestUrl.length > 0) || status.scenarios.length > 0;
 
   const { urlDraft, setUrlDraft, loadPackage, handleKeyDown } = useManifestUrlDraft(
     s.manifestUrl,
@@ -129,7 +129,7 @@ export function ScenarioComparisonPanel() {
           <div><span className="font-medium text-foreground">Compared</span>: {status.sectionsB.toLocaleString()} sections · {status.lanesB.toLocaleString()} lanes · {status.turnsB.toLocaleString()} turns</div>
         </div>
       )}
-      <div className="flex gap-2">
+      <div hidden={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo"} className="flex gap-2">
         <input
           className="h-8 min-w-0 flex-1 rounded border bg-transparent px-2 text-sm"
           value={urlDraft}
@@ -169,6 +169,19 @@ export function ScenarioComparisonPanel() {
       </label>
       {s.mode === "diff" && (
         <>
+          <label className="block text-xs">
+            {t("toolbar.scenarioComparison.minimumDifference")}
+            <select
+              className="mt-1 h-8 w-full rounded border bg-transparent text-foreground"
+              value={s.differenceThreshold ?? 50}
+              onChange={(e) => setScenarioComparisonSettings({ differenceThreshold: Number(e.currentTarget.value) })}
+            >
+              <option className="bg-background text-foreground" value={0}>{t("toolbar.scenarioComparison.showAllDifferences")}</option>
+              <option className="bg-background text-foreground" value={50}>±50</option>
+              <option className="bg-background text-foreground" value={100}>±100</option>
+            </select>
+            <span className="mt-1 block text-[11px] text-muted-foreground">{t("toolbar.scenarioComparison.minimumDifferenceHint")}</span>
+          </label>
           <div className="flex items-center gap-1.5">
             <Button variant={!viewMode.extruded ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={!viewMode.extruded} onClick={viewMode.setFlat}>
               <Square className="me-1.5 h-3.5 w-3.5" />

@@ -9,6 +9,7 @@ import {
   loadScenarioAnimationManifest,
   loadVehicleGeometry,
   parseVehicleManifest,
+  VehiclePlaybackData,
   type VehiclePackageSource,
 } from "../packages/plugins/src/plugins/vehicle-playback-data";
 
@@ -25,6 +26,8 @@ function source(files: Record<string, unknown>): VehiclePackageSource {
 
 test("vehicle playback exposes package animation variants and loads each declared FZP manifest", async () => {
   const legacy = {
+    metadata: { dt: 1, n_ticks: 2 },
+    chunks: [{ index: 0, path: "chunks/shared.json", start_tick: 0, end_tick: 2 }],
     animations: [
       { name: "JUMPEIRA_AMPK", path: "chunks/JUMPEIRA_AMPK/animation.json", scid: 296665 },
       { name: "JUMPEIRA_PMPK", path: "chunks/JUMPEIRA_PMPK/animation.json", scid: 296665 },
@@ -50,6 +53,8 @@ test("vehicle playback exposes package animation variants and loads each declare
   ]);
   assert.deepEqual(scenarios.map((scenario) => scenario.scid), [296665, 296665]);
   assert.deepEqual(scenarios.map((scenario) => scenario.did), [296671, 296671]);
+  assert.deepEqual(scenarios.map((scenario) => scenario.scenarioName), ["Jumeira", "Jumeira"]);
+  assert.deepEqual(scenarios.map((scenario) => scenario.fzpName), ["JUMPEIRA_AMPK", "JUMPEIRA_PMPK"]);
 
   const pmpk = await loadScenarioAnimationManifest(
     raw,
@@ -64,6 +69,7 @@ test("vehicle playback exposes package animation variants and loads each declare
   );
   const parsed = parseVehicleManifest(raw, null, 1, pmpk);
   assert.equal(parsed.chunks[0]?.url, "chunks/JUMPEIRA_PMPK/0.json");
+  assert.notEqual(parsed.chunks[0]?.url, "chunks/shared.json");
 });
 
 test("vehicle playback keeps named root manifests usable when package metadata has no animation list", () => {
@@ -77,6 +83,60 @@ test("vehicle playback keeps named root manifests usable when package metadata h
   assert.equal(scenarios[0]?.id, "AM_FZP");
   assert.equal(scenarios[0]?.scid, 42);
   assert.equal(scenarios[0]?.manifestPath, "chunks/AM_FZP/animation.json");
+});
+
+test("root package animation stream remains playable when multiple result scenarios are declared", async () => {
+  const raw = attachGeolibrePackage({
+    metadata: { n_ticks: 21, dt: 0.8 },
+    chunks: [{ index: 0, path: "chunks/shared-vehicle-stream.json.gz", start_tick: 0, end_tick: 21 }],
+  }, {
+    scenarios: [
+      { name: "Reference", scid: 10, replications: [{ did: 11 }] },
+      { name: "Compared", scid: 20, replications: [{ did: 21 }] },
+    ],
+  });
+
+  const scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
+  assert.equal(scenarios.length, 1);
+  assert.equal(scenarios[0]?.id, "package_animation");
+  assert.equal(scenarios[0]?.packageRootStream, true);
+  assert.equal(scenarios[0]?.scid, undefined);
+  assert.equal(scenarios[0]?.did, undefined);
+  assert.strictEqual(await loadScenarioAnimationManifest(raw, source({}), 0, scenarios[0]), raw);
+  const parsed = parseVehicleManifest(raw, null, 0);
+  assert.equal(parsed.chunks[0]?.url, "chunks/shared-vehicle-stream.json.gz");
+  const playback = new VehiclePlaybackData(parsed, source({ "chunks/shared-vehicle-stream.json.gz": { events: {} } }));
+  try {
+    assert.equal(await playback.ensureCoverage(0), true);
+  } finally {
+    playback.destroy();
+  }
+});
+
+test("vehicle coverage loads only the chunk needed by the requested playback tick", async () => {
+  const reads: string[] = [];
+  const parsed = parseVehicleManifest({
+    metadata: { n_ticks: 20, dt: 1 },
+    chunks: [
+      { index: 0, path: "chunks/0.json", start_tick: 0, end_tick: 10 },
+      { index: 1, path: "chunks/1.json", start_tick: 10, end_tick: 20 },
+    ],
+  }, null);
+  const playback = new VehiclePlaybackData(parsed, {
+    baseUrl: null,
+    async read(path: string): Promise<ArrayBuffer> {
+      reads.push(path);
+      return new TextEncoder().encode(JSON.stringify({ events: {} })).buffer;
+    },
+  });
+  try {
+    assert.equal(await playback.ensureCoverage(0), true);
+    assert.deepEqual(reads, ["chunks/0.json"]);
+    assert.equal(await playback.ensureCoverage(10), true);
+    assert.deepEqual(reads, ["chunks/0.json", "chunks/1.json"]);
+  } finally {
+    playback.destroy();
+  }
 });
 
 test("per-animation chunk paths remain rooted at the package manifest URL", () => {
@@ -93,10 +153,14 @@ test("per-animation chunk paths remain rooted at the package manifest URL", () =
 
 test("scenario metadata inherits root bounds when animation metadata is partial", () => {
   const parsed = parseVehicleManifest({
-    metadata: { bounds: { min_lon: 1, min_lat: 2, max_lon: 3, max_lat: 4 } },
+    metadata: {
+      bounds: { min_lon: 1, min_lat: 2, max_lon: 3, max_lat: 4 },
+      initial_time_seconds: 28_800,
+    },
     animations: [{ metadata: { n_ticks: 10 }, chunks: [{ index: 0, path: "chunks/0.json" }] }],
   }, null);
   assert.deepEqual(parsed.bounds, [1, 2, 3, 4]);
+  assert.equal(parsed.initialTimeSeconds, 28_800);
 });
 
 test("empty and invalid geometry are optional and report the asset path", async () => {

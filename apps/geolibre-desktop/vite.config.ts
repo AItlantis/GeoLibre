@@ -275,6 +275,7 @@ const BUILD_ENV_KEYS = [
   "VITE_TIANDITU_API_KEY",
   "VITE_TOMTOM_API_KEY",
   "VITE_WELCOME_DISABLED",
+  "VITE_TESTUDO_BYTE_ORIGINS",
 ] as const;
 
 // Vars that authenticate as, and bill to, whoever ran the build. Read from the
@@ -1224,6 +1225,15 @@ function pwaPlugin(): Plugin[] {
 export default defineConfig({
   base: APP_BASE,
   plugins: [
+    {
+      // cog-tiler supports both the older CommonJS package and its newer named
+      // ESM exports, but 0.3.6 still imports a nonexistent ESM default.
+      name: "cog-geokeys-module-compat",
+      transform(code, id) {
+        if (!id.replaceAll("\\", "/").endsWith("/cog-tiler-wasm/cog-tiler.js")) return null;
+        return code.replace('import geokeysToProj4 from "geotiff-geokeys-to-proj4";', 'import * as geokeysToProj4 from "geotiff-geokeys-to-proj4";');
+      },
+    },
     ...(PGLITE_CDN ? [pgliteCdnLoaderPlugin()] : []),
     ...(CEREUS_CDN ? [cereusCdnLoaderPlugin()] : []),
     duckdbWasmBundlesPlugin(),

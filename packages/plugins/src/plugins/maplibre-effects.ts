@@ -106,8 +106,7 @@ export function nextEffectsFrameTime(timestamp: number, lastFrameTime: number): 
 // is [offset, alpha, shade] where offset is the fraction of the gradient span
 // (globe edge → haloExtent × radius), alpha is the base opacity, and shade
 // blends the base color toward white (positive) or black (negative). The
-// defaults reproduce the original light-blue glow when applied to the default
-// haloColor (#4d9fe6): a bright near-white rim falling off to a faint dark blue.
+// configured default color is used by both globe engines.
 const HALO_STOP_SHAPE: Array<[number, number, number]> = [
   [0.0, 1.0, 0.7],
   [0.03, 0.6, 0.32],

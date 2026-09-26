@@ -37,8 +37,6 @@ import { loadCachedHttpPackageManifests } from "./geolibre-package-cache";
 const PRELOAD_LOOKAHEAD_TICKS = 120;
 /** Chunks fetched in parallel by the background full-load pass. */
 const CHUNK_CONCURRENCY = 3;
-/** Resident decompressed chunks tolerated during background loading. */
-const MAX_RESIDENT_BACKGROUND_CHUNKS = 4;
 /** Attempts per chunk before it is marked permanently failed. */
 const MAX_CHUNK_RETRIES = 3;
 /**
@@ -208,6 +206,8 @@ export interface VehicleChunkEntry {
 export interface VehicleManifest {
   /** Simulation step in seconds; drives ticks-per-second during playback. */
   dt: number;
+  /** Scenario-local simulation clock origin in seconds since midnight. */
+  initialTimeSeconds: number;
   /** Highest addressable tick (`n_ticks - 1`). */
   maxTick: number;
   /** Projected CRS the chunk coordinates are in, e.g. 32630. */
@@ -248,6 +248,10 @@ export interface VehicleManifestScenario {
   id: string;
   /** Human label for the dropdown. */
   label: string;
+  /** Parent scenario shown as the optgroup label in the datasource selector. */
+  scenarioName?: string;
+  /** FZP/animation name shown as the selectable option. */
+  fzpName?: string;
   /** Ticks in this scenario, when its metadata declares them. */
   nTicks: number;
   /** Simulation step in seconds. */
@@ -260,6 +264,8 @@ export interface VehicleManifestScenario {
   did?: number | string;
   /** Root `animations[]` index used by legacy/named-FZP manifests. */
   rootAnimationIndex?: number;
+  /** One root-level playback stream with no scenario identity. */
+  packageRootStream?: true;
 }
 
 export interface VehicleManifestScenarioOptions {
@@ -281,7 +287,7 @@ function animationPath(animation: Record<string, unknown>): string | undefined {
 }
 
 function animationId(animation: Record<string, unknown>, index: number): string {
-  const rawId = animation.id ?? animation.name ?? animation.path;
+  const rawId = animation.id ?? animation.fzp_name ?? animation.name ?? animation.path;
   return typeof rawId === "string" && rawId.trim() ? rawId.trim() : `scenario_${index}`;
 }
 
@@ -332,11 +338,15 @@ export function listVehicleManifestScenarios(
           const rootIndex = animations.findIndex((animation) => animationPath(animation) === declared.manifestPath);
           const rootAnimation = rootIndex >= 0 ? animations[rootIndex] : undefined;
           const metadata = rootAnimation ? animationMetadata(rootAnimation, rootMetadata) : rootMetadata;
+          const fzpName = declared.name
+            ?? (rootAnimation ? String(rootAnimation.fzp_name ?? rootAnimation.name ?? animationId(rootAnimation, variants.length)) : undefined);
           const id = declared.name ?? (rootAnimation ? animationId(rootAnimation, variants.length) : declared.manifestPath!);
           variants.push({
             index: variants.length,
             id,
-            label: scenarioLabel(rootAnimation ?? { name: id }, metadata, variants.length),
+            label: fzpName ?? scenarioLabel(rootAnimation ?? { name: id }, metadata, variants.length),
+            scenarioName: scenario.name,
+            fzpName,
             nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
             dt: Math.max(0.0001, safeNumber(metadata.dt, 1)),
             manifestPath: declared.manifestPath,
@@ -361,7 +371,9 @@ export function listVehicleManifestScenarios(
           variants.push({
             index: variants.length,
             id: animationId(animation, variants.length),
-            label: scenarioLabel(animation, metadata, variants.length),
+            label: animationId(animation, variants.length),
+            scenarioName: scenario.name,
+            fzpName: animationId(animation, variants.length),
             nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
             dt: Math.max(0.0001, safeNumber(metadata.dt, 1)),
             manifestPath: animationPath(animation),
@@ -370,19 +382,33 @@ export function listVehicleManifestScenarios(
             rootAnimationIndex: rootIndex,
           });
         }
-      } else {
-        variants.push({
-          index: variants.length,
-          id: String(scenario.scid),
-          label: scenario.name ?? `Scenario ${scenario.scid}`,
-          nTicks: 1,
-          dt: 1,
-          scid: scenario.scid,
-          did: scenario.replications[0]?.did,
-        });
       }
     }
     if (variants.length) return variants;
+    // A root-level chunk catalog is an explicitly package-scoped playback
+    // stream. It has no scenario identity, so expose it once (without scid/did)
+    // rather than pretending it belongs to one of the package scenarios.
+    if (Array.isArray(root.chunks) && root.chunks.length > 0) {
+      return [{
+        index: 0,
+        id: typeof root.id === "string" && root.id ? root.id : "package_animation",
+        label: scenarioLabel(root, rootMetadata, 0),
+        nTicks: Math.max(1, safeInt(rootMetadata.n_ticks, 1)),
+        dt: Math.max(0.0001, safeNumber(rootMetadata.dt, 1)),
+        packageRootStream: true,
+      }];
+    }
+    // Package scenario metadata alone is not evidence of a vehicle stream.
+    if (pkg.scenarios.length > 1) return [];
+    if (Array.isArray(root.chunks) && root.chunks.length > 0) {
+      return [{
+        index: 0,
+        id: typeof root.id === "string" && root.id ? root.id : "scenario_0",
+        label: scenarioLabel(root, rootMetadata, 0),
+        nTicks: Math.max(1, safeInt(rootMetadata.n_ticks, 1)),
+        dt: Math.max(0.0001, safeNumber(rootMetadata.dt, 1)),
+      }];
+    }
   }
 
   if (Array.isArray(root.chunks) || animations.length === 0) {
@@ -403,6 +429,7 @@ export function listVehicleManifestScenarios(
       index,
       id: animationId(animation, index),
       label: scenarioLabel(animation, metadata, index),
+      fzpName: animationId(animation, index),
       nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
       dt: Math.max(0.0001, safeNumber(metadata.dt, 1)),
       scid: typeof animation.scid === "number" || typeof animation.scid === "string" ? animation.scid : undefined,
@@ -499,7 +526,10 @@ export function parseVehicleManifest(
   const animations = Array.isArray(root.animations)
     ? (root.animations as Record<string, unknown>[])
     : [];
-  const flat = Array.isArray(root.chunks) || animations.length === 0;
+  // Explicit animation catalogs take precedence over legacy root chunks when
+  // both are present. Otherwise a multi-playback package can silently ignore
+  // the selected animation and replay the unrelated shared/root stream.
+  const flat = animations.length === 0;
   // Multi-scenario packages nest metadata/chunks under the chosen animation.
   // Index 0 reproduces the previous hardcoded behavior exactly.
   const selectedIndex = flat
@@ -510,6 +540,14 @@ export function parseVehicleManifest(
 
   const dt = Math.max(0.0001, safeNumber(metadata.dt, 1));
   const nTicks = Math.max(1, safeInt(metadata.n_ticks, 1));
+  const initialTimeRaw = metadata.initial_time_seconds
+    ?? metadata.initial_time_s
+    ?? metadata.initial_time
+    ?? metadata.start_time_seconds
+    ?? metadata.start_time_s
+    ?? metadata.start_time
+    ?? metadata.from_time;
+  const initialTimeSeconds = initialTimeRaw == null ? 0 : safeNumber(initialTimeRaw, 0);
   const rawBounds = (metadata.bounds ?? null) as Record<string, unknown> | null;
   const bounds: [number, number, number, number] | null = rawBounds
     ? [
@@ -562,6 +600,7 @@ export function parseVehicleManifest(
 
   return {
     dt,
+    initialTimeSeconds,
     maxTick: Math.max(0, nTicks - 1),
     sourceEpsg: safeInt(metadata.source_epsg, 0),
     destEpsg: safeInt(metadata.dest_epsg, 4326) || 4326,
@@ -581,16 +620,19 @@ export async function loadScenarioAnimationManifest(
   selectedScenario?: VehicleManifestScenario,
 ): Promise<unknown> {
   const root = (raw ?? {}) as Record<string, unknown>;
-  if (Array.isArray(root.chunks) && root.chunks.length > 0) return raw;
+  if (selectedScenario?.packageRootStream && Array.isArray(root.chunks) && root.chunks.length > 0) return raw;
+  const rootAnimations = Array.isArray(root.animations)
+    ? root.animations as Record<string, unknown>[]
+    : [];
+  const hasScenarioAnimation = Boolean(selectedScenario?.manifestPath)
+    || rootAnimations.some((animation) => animationPath(animation));
+  if (Array.isArray(root.chunks) && root.chunks.length > 0 && !hasScenarioAnimation) return raw;
   const pkg = getGeolibrePackage(raw);
   const scenario = selectedScenario?.scid !== undefined
     ? pkg?.scenarios.find((candidate) => sameIdentifier(candidate.scid, selectedScenario.scid)) ?? pkg?.scenarios[scenarioIndex]
     : selectedScenario?.did !== undefined
       ? pkg?.scenarios.find((candidate) => candidate.replications.some((replication) => sameIdentifier(replication.did, selectedScenario.did))) ?? pkg?.scenarios[scenarioIndex]
       : pkg?.scenarios[scenarioIndex];
-  const rootAnimations = Array.isArray(root.animations)
-    ? root.animations as Record<string, unknown>[]
-    : [];
   const declaredPaths: string[] = [];
   if (selectedScenario?.manifestPath) declaredPaths.push(selectedScenario.manifestPath);
   if (selectedScenario?.rootAnimationIndex !== undefined) {
@@ -1111,7 +1153,6 @@ export class VehiclePlaybackData {
   private dataVersion = 0;
   private cacheDataVersion = -1;
 
-  private backgroundLoading = false;
   private destroyed = false;
   /** Set while the playhead is advancing, which widens the coverage window. */
   private playing = false;
@@ -1125,12 +1166,11 @@ export class VehiclePlaybackData {
    * calls that land in the same window share one in-flight load.
    */
   private coverageKey: string | null = null;
-  private coveragePromise: Promise<void> | null = null;
+  private coveragePromise: Promise<boolean> | null = null;
 
   /**
-   * Shared limiter so `ensureCoverage`'s on-demand loads and
-   * `startBackgroundLoad`'s batching can never together exceed
-   * {@link CHUNK_CONCURRENCY} in-flight chunk fetches. Both paths funnel
+   * Shared limiter so overlapping on-demand coverage requests can never
+   * exceed {@link CHUNK_CONCURRENCY} in-flight chunk fetches. All requests funnel
    * through {@link loadChunkWithRetry}, which acquires a slot here before
    * doing any work — without this, `ensureCoverage` (triggered by seeking or
    * scrubbing) can fire independently of an in-progress background batch,
@@ -1175,6 +1215,19 @@ export class VehiclePlaybackData {
     return loaded / Math.max(1, this.manifest.chunks.length);
   }
 
+  /** Chunk-catalog progress for the currently selected playback. */
+  getChunkProgress(): { loaded: number; total: number; loading: number; failed: number } {
+    let loaded = 0;
+    let loading = 0;
+    let failed = 0;
+    for (const state of this.statusById.values()) {
+      if (state === "loaded") loaded += 1;
+      else if (state === "loading") loading += 1;
+      else if (state === "failed") failed += 1;
+    }
+    return { loaded, total: this.statusById.size, loading, failed };
+  }
+
   /** Tell the data layer where the playhead is, so coverage looks ahead. */
   setPlayhead(tick: number, playing: boolean): void {
     this.currentTick = tick;
@@ -1201,71 +1254,47 @@ export class VehiclePlaybackData {
    *
    * @param tick - The tick that must be covered
    */
-  async ensureCoverage(tick: number): Promise<void> {
-    if (this.destroyed) return;
+  async ensureCoverage(tick: number): Promise<boolean> {
+    if (this.destroyed) return false;
     const target = this.playing ? tick + PRELOAD_LOOKAHEAD_TICKS : tick;
     const ids = new Set<string>();
     const current = this.findChunk(tick);
     if (current) ids.add(current.id);
+    const requiredId = current?.id;
     const ahead = this.findChunk(target);
     if (ahead) ids.add(ahead.id);
-    if (ids.size === 0) return;
+    if (ids.size === 0) return false;
 
     const key = Array.from(ids).sort().join(",");
     if (this.coverageKey === key && this.coveragePromise) return this.coveragePromise;
 
     this.coverageKey = key;
-    const promise = (async () => {
+    const promise = (async (): Promise<boolean> => {
+      if (!requiredId || !await this.loadChunkWithRetry(requiredId) || this.destroyed) return false;
+      // Preload is opportunistic and must not delay starting the selected
+      // playback: one resident current chunk is sufficient. At the boundary,
+      // ensureCoverage will await the next chunk before allowing a tick there.
       for (const id of ids) {
-        await this.loadChunkWithRetry(id);
-        if (this.destroyed) return;
+        if (id === requiredId) continue;
+        void this.loadChunkWithRetry(id).then(() => {
+          if (!this.destroyed && this.coverageKey === key) this.evictOutside(ids);
+        });
       }
       // Only this call's own (still-current) window may evict — a newer call
       // that changed `coverageKey` while this one was in flight owns eviction
       // now, so this call must not undo the newer window it just loaded.
       if (this.coverageKey === key) this.evictOutside(ids);
+      return Boolean(requiredId && this.statusById.get(requiredId) === "loaded");
     })();
     this.coveragePromise = promise;
     try {
-      await promise;
+      return await promise;
     } finally {
       if (this.coveragePromise === promise) {
         this.coveragePromise = null;
         this.coverageKey = null;
       }
     }
-  }
-
-  /**
-   * Fetch the whole catalog in the background, a few chunks at a time, keeping
-   * only {@link MAX_RESIDENT_BACKGROUND_CHUNKS} chunks resident around the
-   * playhead. Scrubbing far from the playhead re-fetches on demand.
-   */
-  startBackgroundLoad(): void {
-    if (this.backgroundLoading || this.destroyed) return;
-    this.backgroundLoading = true;
-    void (async () => {
-      try {
-        const pending = this.manifest.chunks.filter((chunk) => {
-          const status = this.statusById.get(chunk.id);
-          return (
-            status === "pending" ||
-            (status === "failed" &&
-              (this.failureCountById.get(chunk.id) ?? 0) < MAX_CHUNK_RETRIES)
-          );
-        });
-        for (let i = 0; i < pending.length; i += CHUNK_CONCURRENCY) {
-          if (this.destroyed) return;
-          const batch = pending.slice(i, i + CHUNK_CONCURRENCY);
-          await Promise.allSettled(batch.map((chunk) => this.loadChunkWithRetry(chunk.id)));
-          this.evictBackgroundOverflow();
-        }
-      } catch (error) {
-        console.warn("[GeoLibre] vehicle-playback: background chunk load failed", error);
-      } finally {
-        this.backgroundLoading = false;
-      }
-    })();
   }
 
   private async loadChunkWithRetry(chunkId: string): Promise<boolean> {
@@ -1278,6 +1307,7 @@ export class VehiclePlaybackData {
     if (status === "failed" && priorFailures >= MAX_CHUNK_RETRIES) return false;
 
     const promise = (async () => {
+      this.statusById.set(chunkId, "loading");
       const release = await this.chunkFetchLimiter.acquire();
       try {
         return await this.runChunkLoad(chunkId, priorFailures);
@@ -1294,8 +1324,6 @@ export class VehiclePlaybackData {
   private async runChunkLoad(chunkId: string, priorFailures: number): Promise<boolean> {
     const chunk = this.manifest.chunks.find((c) => c.id === chunkId);
     if (!chunk) return false;
-    this.statusById.set(chunkId, "loading");
-
     for (let attempt = Math.max(1, priorFailures + 1); attempt <= MAX_CHUNK_RETRIES; attempt += 1) {
       if (this.destroyed) return false;
       try {
@@ -1377,26 +1405,6 @@ export class VehiclePlaybackData {
       if (status !== "loaded" || keepIds.has(chunkId)) continue;
       this.unloadChunk(chunkId);
     }
-  }
-
-  /** Keep only the chunks nearest the playhead once the resident cap is passed. */
-  private evictBackgroundOverflow(): void {
-    const loaded: string[] = [];
-    for (const [chunkId, status] of this.statusById) {
-      if (status === "loaded") loaded.push(chunkId);
-    }
-    if (loaded.length <= MAX_RESIDENT_BACKGROUND_CHUNKS) return;
-    const distance = (chunkId: string): number => {
-      const chunk = this.manifest.chunks.find((c) => c.id === chunkId);
-      if (!chunk) return Number.POSITIVE_INFINITY;
-      if (this.currentTick >= chunk.startTick && this.currentTick <= chunk.endTick) return 0;
-      return Math.min(
-        Math.abs(chunk.startTick - this.currentTick),
-        Math.abs(chunk.endTick - this.currentTick),
-      );
-    };
-    const ordered = loaded.slice().sort((a, b) => distance(a) - distance(b));
-    this.evictOutside(new Set(ordered.slice(0, MAX_RESIDENT_BACKGROUND_CHUNKS)));
   }
 
   private unloadChunk(chunkId: string): void {

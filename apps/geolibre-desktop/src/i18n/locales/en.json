@@ -1,4 +1,9 @@
 {
+  "testudo": {
+    "openLocal": "Open local package",
+    "loading": "Loading package...",
+    "folderUnsupported": "Local packages require Chrome or Edge with folder access enabled."
+  },
   "projectHistory": {
     "title": "Project History",
     "description": "Browse autosaved snapshots stored on this device.",
@@ -2433,8 +2438,78 @@
     }
   },
   "toolbar": {
-    "scenarioComparison": { "title": "Scenario comparison", "close": "Close", "mode": "Mode", "diff": "Difference", "sideBySide": "Side by Side", "scenarioA": "Scenario A", "scenarioB": "Scenario B", "replicationA": "Replication A", "replicationB": "Replication B", "metric": "Metric", "metrics": { "flow_delta": "Flow delta", "flow_density_product_delta": "Flow-density product delta", "cmp_flow_sign": "Flow sign", "cmp_flow_density_quadrant": "Flow-density quadrant" }, "flat": "2D", "extruded": "3D", "collapse": "Collapse panel", "expand": "Expand panel", "height": "Maximum height", "interval": "Interval", "previous": "Previous interval", "next": "Next interval", "play": "Play", "pause": "Pause", "opacity": "Opacity", "seeThroughBuildings": "Visible through buildings", "legend": "Legend", "manifestUrl": "Manifest URL", "manifestPlaceholder": "https://example.com/manifest.json", "load": "Load", "loadFolder": "Load folder", "tabs": { "dataSource": "Data Source", "style": "Style", "playback": "Playback" } },
-    "pathAnalysis": { "title": "Path analysis", "loading": "Loading path data…", "clickHint": "Click a section to select it; Ctrl/Cmd-click or Shift-click to select multiple.", "manifestPlaceholder": "Package manifest URL", "load": "Load", "loadFolder": "Load folder", "summary": "{{paths}} paths Â· {{sections}} sections Â· {{demand}} trips", "matchSummary": "{{count}} matched paths · {{trips}} trips", "legend": "Legend", "trips": "trips", "clear": "Clear", "removeSection": "Remove section {{id}} from selection", "or": "OR", "and": "AND", "flat": "Flat", "extruded": "3D", "seeThroughBuildings": "Visible through buildings", "metric": { "percentage": "Percentage", "trips": "Trips" }, "tabs": { "dataSource": "Data Source", "style": "Style" }, "collapse": "Collapse panel", "expand": "Expand panel" },
+    "scenarioComparison": {
+      "title": "Scenario comparison",
+      "close": "Close",
+      "mode": "Mode",
+      "diff": "Difference",
+      "sideBySide": "Side by Side",
+      "scenarioA": "Scenario A",
+      "scenarioB": "Scenario B",
+      "replicationA": "Replication A",
+      "replicationB": "Replication B",
+      "metric": "Metric",
+      "minimumDifference": "Hide differences below",
+      "minimumDifferenceHint": "Applies to the 2D/3D difference map and its labels.",
+      "showAllDifferences": "Show all differences",
+      "metrics": {
+        "flow_delta": "Flow delta",
+        "flow_density_product_delta": "Flow-density product delta",
+        "cmp_flow_sign": "Flow sign",
+        "cmp_flow_density_quadrant": "Flow-density quadrant"
+      },
+      "flat": "2D",
+      "extruded": "3D",
+      "collapse": "Collapse panel",
+      "expand": "Expand panel",
+      "height": "Maximum height",
+      "interval": "Interval",
+      "previous": "Previous interval",
+      "next": "Next interval",
+      "play": "Play",
+      "pause": "Pause",
+      "opacity": "Opacity",
+      "seeThroughBuildings": "Visible through buildings",
+      "legend": "Legend",
+      "manifestUrl": "Manifest URL",
+      "manifestPlaceholder": "https://example.com/manifest.json",
+      "load": "Load",
+      "loadFolder": "Load folder",
+      "tabs": {
+        "dataSource": "Data Source",
+        "style": "Style",
+        "playback": "Playback"
+      }
+    },
+    "pathAnalysis": {
+      "title": "Path analysis",
+      "loading": "Loading path data…",
+      "clickHint": "Click a section to select it; Ctrl/Cmd-click or Shift-click to select multiple.",
+      "manifestPlaceholder": "Package manifest URL",
+      "load": "Load",
+      "loadFolder": "Load folder",
+      "summary": "{{paths}} paths Â· {{sections}} sections Â· {{demand}} trips",
+      "matchSummary": "{{count}} matched paths · {{trips}} trips",
+      "legend": "Legend",
+      "trips": "trips",
+      "clear": "Clear",
+      "removeSection": "Remove section {{id}} from selection",
+      "or": "OR",
+      "and": "AND",
+      "flat": "Flat",
+      "extruded": "3D",
+      "seeThroughBuildings": "Visible through buildings",
+      "metric": {
+        "percentage": "Percentage",
+        "trips": "Trips"
+      },
+      "tabs": {
+        "dataSource": "Data Source",
+        "style": "Style"
+      },
+      "collapse": "Collapse panel",
+      "expand": "Expand panel"
+    },
     "networkKpi": {
       "title": "Network KPI",
       "collapse": "Collapse panel",
@@ -2451,7 +2526,12 @@
       "replication": "Replication",
       "replicationFallback": "Replication {{did}}",
       "metricLabel": "Metric",
-      "metric": { "flow": "Flow", "density": "Density", "speed": "Speed", "delay": "Delay" },
+      "metric": {
+        "flow": "Flow",
+        "density": "Density",
+        "speed": "Speed",
+        "delay": "Delay"
+      },
       "interval": "Interval",
       "intervalAggregate": "Whole period",
       "intervalAggregateToggle": "Whole period",
@@ -2476,9 +2556,58 @@
       "showLanes": "Lanes",
       "showTurns": "Turns",
       "showNodes": "Nodes",
-      "tabs": { "dataSource": "Data Source", "style": "Style", "playback": "Playback" }
+      "tabs": {
+        "dataSource": "Data Source",
+        "style": "Style",
+        "playback": "Playback"
+      }
     },
-    "emissionsH3": { "title": "Traffic emissions H3", "dataSource": "Data source", "manifestUrl": "Manifest URL", "manifestPlaceholder": "https://example.com/manifest.json", "load": "Load", "loadFolder": "Load folder", "loadFolderTooltip": "Load a local emissions H3 package folder.", "loadFolderUnsupported": "Local folders are not supported in this browser.", "localFolder": "Folder: {{name}}", "scenario": "Scenario", "replication": "Replication", "replicationFallback": "Replication {{did}}", "styleAndMetric": "Style & metric", "metricLabel": "Metric", "resolution": "H3 resolution", "resolutionHelp": "Coarser cells (lower) cover more area per hexagon; finer cells (higher) follow the road more closely but render many more hexagons.", "flat": "Flat", "extruded": "Extruded", "maxHeight": "Maximum height", "opacity": "Opacity", "seeThroughBuildings": "Visible through buildings", "legend": "Legend", "playback": "Playback", "interval": "Interval", "intervalAggregateToggle": "Whole period", "intervalPrevious": "Previous interval", "intervalNext": "Next interval", "intervalPlay": "Play intervals", "intervalPause": "Pause intervals", "collapse": "Collapse panel", "expand": "Expand panel", "close": "Close Emissions H3", "help": "Energy-averaged source-level noise from nearby road sections. Does not model distance, barriers, or ground attenuation.", "noEmissionsColumns": "This package has no CO2/NOx columns in its microscopic results — only noise can be shown.", "metric": { "co2": "CO2", "nox": "NOx", "noise": "Noise" }, "tabs": { "dataSource": "Data Source", "styleAndMetric": "Style & Metric", "playback": "Playback" } },
+    "emissionsH3": {
+      "title": "Traffic emissions H3",
+      "dataSource": "Data source",
+      "manifestUrl": "Manifest URL",
+      "manifestPlaceholder": "https://example.com/manifest.json",
+      "load": "Load",
+      "loadFolder": "Load folder",
+      "loadFolderTooltip": "Load a local emissions H3 package folder.",
+      "loadFolderUnsupported": "Local folders are not supported in this browser.",
+      "localFolder": "Folder: {{name}}",
+      "scenario": "Scenario",
+      "replication": "Replication",
+      "replicationFallback": "Replication {{did}}",
+      "styleAndMetric": "Style & metric",
+      "metricLabel": "Metric",
+      "resolution": "H3 resolution",
+      "resolutionHelp": "Coarser cells (lower) cover more area per hexagon; finer cells (higher) follow the road more closely but render many more hexagons.",
+      "flat": "Flat",
+      "extruded": "Extruded",
+      "maxHeight": "Maximum height",
+      "opacity": "Opacity",
+      "seeThroughBuildings": "Visible through buildings",
+      "legend": "Legend",
+      "playback": "Playback",
+      "interval": "Interval",
+      "intervalAggregateToggle": "Whole period",
+      "intervalPrevious": "Previous interval",
+      "intervalNext": "Next interval",
+      "intervalPlay": "Play intervals",
+      "intervalPause": "Pause intervals",
+      "collapse": "Collapse panel",
+      "expand": "Expand panel",
+      "close": "Close Emissions H3",
+      "help": "Energy-averaged source-level noise from nearby road sections. Does not model distance, barriers, or ground attenuation.",
+      "noEmissionsColumns": "This package has no CO2/NOx columns in its microscopic results — only noise can be shown.",
+      "metric": {
+        "co2": "CO2",
+        "nox": "NOx",
+        "noise": "Noise"
+      },
+      "tabs": {
+        "dataSource": "Data Source",
+        "styleAndMetric": "Style & Metric",
+        "playback": "Playback"
+      }
+    },
     "menu": {
       "project": "Project",
       "import": "Import",
@@ -2524,6 +2653,9 @@
       "manifestPlaceholder": "https://.../manifest.json",
       "load": "Load",
       "streaming": "Streaming chunks: {{percent}}%",
+      "chunksReady": "Playback chunks ready: {{loaded}} of {{total}}",
+      "chunksLoading": "Loading playback chunks: {{loaded}} of {{total}} ready",
+      "chunksFailed": "Playback chunks: {{loaded}} of {{total}} ready ({{failed}} failed)",
       "timeline": "Playback position",
       "tickOf": "tick {{tick}} / {{total}}",
       "vehicleCount": "{{count}} vehicles",
@@ -2541,6 +2673,7 @@
       "loadFolderUnsupported": "Opening a local folder needs Chrome or Edge. Load a manifest URL instead.",
       "localFolder": "Folder: {{name}}",
       "scenario": "Scenario",
+      "chooseScenario": "Select a scenario or playback",
       "network": "Network",
       "showNetwork": "Show network",
       "networkSections": "Sections + Nodes",
@@ -2552,7 +2685,11 @@
       "showLanes": "Lanes",
       "showTurns": "Turns",
       "showNodes": "Nodes",
-      "tabs": { "dataSource": "Data Source", "style": "Style", "playback": "Playback" }
+      "tabs": {
+        "dataSource": "Data Source",
+        "style": "Style",
+        "playback": "Playback"
+      }
     },
     "routeAnimation": {
       "title": "Route Animation",
@@ -6775,7 +6912,7 @@
     "empty": "No saved styles match. Save a layer's style or import a library to get started.",
     "apply": "Apply",
     "delete": "Delete",
-    "saveCurrent": "Save current styleâ€¦",
+    "saveCurrent": "Save current style…",
     "nameLabel": "Name",
     "kindLabel": "What to save",
     "kindStyle": "Full style",
@@ -7965,8 +8102,8 @@
       "sunSimulationPanel": "Sun simulation panel",
       "routeAnimationPanel": "Route animation panel",
       "vehiclePlaybackPanel": "Vehicle playback panel",
-    "networkKpiPanel": "Network KPI panel",
-    "emissionsH3Panel": "Emissions H3 panel",
+      "networkKpiPanel": "Network KPI panel",
+      "emissionsH3Panel": "Emissions H3 panel",
       "flightSimulatorPanel": "Flight simulator panel",
       "sharedRightSidebar": "Shared right sidebar",
       "pluginPanelLeftOfStyle": "Plugin panel (left of Style)",

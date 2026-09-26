@@ -13,6 +13,8 @@ import {
   removePathAnalysisSection,
   setPathAnalysisManifestUrl,
   setPathAnalysisSettings,
+  stepPathAnalysisInterval,
+  togglePathAnalysisIntervalPlaying,
   applyPathAnalysisVisualSettings,
   subscribePathAnalysis,
   subscribePathAnalysisPanel,
@@ -56,19 +58,19 @@ function Card() {
   // now live entirely on the map (color/height/labels via the same ramp shown
   // below), and this panel only ever shows an aggregate count/total, matching
   // how network-kpi keeps its per-feature values off-panel too.
-  const matchCount = s.matches.length, totalTrips = s.matches.reduce((sum, m) => sum + m.demand, 0);
-  const intervalPlayback = useIntervalPlayback({ intervals: s.intervals ?? [], interval: s.settings.interval ?? 0, onIntervalChange: (interval) => setPathAnalysisSettings({ interval }), onStep: (direction) => { const values = (s.intervals ?? []).filter((value) => value !== 0); const index = values.indexOf(s.settings.interval ?? 0); const next = index < 0 ? (direction === 1 ? 0 : values.length - 1) : (index + direction + values.length) % values.length; if (values.length) setPathAnalysisSettings({ interval: values[next] }); }, onTogglePlaying: () => setPathAnalysisSettings({ intervalPlaying: !s.settings.intervalPlaying }) });
-  const playbackContent = intervalPlayback.hasRealIntervals ? <div className="space-y-2"><span className="block text-xs text-muted-foreground">Interval playback</span><input className="h-5 w-full accent-sky-500" type="range" min={0} max={intervalPlayback.realIntervals.length - 1} value={intervalPlayback.scrubberIndex} disabled={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setScrubberIndex(Number(e.currentTarget.value))} /><div className="flex items-center gap-1.5"><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => intervalPlayback.step(-1)}><SkipBack className="h-4 w-4" /></Button><Button variant="secondary" size="icon" className="h-9 w-9" onClick={intervalPlayback.togglePlaying}>{s.settings.intervalPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => intervalPlayback.step(1)}><SkipForward className="h-4 w-4" /></Button><label className="ms-auto flex items-center gap-1 text-xs"><input type="checkbox" checked={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setAggregate(e.currentTarget.checked)} />Whole period</label></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><label className="flex-1">Speed <input className="w-20 accent-sky-500" type="range" min="0.25" max="8" step="0.25" value={s.settings.playbackSpeed ?? 1} onChange={(e) => setPathAnalysisSettings({ playbackSpeed: Number(e.currentTarget.value) })} /></label><span>{s.settings.playbackSpeed ?? 1}×</span><label className="flex items-center gap-1"><input type="checkbox" checked={s.settings.loop ?? true} onChange={(e) => setPathAnalysisSettings({ loop: e.currentTarget.checked })} />Loop</label></div></div> : null;
+  const matchCount = s.matches.length;
+  const intervalPlayback = useIntervalPlayback({ intervals: s.intervals ?? [], interval: s.settings.interval ?? 0, onIntervalChange: (interval) => setPathAnalysisSettings({ interval }), onStep: stepPathAnalysisInterval, onTogglePlaying: togglePathAnalysisIntervalPlaying });
+  const playbackContent = intervalPlayback.hasRealIntervals ? <div className="space-y-2"><span className="block text-xs text-muted-foreground">Interval playback</span><input className="h-5 w-full accent-sky-500" type="range" min={0} max={intervalPlayback.realIntervals.length - 1} value={intervalPlayback.scrubberIndex} disabled={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setScrubberIndex(Number(e.currentTarget.value))} /><div className="flex items-center gap-1.5"><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => intervalPlayback.step(-1)}><SkipBack className="h-4 w-4" /></Button><Button variant="secondary" size="icon" className="h-9 w-9" onClick={intervalPlayback.togglePlaying}>{s.settings.intervalPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => intervalPlayback.step(1)}><SkipForward className="h-4 w-4" /></Button><label className="ms-auto flex items-center gap-1 text-xs"><input type="checkbox" checked={intervalPlayback.isAggregate} onChange={(e) => { intervalPlayback.setAggregate(e.currentTarget.checked); if (e.currentTarget.checked) setPathAnalysisSettings({ intervalPlaying: false }); }} />Whole period</label></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><label className="flex-1">Speed <input className="w-20 accent-sky-500" type="range" min="0.25" max="8" step="0.25" value={s.settings.playbackSpeed ?? 1} onChange={(e) => setPathAnalysisSettings({ playbackSpeed: Number(e.currentTarget.value) })} /></label><span>{s.settings.playbackSpeed ?? 1}×</span><label className="flex items-center gap-1"><input type="checkbox" checked={s.settings.loop ?? true} onChange={(e) => setPathAnalysisSettings({ loop: e.currentTarget.checked })} />Loop</label></div></div> : null;
 
   const dataSourceContent = (
     <div className="space-y-3">
-      <div className="flex gap-2">
+      <div hidden={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo"} className="flex gap-2">
         <input className="h-8 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-sm" placeholder={t("toolbar.pathAnalysis.manifestPlaceholder")} value={urlDraft} onChange={(e) => setUrlDraft(e.target.value)} onKeyDown={handleKeyDown} />
         <Button size="sm" className="h-8" disabled={!urlDraft.trim() || s.loading} onClick={loadPackage}>{s.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("toolbar.pathAnalysis.load")}</Button>
       </div>
       {s.loading && <p className="text-xs text-muted-foreground">{t("toolbar.pathAnalysis.loading")}</p>}
       <p className="text-xs text-muted-foreground">{t("toolbar.pathAnalysis.clickHint")}</p>
-      <Button variant="outline" size="sm" className="w-full" disabled={!canLoadLocalPathAnalysisPackage()} onClick={() => void loadLocalPathAnalysisFolder()}><FolderOpen className="me-1.5 h-3.5 w-3.5" />{t("toolbar.pathAnalysis.loadFolder")}</Button>
+      <Button hidden={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo"} variant="outline" size="sm" className="w-full" disabled={!canLoadLocalPathAnalysisPackage()} onClick={() => void loadLocalPathAnalysisFolder()}><FolderOpen className="me-1.5 h-3.5 w-3.5" />{t("toolbar.pathAnalysis.loadFolder")}</Button>
       {s.error && <p className="text-xs text-red-600">{s.error}</p>}
       <div className="flex flex-wrap gap-1.5">
         {s.selectedSections.map((id) => (
@@ -82,7 +84,6 @@ function Card() {
         {s.selectedSections.length > 0 && <Button variant="ghost" size="sm" onClick={clearPathAnalysisSelection}>{t("toolbar.pathAnalysis.clear")}</Button>}
       </div>
       {s.summary && <div className="text-xs text-muted-foreground">{t("toolbar.pathAnalysis.summary", { paths: s.summary.path_count ?? 0, sections: s.summary.unique_sections_count ?? 0, demand: Number(s.summary.total_demand ?? 0).toFixed(0) })}</div>}
-      {s.selectedSections.length > 0 && <div className="text-xs text-muted-foreground">{t("toolbar.pathAnalysis.matchSummary", { count: matchCount, trips: totalTrips.toFixed(0) })}</div>}
     </div>
   );
 
@@ -96,7 +97,7 @@ function Card() {
           <div className="flex flex-wrap gap-1">
             {s.selectedSections.map((id) => (
               <button key={id} type="button" className="rounded bg-muted px-2 py-1 hover:bg-accent" onClick={() => removePathAnalysisSection(id)}>
-                {id} ×
+                {id === s.selectedSection && s.selectedSectionName ? `${s.selectedSectionName} (${id})` : id} ×
               </button>
             ))}
           </div>
@@ -112,6 +113,13 @@ function Card() {
         {(["percentage", "trips"] as const).map((m) => (
           <Button key={m} size="sm" variant={s.settings.metric === m ? "secondary" : "ghost"} onClick={() => setPathAnalysisSettings({ metric: m })}>{t(`toolbar.pathAnalysis.metric.${m}`)}</Button>
         ))}
+      </div>
+      <div className="space-y-1.5">
+        <span className="block text-xs text-muted-foreground">{t("toolbar.pathAnalysis.viewMode", { defaultValue: "View mode" })}</span>
+        <div className="flex gap-1.5">
+          <Button size="sm" variant={s.settings.displayMode === "section-volumes" ? "secondary" : "ghost"} onClick={() => setPathAnalysisSettings({ displayMode: "section-volumes" })}>{t("toolbar.pathAnalysis.sectionVolumes", { defaultValue: "Section volumes" })}</Button>
+          <Button size="sm" variant={s.settings.displayMode === "origin-destination" ? "secondary" : "ghost"} onClick={() => setPathAnalysisSettings({ displayMode: "origin-destination" })}>{t("toolbar.pathAnalysis.originDestination", { defaultValue: "Origin–Destination" })}</Button>
+        </div>
       </div>
       <label className="grid gap-1 text-xs">
         <span className="flex justify-between"><span>Label size</span><span>{s.settings.labelSize}px</span></span>
@@ -134,7 +142,14 @@ function Card() {
           {t("toolbar.pathAnalysis.seeThroughBuildings")}
         </span>
       </label>
-      <div className="space-y-1.5">
+      {s.settings.displayMode === "origin-destination" ? (
+        <div className="grid grid-cols-3 gap-2 text-[10px] text-muted-foreground">
+          <span className="flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-sm bg-blue-600" />Upstream</span>
+          <span className="flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-sm bg-red-500" />Selected</span>
+          <span className="flex items-center gap-1"><i className="h-2.5 w-2.5 rounded-sm bg-green-600" />Downstream</span>
+          <span className="col-span-3">Color strength represents each section’s share of the selected volume.</span>
+        </div>
+      ) : <div className="space-y-1.5">
         <div className="flex items-center justify-between text-xs">
           <span className="text-muted-foreground">{t("toolbar.pathAnalysis.legend")}</span>
           <span className="text-muted-foreground">{ramp.unit}</span>
@@ -143,7 +158,7 @@ function Card() {
         <div className="flex items-center justify-between text-[10px] tabular-nums text-muted-foreground">
           {ramp.stops.map((stop) => <span key={stop}>{stop}</span>)}
         </div>
-      </div>
+      </div>}
     </div>
   );
 
@@ -158,6 +173,11 @@ function Card() {
       </div>
       {!collapsed && (
         <div className="p-3">
+          {s.selectionLoading && <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t("toolbar.pathAnalysis.loadingSelection", { defaultValue: "Loading paths through selected section…" })}</div>}
+          {s.selectionError && <p className="mb-2 text-xs text-red-600">{s.selectionError}</p>}
+          {s.selectedSection != null && !s.selectionLoading && (s.sectionVolumes.length > 0
+            ? <div className="mb-2 text-xs text-muted-foreground">{s.selectedSectionName ? `${s.selectedSectionName} (${s.selectedSection})` : `Section ${s.selectedSection}`} · {t("toolbar.pathAnalysis.matchSummary", { count: matchCount, trips: s.selectedVolume.toFixed(0) })} · {new Set(s.sectionVolumes.map((item) => item.section_id)).size} sections · selected section 100%</div>
+            : <div className="mb-2 text-xs text-muted-foreground">No paths found through {s.selectedSectionName ? `${s.selectedSectionName} (${s.selectedSection})` : `section ${s.selectedSection}`} for this interval and selection.</div>)}
           {!hasPackage ? (
             dataSourceContent
           ) : (

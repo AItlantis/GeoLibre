@@ -452,6 +452,11 @@ export interface KpiRow {
   delay: number | null;
 }
 
+/** A section's values at one persisted simulation interval (`ent`). */
+export interface NetworkKpiSectionSample extends KpiRow {
+  interval: number;
+}
+
 /**
  * A loaded results slice: KPI values keyed for O(1) lookup during rendering.
  *

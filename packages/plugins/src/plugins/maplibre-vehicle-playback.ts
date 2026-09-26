@@ -203,7 +203,7 @@ function isDefaultSettings(value: VehiclePlaybackSettings): boolean {
 
 /** Progress/diagnostic state the panel shows but the project never persists. */
 export interface VehiclePlaybackStatus {
-  /** True while the manifest is being fetched. */
+  /** True while the manifest or selected playback's first required chunk loads. */
   loading: boolean;
   /** Last load failure, or null. */
   error: string | null;
@@ -215,6 +215,11 @@ export interface VehiclePlaybackStatus {
   vehicleCount: number;
   /** Fraction of the chunk catalog currently resident, in `[0, 1]`. */
   loadedFraction: number;
+  /** Resident chunks for the selected playback catalog. */
+  loadedChunks: number;
+  totalChunks: number;
+  loadingChunks: number;
+  failedChunks: number;
   /**
    * Every scenario the loaded manifest offers. Length 1 for an ordinary
    * single-scenario package, so the panel can hide the picker entirely.
@@ -239,6 +244,10 @@ const IDLE_STATUS: VehiclePlaybackStatus = {
   dt: 1,
   vehicleCount: 0,
   loadedFraction: 0,
+  loadedChunks: 0,
+  totalChunks: 0,
+  loadingChunks: 0,
+  failedChunks: 0,
   scenarios: [],
   scenarioIndex: 0,
   hasSections: false,
@@ -356,6 +365,7 @@ class CesiumVehiclePlaybackAdapter {
       }).catch((error: unknown) => {
         console.warn("[GeoLibre] vehicle-playback: Cesium coverage load failed", error);
       });
+      setFrameStats(status.vehicleCount, data.getLoadedFraction());
     }
     const samples = data.sampleAt(this.settings.tick);
     setFrameStats(samples.length, data.getLoadedFraction());
@@ -905,6 +915,7 @@ class VehiclePlaybackEngine {
       void data.ensureCoverage(this.settings.tick).catch((error: unknown) => {
         console.warn("[GeoLibre] vehicle-playback: coverage load failed", error);
       });
+      setFrameStats(status.vehicleCount, data.getLoadedFraction());
     }
 
     const samples = data.sampleAt(this.settings.tick);
@@ -990,6 +1001,7 @@ let data: VehiclePlaybackData | null = null;
 let duckDbRegistered = false;
 let playbackClockTimerId: number | null = null;
 let playbackClockLastFrame: number | null = null;
+let playbackClockCoveragePending = false;
 let status: VehiclePlaybackStatus = { ...IDLE_STATUS };
 // Guards against a stale load resolving after the user has moved on to another
 // manifest URL and overwriting the newer package.
@@ -1024,13 +1036,37 @@ function stopVehiclePlaybackClock(): void {
   playbackClockLastFrame = null;
 }
 
-function vehiclePlaybackClockTick(): void {
-  if (!data || !settings.playing) return;
+async function vehiclePlaybackClockTick(): Promise<void> {
+  if (!data || !settings.playing || playbackClockCoveragePending) return;
   const now = performance.now();
   if (playbackClockLastFrame !== null) {
     const elapsedSec = Math.min(0.25, (now - playbackClockLastFrame) / 1000);
     const ticksPerSecond = (1 / data.manifest.dt) * settings.speed;
-    advanceVehiclePlaybackTick(elapsedSec * ticksPerSecond, data.manifest.maxTick);
+    const deltaTicks = elapsedSec * ticksPerSecond;
+    const requestedData = data;
+    const targetTick = Math.min(requestedData.manifest.maxTick, settings.tick + deltaTicks);
+    playbackClockLastFrame = now;
+    playbackClockCoveragePending = true;
+    try {
+      const coverage = requestedData.ensureCoverage(targetTick);
+      setFrameStats(status.vehicleCount, requestedData.getLoadedFraction());
+      const ready = await coverage;
+      if (requestedData !== data || !settings.playing) return;
+      setFrameStats(status.vehicleCount, requestedData.getLoadedFraction());
+      if (!ready) {
+        // Never advance past an interval whose chunk failed or is not resident.
+        setVehiclePlaybackSettings({ playing: false });
+        return;
+      }
+      advanceVehiclePlaybackTick(deltaTicks, requestedData.manifest.maxTick);
+    } catch (error) {
+      console.warn("[GeoLibre] vehicle-playback: playback coverage failed", error);
+      setVehiclePlaybackSettings({ playing: false });
+      return;
+    } finally {
+      playbackClockCoveragePending = false;
+    }
+    return;
   }
   playbackClockLastFrame = now;
 }
@@ -1088,8 +1124,15 @@ function patchStatus(next: Partial<VehiclePlaybackStatus>): void {
  */
 function setFrameStats(vehicleCount: number, loadedFraction: number): void {
   const rounded = Math.round(loadedFraction * 100) / 100;
-  if (status.vehicleCount === vehicleCount && status.loadedFraction === rounded) return;
-  status = { ...status, vehicleCount, loadedFraction: rounded };
+  const chunks = data?.getChunkProgress();
+  const loadedChunks = chunks?.loaded ?? 0;
+  const totalChunks = chunks?.total ?? 0;
+  const loadingChunks = chunks?.loading ?? 0;
+  const failedChunks = chunks?.failed ?? 0;
+  if (status.vehicleCount === vehicleCount && status.loadedFraction === rounded
+    && status.loadedChunks === loadedChunks && status.totalChunks === totalChunks
+    && status.loadingChunks === loadingChunks && status.failedChunks === failedChunks) return;
+  status = { ...status, vehicleCount, loadedFraction: rounded, loadedChunks, totalChunks, loadingChunks, failedChunks };
   notifyStatus();
 }
 
@@ -1351,16 +1394,22 @@ export async function setVehiclePlaybackManifestUrl(url: string): Promise<void> 
   settings = { ...settings, manifestUrl: trimmed, playing: false, tick: 0 };
   applyActiveVehicleSettings(settings);
   notifyState();
-  patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0 });
+  patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0, loadedChunks: 0, totalChunks: 0, loadingChunks: 0, failedChunks: 0 });
 
   try {
     const raw = await fetchVehicleManifestJson(trimmed);
     if (token !== loadToken) return;
     const scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
+    if (scenarios.length === 0) throw new Error(MISSING_SCOPED_ANIMATION_ERROR);
     // Remember the manifest so a scenario switch needs no second fetch.
     pendingManifest = { raw, scenarios, url: trimmed, directory: null };
-    // Single-scenario packages auto-select, which is byte-for-byte the old
-    // behavior; only a genuinely multi-scenario manifest waits for a choice.
+    if (scenarios.length > 1) {
+      // Do not load/play the first scenario implicitly. The user's choice
+      // determines which animation manifest and chunk catalog are eligible.
+      patchStatus({ loading: false, error: null, scenarios, scenarioIndex: -1, maxTick: 0, dt: 1, timeline: null });
+      return;
+    }
+    // A single declared playback can be selected automatically.
     await adoptScenario(0, token);
   } catch (error) {
     if (token !== loadToken) return;
@@ -1384,6 +1433,9 @@ let pendingManifest: {
   url: string | null;
   directory: VehicleDirectoryHandle | null;
 } | null = null;
+
+const MISSING_SCOPED_ANIMATION_ERROR =
+  "This package does not map vehicle animation chunks to its scenarios. Rebuild the package with a separate animation export for each scenario/playback.";
 
 /**
  * Build the data layer for one scenario of the retained manifest, stream its
@@ -1422,7 +1474,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
 
   data = loaded;
   patchStatus({
-    loading: false,
+    loading: true,
     error: null,
     maxTick: loaded.manifest.maxTick,
     dt: loaded.manifest.dt,
@@ -1435,7 +1487,13 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     hasLanes: Boolean(loaded.manifest.geometry.lanes),
     hasTurns: Boolean(loaded.manifest.geometry.turns),
     localFolderName: pending.directory?.name ?? null,
-    timeline: deriveSimulationTimeline({ durationSeconds: loaded.manifest.maxTick * loaded.manifest.dt, intervalDurationSeconds: loaded.manifest.dt, source: "manifest" }),
+    timeline: deriveSimulationTimeline({
+      initialTimeSeconds: loaded.manifest.initialTimeSeconds,
+      durationSeconds: loaded.manifest.maxTick * loaded.manifest.dt,
+      intervalDurationSeconds: loaded.manifest.dt,
+      intervalCount: loaded.manifest.maxTick + 1,
+      source: "manifest",
+    }),
   });
   setActiveVehicleData(loaded);
 
@@ -1449,11 +1507,19 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
       console.warn("[GeoLibre] vehicle-playback: network geometry failed", error);
     });
 
-  // Cover the start before the first frame, then fill in the rest lazily.
-  await loaded.ensureCoverage(0);
+  // Cover the start before the first frame. Remaining chunks are requested
+  // only as the selected playback reaches them; never bulk-fetch other
+  // scenario/playback catalogs (or the entire selected run) up front.
+  const initialCoverage = loaded.ensureCoverage(0);
+  setFrameStats(0, loaded.getLoadedFraction());
+  const initialCoverageReady = await initialCoverage;
   if (token !== loadToken) return;
+  if (!initialCoverageReady) {
+    throw new Error("The first vehicle playback chunk could not be loaded.");
+  }
+  patchStatus({ loading: false });
+  setFrameStats(0, loaded.getLoadedFraction());
   renderActiveVehicleAdapter();
-  loaded.startBackgroundLoad();
   // Frame the package so the vehicles are not off-screen on first play.
   if (loaded.manifest.bounds) fitVehiclePlaybackBounds(loaded.manifest.bounds);
 }
@@ -1475,7 +1541,7 @@ export async function setVehiclePlaybackScenario(scenarioIndex: number): Promise
   settings = { ...settings, playing: false, tick: 0 };
   applyActiveVehicleSettings(settings);
   notifyState();
-  patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0 });
+  patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0, loadedChunks: 0, totalChunks: 0, loadingChunks: 0, failedChunks: 0 });
   try {
     await adoptScenario(scenarioIndex, token);
   } catch (error) {
@@ -1499,8 +1565,8 @@ export function canLoadLocalVehiclePackage(): boolean {
  * directory handle instead of the network, so a package never has to be served
  * over HTTP to be played. A cancelled picker resolves quietly.
  */
-export async function loadLocalVehiclePlaybackFolder(): Promise<void> {
-  if (!supportsLocalPackageFolders()) {
+export async function loadLocalVehiclePlaybackFolder(selectedDirectory?: VehicleDirectoryHandle): Promise<void> {
+  if (!selectedDirectory && !supportsLocalPackageFolders()) {
     patchStatus({
       loading: false,
       error: "This browser cannot open local folders. Use Chrome or Edge, or load a URL.",
@@ -1510,7 +1576,7 @@ export async function loadLocalVehiclePlaybackFolder(): Promise<void> {
 
   let directory: VehicleDirectoryHandle;
   try {
-    directory = await (
+    directory = selectedDirectory ?? await (
       window as unknown as { showDirectoryPicker: () => Promise<VehicleDirectoryHandle> }
     ).showDirectoryPicker();
   } catch (error) {
@@ -1532,19 +1598,34 @@ export async function loadLocalVehiclePlaybackFolder(): Promise<void> {
   settings = { ...settings, manifestUrl: null, playing: false, tick: 0 };
   applyActiveVehicleSettings(settings);
   notifyState();
-  patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0 });
+  patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0, loadedChunks: 0, totalChunks: 0, loadingChunks: 0, failedChunks: 0 });
 
   try {
     const raw = await readLocalVehicleManifestJson(directory);
     if (token !== loadToken) return;
     // Validate the handle up front so a wrong folder fails here, clearly.
     createDirectoryPackageSource(directory);
+    const scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
+    if (scenarios.length === 0) throw new Error(MISSING_SCOPED_ANIMATION_ERROR);
     pendingManifest = {
       raw,
-      scenarios: listVehicleManifestScenarios(raw, { includeAnimationVariants: true }),
+      scenarios,
       url: null,
       directory,
     };
+    if (pendingManifest.scenarios.length > 1) {
+      patchStatus({
+        loading: false,
+        error: null,
+        scenarios: pendingManifest.scenarios,
+        scenarioIndex: -1,
+        maxTick: 0,
+        dt: 1,
+        timeline: null,
+        localFolderName: directory.name,
+      });
+      return;
+    }
     await adoptScenario(0, token);
   } catch (error) {
     if (token !== loadToken) return;

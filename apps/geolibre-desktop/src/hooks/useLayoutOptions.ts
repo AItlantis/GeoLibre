@@ -60,7 +60,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
   // only the map. The param can be a bare flag (`?maponly`) or an explicit
   // truthy value (`?maponly=true`).
   const mapOnly =
-    params.has("maponly") && MAP_ONLY_VALUES.has(normalizedParam(params.get("maponly")));
+    layout === "testudo" || (params.has("maponly") && MAP_ONLY_VALUES.has(normalizedParam(params.get("maponly"))));
   const viewer = layout === "viewer";
   // `maponly` implies `compact` so the map fills its container (the `<main>`
   // element gets `min-h-0`). This also forces `toolbarLabels` and

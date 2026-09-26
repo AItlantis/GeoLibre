@@ -34,6 +34,8 @@ import { EMBED_ORIGIN_WILDCARD, isEmbedOriginAllowed, readEmbedOrigins } from ".
  */
 export function isEmbedded(): boolean {
   if (typeof window === "undefined") return false;
+  // Testudo uses only the bounded, origin-checked native package bridge.
+  if (new URLSearchParams(window.location.search).get("layout") === "testudo") return false;
   // An explicit opt-in always activates the bridge — this is how the Jupyter
   // widget and `to_html()` exports run (they load the app with `?embed=1`).
   const embed = new URLSearchParams(window.location.search).get("embed");

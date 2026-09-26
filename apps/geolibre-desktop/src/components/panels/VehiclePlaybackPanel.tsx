@@ -7,6 +7,7 @@ import {
   VEHICLE_PLAYBACK_Z_OFFSET_MIN,
   canLoadLocalVehiclePackage,
   closeVehiclePlaybackPanel,
+  type VehiclePlaybackStatus,
   getVehiclePlaybackSnapshot,
   getVehiclePlaybackStatus,
   isVehiclePlaybackPanelVisible,
@@ -40,6 +41,21 @@ import { PlaybackTimelineReadout } from "./PlaybackTimelineReadout";
 
 const PANEL_WIDTH = 360;
 const EDGE_MARGIN = 12;
+
+function groupPlaybackChoices(scenarios: VehiclePlaybackStatus["scenarios"]) {
+  const groups: Array<{ key: string; label: string | null; scenarios: typeof scenarios }> = [];
+  for (const scenario of scenarios) {
+    const label = scenario.scenarioName?.trim() || null;
+    const key = label ? `${scenario.scid ?? label}:${label}` : `playback:${scenario.index}`;
+    let group = groups.find((candidate) => candidate.key === key);
+    if (!group) {
+      group = { key, label, scenarios: [] };
+      groups.push(group);
+    }
+    group.scenarios.push(scenario);
+  }
+  return groups;
+}
 
 /**
  * Floating panel driving the multi-vehicle traffic playback (Controls → Vehicle
@@ -95,7 +111,10 @@ function VehiclePlaybackCard() {
     maxTick,
     dt,
     vehicleCount,
-    loadedFraction,
+    loadedChunks,
+    totalChunks,
+    loadingChunks,
+    failedChunks,
     scenarios,
     scenarioIndex,
     hasSections,
@@ -107,13 +126,20 @@ function VehiclePlaybackCard() {
   const hasPackage = maxTick > 0;
   const canLoadFolder = canLoadLocalVehiclePackage();
   const hasNetwork = hasSections || hasLanes || hasTurns;
+  const scenarioGroups = groupPlaybackChoices(scenarios);
 
   const { urlDraft, setUrlDraft, loadPackage, handleKeyDown } = useManifestUrlDraft(
     manifestUrl,
     setVehiclePlaybackManifestUrl,
   );
 
-  const { clock, timeline } = useTickPlayback({ tick, dt, maxTick, hasPackage });
+  const { clock, timeline } = useTickPlayback({
+    tick,
+    dt,
+    initialTimeSeconds: simulationTimeline?.initialTimeSeconds ?? 0,
+    maxTick,
+    hasPackage,
+  });
 
   // Vehicle playback renders outside the layer store, so the auto-legend cannot
   // see it. Publish a standalone legend section while a package is loaded and
@@ -171,6 +197,7 @@ function VehiclePlaybackCard() {
 
   const dataSourceContent = (
     <div className="space-y-1">
+      <div hidden={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo"}>
       <span className="block text-xs text-muted-foreground">
         {t("toolbar.vehiclePlayback.manifestUrl")}
       </span>
@@ -226,14 +253,28 @@ function VehiclePlaybackCard() {
         </p>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
-      {hasPackage && loadedFraction < 1 && (
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {t("toolbar.vehiclePlayback.streaming", {
-            percent: Math.round(loadedFraction * 100),
-          })}
-        </p>
+      {hasPackage && totalChunks > 0 && (loadedChunks < totalChunks || loadingChunks > 0 || failedChunks > 0) && (
+        <div className="space-y-1" role="status" aria-live="polite">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+            {loadingChunks > 0 && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+            <span>
+              {failedChunks > 0
+                ? t("toolbar.vehiclePlayback.chunksFailed", { loaded: loadedChunks, total: totalChunks, failed: failedChunks })
+                : loadingChunks > 0
+                  ? t("toolbar.vehiclePlayback.chunksLoading", { loaded: loadedChunks, total: totalChunks })
+                  : t("toolbar.vehiclePlayback.chunksReady", { loaded: loadedChunks, total: totalChunks })}
+            </span>
+          </div>
+          <progress
+            className="h-1.5 w-full accent-primary"
+            aria-label={t("toolbar.vehiclePlayback.chunksReady", { loaded: loadedChunks, total: totalChunks })}
+            value={loadedChunks}
+            max={totalChunks}
+          />
+        </div>
       )}
 
+      </div>
       {/* Only a genuinely multi-scenario package gets a picker; a single
           scenario auto-selects, exactly as before. */}
       {scenarios.length > 1 && (
@@ -248,11 +289,22 @@ function VehiclePlaybackCard() {
             disabled={loading}
             onChange={(e) => void setVehiclePlaybackScenario(Number(e.currentTarget.value))}
           >
-            {scenarios.map((scenario) => (
-              <option key={scenario.id} value={scenario.index}>
-                {scenario.label}
+            <option value={-1} disabled>
+              {t("toolbar.vehiclePlayback.chooseScenario")}
+            </option>
+            {scenarioGroups.map((group) => group.label ? (
+              <optgroup key={group.key} label={group.label}>
+                {group.scenarios.map((scenario) => (
+                  <option key={`${scenario.id}:${scenario.index}`} value={scenario.index}>
+                    {scenario.fzpName ?? scenario.label}
+                  </option>
+                ))}
+              </optgroup>
+            ) : group.scenarios.map((scenario) => (
+              <option key={`${scenario.id}:${scenario.index}`} value={scenario.index}>
+                {scenario.fzpName ?? scenario.label}
               </option>
-            ))}
+            )))}
           </select>
         </div>
       )}
@@ -335,7 +387,11 @@ function VehiclePlaybackCard() {
   const playbackContent = (
     <div className="space-y-3">
       <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
-        <PlaybackTimelineReadout timeline={simulationTimeline} currentSeconds={tick * dt} intervalSeconds={dt} />
+        <PlaybackTimelineReadout
+          timeline={simulationTimeline}
+          currentSeconds={(simulationTimeline?.initialTimeSeconds ?? 0) + tick * dt}
+          intervalSeconds={dt}
+        />
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-lg font-semibold tabular-nums">{clock}</span>
           <span className="text-xs tabular-nums text-muted-foreground">

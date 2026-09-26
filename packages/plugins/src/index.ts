@@ -31,6 +31,7 @@ export {
   type TestudoSqliteRuntime,
 } from "./plugins/testudo-dataset-provider";
 export { PluginManager } from "./plugin-manager";
+export { MAPLIBRE_LABEL_LAYOUT, MAPLIBRE_LABEL_PAINT, declutterMapLabels, formatRoundedDifference, formatTripVolume, lineMidpoint, passesComparisonDifferenceFilter, passesDifferenceThreshold, type MapLabelPoint } from "./shared/map-labels";
 export {
   PATH_ANALYSIS_PLUGIN_ID,
   closePathAnalysisPanel,
@@ -41,6 +42,8 @@ export {
   reattachPathAnalysis,
   setPathAnalysisManifestUrl,
   setPathAnalysisSettings,
+  stepPathAnalysisInterval,
+  togglePathAnalysisIntervalPlaying,
   applyPathAnalysisVisualSettings,
   clearPathAnalysisSelection,
   removePathAnalysisSection,
@@ -64,6 +67,8 @@ export {
   type PathAnalysisManifest,
   type PathMatch,
   type PathAnalysisSummary,
+  type PathSectionVolume,
+  type PathAnalysisQueryResult,
 } from "./plugins/path-analysis-data";
 export {
   registerRightPanel,
@@ -1469,3 +1474,6 @@ export {
   type FlightModelConfig,
   type FlightStepResult,
 } from "./plugins/flight-simulator-physics";
+
+export { readLocalNetworkKpiManifestJson } from "./plugins/network-kpi-data";
+export { getGeolibrePackage } from "./plugins/geolibre-package-loader";
