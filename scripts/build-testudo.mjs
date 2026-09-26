@@ -26,7 +26,7 @@ const pinnedParquet = {
 for (const [target, expected] of Object.entries(pinnedParquet)) {
   const binary = readFileSync(join(app, "public/duckdb-extensions/v1.5.4", target, "parquet.duckdb_extension.wasm"));
   if (createHash("sha256").update(binary).digest("hex") !== expected) throw new Error(`Pinned ${target} Parquet extension checksum mismatch`);
-  const engine = readFileSync(join(app, "node_modules/@duckdb/duckdb-wasm/dist", target === "wasm_eh" ? "duckdb-eh.wasm" : "duckdb-mvp.wasm"));
+  const engine = readFileSync(require.resolve(`@duckdb/duckdb-wasm/dist/${target === "wasm_eh" ? "duckdb-eh.wasm" : "duckdb-mvp.wasm"}`));
   if (!engine.includes(Buffer.from("v1.5.4"))) throw new Error(`DuckDB ${target} engine does not match pinned Parquet extension`);
 }
 const env = { ...process.env, GEOLIBRE_APP_BASE: "/geolibre-native/", GEOLIBRE_EMBED: "1", VITE_WELCOME_DISABLED: "1" };
