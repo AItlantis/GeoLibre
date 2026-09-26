@@ -131,7 +131,16 @@ export function parseNetworkKpiManifest(
   const sqlitePath = (pkg?.resultsPath ? resolvePath(pkg.resultsPath, manifestUrl) : null) ??
     resolvePath(environment.sqlite_relative, manifestUrl) ??
     resolvePath(environment.sqlite_path, manifestUrl);
-  const resultsCatalogRelative = resolvePath(pkg?.resultsCatalogRelative ?? environment.results_catalog_relative, manifestUrl);
+  // A per-scenario `environment.results_catalog_relative` (resolved from
+  // `scope` above, i.e. `animations[scenarioIndex]`) must win over the
+  // package envelope's `pkg.resultsCatalogRelative`, which is parsed ONCE
+  // from the manifest ROOT by parseGeolibrePackage() and is therefore the
+  // same value for every scenario. Preferring `pkg` unconditionally (the
+  // previous `pkg?.resultsCatalogRelative ?? environment...` order) pinned
+  // every scenario to the package's single default results catalog, so
+  // switching scenarios in Network KPI mode never changed the displayed
+  // statistics (GitHub #277) even though the geometry did reload correctly.
+  const resultsCatalogRelative = resolvePath(environment.results_catalog_relative ?? pkg?.resultsCatalogRelative, manifestUrl);
   const resultsFormat = typeof (pkg?.resultsFormat ?? environment.results_format) === "string" ? String(pkg?.resultsFormat ?? environment.results_format) : null;
   const resultsTableSelection = pkg?.resultsTableSelection ?? (Array.isArray(environment.results_table_selection) ? environment.results_table_selection.filter((x): x is string => typeof x === "string") : []);
 
