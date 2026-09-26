@@ -127,6 +127,9 @@ function makeCesium() {
     get(index: number) {
       return this.points[index];
     }
+    contains(primitive: unknown) {
+      return this.points.includes(primitive as Record<string, unknown>);
+    }
   }
   class LabelCollection {
     labels: Array<Record<string, unknown>> = [];

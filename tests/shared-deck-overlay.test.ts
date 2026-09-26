@@ -9,8 +9,16 @@ import {
 } from "../packages/plugins/src/plugins/shared-deck-overlay";
 
 // A deck layer stand-in. Only identity/label matter for these assertions.
-type FakeLayer = { id: string; isLoaded?: boolean; parent?: FakeLayer };
-const layer = (id: string): FakeLayer => ({ id });
+// clone() mirrors deck.gl's real Layer.clone(props): a new instance with the
+// same id, merged with any override props (shared-deck-overlay.ts calls it
+// with {} on every overlay rebind to avoid reusing a stateful instance).
+type FakeLayer = { id: string; isLoaded?: boolean; parent?: FakeLayer; clone: (props: Partial<FakeLayer>) => FakeLayer };
+const layer = (id: string): FakeLayer => ({
+  id,
+  clone(props) {
+    return { ...this, ...props };
+  },
+});
 const ids = (layers: unknown): string[] => (layers as FakeLayer[]).map((l) => l.id);
 
 // Captures the props handed to the single shared MapboxOverlay so a test can
