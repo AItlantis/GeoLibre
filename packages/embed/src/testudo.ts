@@ -1,4 +1,4 @@
-export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison" | "geoai";
+export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison" | "geoai" | "geoai-buildings";
 export type TestudoDemoMode = "animation" | "flow" | "paths" | "density";
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
 export interface TestudoBootstrap {
