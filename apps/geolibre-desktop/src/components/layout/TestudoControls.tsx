@@ -258,17 +258,12 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); close(); };
   }, [app]);
 
+  // The embedding Testudo shell renders its own "open package" control and mode/plugin
+  // switcher outside this iframe (ProductApp.tsx / EmbeddedViewer.tsx), so this panel no
+  // longer duplicates them here (see the Testudo-side UI reconciliation pass) — it now only
+  // surfaces what the shell cannot: the GeoAI trigger and inline loading/error status.
   return <div className="absolute end-3 top-3 z-40 max-w-xs rounded-md border border-border bg-background p-3 shadow-lg" data-testudo-controls>
-    {state.package?.origin !== "published" && <button className="rounded border px-3 py-2 text-sm" disabled={state.status === "loading"} onClick={() => {
-      const pick = (window as unknown as { showDirectoryPicker?: () => Promise<VehicleDirectoryHandle> }).showDirectoryPicker;
-      if (!pick) { setState(current => ({ ...current, status: "error", error: t("testudo.folderUnsupported") })); return; }
-      void pick().then(directory => picker.current?.(directory)).catch(error => { if (error?.name !== "AbortError") setState(current => ({ ...current, status: "error", error: String(error) })); });
-    }}>{t("testudo.openLocal")}</button>}
-    {state.package && <div role="group" aria-label="Demo modes" className="mt-2 flex flex-wrap gap-1">{modes.map(mode => <button key={mode.id} type="button" className={`rounded border px-2 py-1 text-xs ${state.selectedMode === mode.id ? "bg-primary text-primary-foreground" : ""}`} aria-pressed={state.selectedMode === mode.id} disabled={state.status === "loading" || !state.availableModes.includes(mode.id)} title={state.availableModes.includes(mode.id) ? mode.label : `${mode.label} is not declared by this package`} onClick={() => { void modeSelector.current?.(mode.id).catch(error => setState(current => ({ ...current, status: "error", error: error instanceof Error ? error.message : String(error) }))); }}>{mode.label}</button>)}</div>}
-    {/* GeoAI is a chat capability, not a map-rendering mode, so it is deliberately excluded from
-     * `modes` above (see #291/#295) and gets its own trigger here instead of joining that group
-     * (see #302: the dispatch table and panel existed with zero UI entry point to open them). */}
-    {app && state.capabilities.some(item => item.id === "geoai" && item.available) && <button type="button" className="mt-2 rounded border px-2 py-1 text-xs" onClick={() => handlers["geoai"].open(app)}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
+    {app && state.capabilities.some(item => item.id === "geoai" && item.available) && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => handlers["geoai"].open(app)}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
     {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
     {state.error && <p role="alert" className="mt-2 text-sm text-red-600">{state.error}</p>}
   </div>;
