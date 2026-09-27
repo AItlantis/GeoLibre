@@ -1361,6 +1361,14 @@ export {
   type GeoAiChatMessage, type GeoAiChatSettings, type GeoAiChatStatus,
 } from "./plugins/geoai-chat";
 export {
+  GEOAI_BUILDINGS_PLUGIN_ID, geoAiBuildingsPlugin,
+  initGeoAiBuildings, isGeoAiBuildingsConfigured, resetGeoAiBuildings,
+  openGeoAiBuildingsPanel, closeGeoAiBuildingsPanel, isGeoAiBuildingsPanelVisible, subscribeGeoAiBuildingsPanel,
+  loadGeoAiBuildings, runGeoaiBuildingsInference,
+  getGeoAiBuildingsStatus, subscribeGeoAiBuildings, getGeoAiBuildingsSnapshot, setGeoAiBuildingsSettings,
+  type GeoAiBuildingsSettings, type GeoAiBuildingsStatus,
+} from "./plugins/geoai-buildings";
+export {
   advanceVehiclePlaybackTick,
   canLoadLocalVehiclePackage,
   closeVehiclePlaybackPanel,
