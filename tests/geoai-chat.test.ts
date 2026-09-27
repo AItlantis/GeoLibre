@@ -53,6 +53,31 @@ describe("GeoAI chat capability wiring (issue #273)", () => {
     assert.ok(TESTUDO_CONTROLS_SOURCE.includes('"geoai": { open: plugins.openGeoAiChatPanel'), "TestudoControls must dispatch geoai through the shared handlers table");
   });
 
+  it("renders a toolbar trigger that opens the geoai panel only when the capability is available (#302)", () => {
+    // Regression guard for #302: the backend correctly reported `geoai: available: true` and the
+    // dispatch table + panel component both existed, but nothing in the toolbar actually called
+    // `handlers["geoai"].open()` — so the chat panel was permanently unreachable from the UI. This
+    // reads the JSX gating expression as source text (rather than rendering the component, which
+    // needs the browser/wasm-only `@geolibre/plugins` barrel this Node suite avoids elsewhere —
+    // see the comment on TESTUDO_CONTROLS_SOURCE above) and evaluates the *actual* guard condition
+    // against synthetic capability lists, so a regression that silently drops the gate (e.g.
+    // hardcoding `true`, or checking the wrong capability id) fails this test.
+    const trigger = TESTUDO_CONTROLS_SOURCE.match(/\{app && (state\.capabilities\.some\([^)]+\)) && <button[^]*?onClick=\{\(\) => (handlers\["geoai"\]\.open\(app\))\}/);
+    assert.ok(trigger, "TestudoControls must render a geoai trigger button gated on capability availability");
+    const [, guardExpr, openExpr] = trigger!;
+    assert.equal(openExpr, 'handlers["geoai"].open(app)', "the trigger must call the shared geoai open handler");
+
+    const evalGuard = (capabilities: Array<{ id: string; available: boolean }>) => {
+      const state = { capabilities };
+      // eslint-disable-next-line no-new-func -- evaluating the extracted guard expression itself is the point of this test
+      return new Function("state", `return ${guardExpr};`)(state);
+    };
+    assert.equal(evalGuard([{ id: "geoai", available: true }]), true, "trigger must render when geoai is available");
+    assert.equal(evalGuard([{ id: "geoai", available: false }]), false, "trigger must not render when geoai is unavailable");
+    assert.equal(evalGuard([{ id: "vehicle-playback", available: true }]), false, "trigger must not render when geoai is not in the capability list at all");
+    assert.equal(evalGuard([]), false, "trigger must not render for an empty capability list");
+  });
+
   it("accepts a bootstrap that declares the geoai capability", () => {
     const candidate = bootstrap({ capabilities: [{ id: "vehicle-playback", available: true }, { id: "geoai", available: true }] });
     assert.doesNotThrow(() => validateTestudoBootstrap(candidate, false));
