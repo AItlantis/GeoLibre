@@ -1,0 +1,1 @@
+function r(t){if(typeof t!="string"||t.length===0)return null;if(/^(https?|blob|data):/i.test(t))return t;const n=t.match(/^[a-z][\w+.-]*:\/\/(.+)$/i);return n&&/^(https?|blob|data):/i.test(n[1])?n[1]:null}export{r as t};

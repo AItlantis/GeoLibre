@@ -1,0 +1,1 @@
+import{X as e}from"./context-3oYPMP1x.js";var c={name:"circle-check",size:24,node:[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["path",{d:"m16 9-5.5 5.5L8 12",key:"xofnsj"}]],aliases:["check-circle-2"]};c.node;var a=e(c);export{a as t};

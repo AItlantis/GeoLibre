@@ -1,0 +1,1 @@
+var r="geolibre-wms";function o(t){try{const e=new URL(t);return e.protocol==="http:"||e.protocol==="https:"}catch{return!1}}function n(t){if(t.startsWith("geolibre-wms://"))return t;if(!o(t))throw new Error("Invalid WMS tile URL.");return`${r}://tile?url=${encodeURIComponent(t).replaceAll("%7Bbbox-epsg-3857%7D","{bbox-epsg-3857}")}`}export{o as n,n as r,r as t};
