@@ -10,6 +10,10 @@ The **Layers panel** on the left lists every layer in the project, from the topm
 - **Order**: drag a layer to reorder it, or use the move up and move down actions. Layers higher in the list draw on top. The basemap (**Background**) always stays at the bottom.
 - **Opacity**: each layer has an opacity slider from 0 to 100 percent.
 
+## Hover tooltips
+
+When at least one layer shows a [hover tooltip](styling.md#popups-and-hover-tooltips), the Layers panel (and the read-only viewer) shows a **Hover tooltips** checkbox. Untick it to pause every layer's hover tip while you explore the map or inspect attributes; tick it again to bring them back with the same per-layer choices and fields. This is a viewing switch only: it does not change or dirty the saved project, and it turns back on when a project opens.
+
 ## Blend modes
 
 The [Style panel](styling.md) carries a **Blend** menu, above the symbology
