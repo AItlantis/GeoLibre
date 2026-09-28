@@ -297,13 +297,19 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); close(); };
   }, [app]);
 
+  const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));
+  const hasVisibleStatus = state.status === "loading" || Boolean(state.error);
+  if (!canOpenGeoAi && !hasVisibleStatus) return null;
+
   // The embedding Testudo shell renders its own "open package" control and mode/plugin
   // switcher outside this iframe (ProductApp.tsx / EmbeddedViewer.tsx), so this panel no
   // longer duplicates them here (see the Testudo-side UI reconciliation pass) — it now only
   // surfaces what the shell cannot: the GeoAI trigger and inline loading/error status.
-  return <div className="absolute end-3 top-3 z-40 max-w-xs rounded-md border border-border bg-background p-3 shadow-lg" data-testudo-controls>
-    {app && state.capabilities.some(item => item.id === "geoai" && item.available) && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => handlers["geoai"].open(app)}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
-    {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
-    {state.error && <p role="alert" className="mt-2 text-sm text-red-600">{state.error}</p>}
+  return <div className="pointer-events-none absolute inset-x-3 top-3 z-40 flex justify-end" data-testudo-controls>
+    <div className="pointer-events-auto w-fit min-w-0 max-w-[min(20rem,100%)] rounded-md border border-border bg-background p-3 shadow-lg">
+      {canOpenGeoAi && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => { if (app) handlers["geoai"].open(app); }}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
+      {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
+      {state.error && <p role="alert" className="mt-2 break-words text-sm text-red-600">{state.error}</p>}
+    </div>
   </div>;
 }
