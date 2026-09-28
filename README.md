@@ -44,6 +44,7 @@ capabilities, credentials, and current compatibility.
 - **[Get started](https://geolibre.app/getting-started/)** — install, run from source, and configure
 - **[Features](https://geolibre.app/features/)** — the complete feature list
 - **[Rendering engines](https://geolibre.app/user-guide/rendering-engines/)** — compare MapLibre, Mapbox, Cesium, and ArcGIS and learn how to switch or combine them.
+- **[Open data demos](https://geolibre.app/demos/#open-data-showcase)** — live projects built from public open data on environmental health, human mobility, and environmental change.
 
 ## Demos
 
@@ -65,7 +66,7 @@ The animation below runs the Time Slider along the buildings' construction year,
 
 [![Animation of Manhattan buildings appearing by construction year as the Time Slider advances from 1850 to 2025](https://assets.geolibre.app/demos/nyc-buildings-gif.gif)](https://assets.geolibre.app/demos/nyc-buildings.webm)
 
-[Open the live project](https://share.geolibre.app/giswqs/nyc-buildings-and-subways)
+[Open the live project](https://share.geolibre.app/giswqs/manhattan-buildings-through-time)
 
 ### Planetary basemaps
 
