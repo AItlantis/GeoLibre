@@ -2,15 +2,27 @@ export interface ComparisonInput { key: string | number; flow: number | null; de
 export type ComparisonFlowSign = "negative" | "zero" | "positive" | "unknown";
 export type ComparisonFlowDensityQuadrant = "more_flow_more_density" | "more_flow_less_density" | "less_flow_less_density" | "less_flow_more_density" | "unknown";
 export interface ComparisonRow extends ComparisonInput {
+  hasReference: boolean;
+  hasCompared: boolean;
   flow_delta: number | null;
   density_delta: number | null;
   speed_delta: number | null;
   delay_delta: number | null;
   flow_pct_delta: number | null;
   density_pct_delta: number | null;
-  flow_density_product_delta: number | null;
   cmp_flow_sign: ComparisonFlowSign;
   cmp_flow_density_quadrant: ComparisonFlowDensityQuadrant;
+}
+
+export function defaultScenarioComparisonPair(
+  scenarioIndices: readonly number[],
+  currentA: number,
+  currentB: number,
+  didA: number | null,
+  didB: number | null,
+): { scenarioA: number; scenarioB: number } | null {
+  if (scenarioIndices.length < 2 || currentA !== currentB || didA != null || didB != null) return null;
+  return { scenarioA: scenarioIndices[0], scenarioB: scenarioIndices[1] };
 }
 
 function delta(left: number | null | undefined, right: number | null | undefined): number | null {
@@ -35,11 +47,10 @@ export function buildScenarioComparisonRows(a: readonly ComparisonInput[], b: re
     // All deltas intentionally use Compared - Reference (B - A).
     const fd = delta(other?.flow, first?.flow);
     const dd = delta(other?.density, first?.density);
-    const productDelta = first?.flow == null || first.density == null || other?.flow == null || other.density == null
-      ? null
-      : other.flow * other.density - first.flow * first.density;
     out.push({
       key: first?.key ?? other!.key,
+      hasReference: first !== undefined,
+      hasCompared: other !== undefined,
       flow: first?.flow ?? null,
       density: first?.density ?? null,
       speed: first?.speed ?? null,
@@ -49,7 +60,6 @@ export function buildScenarioComparisonRows(a: readonly ComparisonInput[], b: re
       delay_delta: delta(other?.delay, first?.delay),
       flow_pct_delta: percentageDelta(other?.flow, first?.flow),
       density_pct_delta: percentageDelta(other?.density, first?.density),
-      flow_density_product_delta: productDelta,
       cmp_flow_sign: fd == null ? "unknown" : fd > 0 ? "positive" : fd < 0 ? "negative" : "zero",
       cmp_flow_density_quadrant: fd == null || dd == null
         ? "unknown"

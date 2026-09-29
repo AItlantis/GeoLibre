@@ -6,7 +6,10 @@ import {
   canLoadLocalScenarioComparisonPackage,
   closeScenarioComparisonPanel,
   comparisonCategoricalRamp,
-  SCENARIO_COMPARISON_CONTINUOUS_RAMPS,
+  comparisonDifferenceLegend,
+  sideBySideLegend,
+  comparisonThresholdOptions,
+  isComparisonDifferenceMetric,
   getScenarioComparisonSnapshot,
   getScenarioComparisonStatus,
   isScenarioComparisonPanelVisible,
@@ -23,7 +26,7 @@ import {
   useScenarioReplicationSelector,
   useViewModeToggle,
 } from "@geolibre/plugins";
-import { PlaybackTimelineReadout, intervalCurrentSeconds } from "./PlaybackTimelineReadout";
+import { PlaybackTimelineReadout } from "./PlaybackTimelineReadout";
 
 export function ScenarioComparisonPanel() {
   const { t } = useTranslation();
@@ -81,7 +84,7 @@ export function ScenarioComparisonPanel() {
   });
 
   const ramp = comparisonCategoricalRamp(s.metric);
-  const continuous = SCENARIO_COMPARISON_CONTINUOUS_RAMPS[s.metric as "flow_delta" | "flow_density_product_delta"];
+  const continuous = isComparisonDifferenceMetric(s.metric) ? comparisonDifferenceLegend(s.metric, s.flowDifferenceScale) : undefined;
 
   if (!open) return null;
 
@@ -158,30 +161,28 @@ export function ScenarioComparisonPanel() {
         <span className="block text-xs">{t("toolbar.scenarioComparison.mode")}</span>
         <div className="flex items-center gap-1.5">
           <Button variant={s.mode === "diff" ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={s.mode === "diff"} onClick={() => setScenarioComparisonSettings({ mode: "diff", metric: s.metric === "flow" || s.metric === "density" || s.metric === "speed" ? "flow_delta" : s.metric })}>{t("toolbar.scenarioComparison.diff")}</Button>
-          <Button variant={s.mode === "side-by-side" ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={s.mode === "side-by-side"} onClick={() => setScenarioComparisonSettings({ mode: "side-by-side", metric: s.metric.endsWith("_delta") || s.metric.startsWith("cmp_") || s.metric === "flow_density_product_delta" ? "flow" : s.metric })}>{t("toolbar.scenarioComparison.sideBySide")}</Button>
+          <Button variant={s.mode === "side-by-side" ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={s.mode === "side-by-side"} onClick={() => setScenarioComparisonSettings({ mode: "side-by-side", metric: s.metric.endsWith("_delta") || s.metric.startsWith("cmp_") ? "flow" : s.metric })}>{t("toolbar.scenarioComparison.sideBySide")}</Button>
         </div>
       </div>
       <label className="block text-xs">
         Metric
         <select className="h-8 w-full rounded border bg-transparent text-foreground" value={s.metric} onChange={(e) => setScenarioComparisonSettings({ metric: e.currentTarget.value as typeof s.metric })}>
-          {(s.mode === "side-by-side" ? (["flow", "speed", "density"] as const) : (["flow_delta", "density_delta", "speed_delta", "delay_delta", "flow_density_product_delta", "cmp_flow_sign", "cmp_flow_density_quadrant"] as const)).map((m) => <option className="bg-background text-foreground" key={m} value={m}>{{flow:"Flow",speed:"Speed",density:"Density",flow_delta:"Flow difference",density_delta:"Density difference",speed_delta:"Speed difference",delay_delta:"Delay difference",flow_density_product_delta:"Flow-density product difference",cmp_flow_sign:"Flow sign",cmp_flow_density_quadrant:"Flow-density quadrant"}[m]}</option>)}
+          {(s.mode === "side-by-side" ? (["flow", "speed", "density"] as const) : (["flow_delta", "density_delta", "speed_delta", "delay_delta", "cmp_flow_sign", "cmp_flow_density_quadrant"] as const)).map((m) => <option className="bg-background text-foreground" key={m} value={m}>{{flow:"Flow",speed:"Speed",density:"Density",flow_delta:"Flow difference",density_delta:"Density difference",speed_delta:"Speed difference",delay_delta:"Delay difference",cmp_flow_sign:"Flow sign",cmp_flow_density_quadrant:"Flow-density quadrant"}[m]}</option>)}
         </select>
       </label>
       {s.mode === "diff" && (
         <>
-          <label className="block text-xs">
+          {isComparisonDifferenceMetric(s.metric) && <label className="block text-xs">
             {t("toolbar.scenarioComparison.minimumDifference")}
-            <select
-              className="mt-1 h-8 w-full rounded border bg-transparent text-foreground"
-              value={s.differenceThreshold ?? 50}
-              onChange={(e) => setScenarioComparisonSettings({ differenceThreshold: Number(e.currentTarget.value) })}
-            >
-              <option className="bg-background text-foreground" value={0}>{t("toolbar.scenarioComparison.showAllDifferences")}</option>
-              <option className="bg-background text-foreground" value={50}>±50</option>
-              <option className="bg-background text-foreground" value={100}>±100</option>
+            <select className="mt-1 h-8 w-full rounded border bg-transparent text-foreground" value={s.differenceThreshold} onChange={(e) => setScenarioComparisonSettings({ differenceThreshold: Number(e.currentTarget.value) })}>
+              {comparisonThresholdOptions(s.metric).map((value) => <option className="bg-background text-foreground" key={value} value={value}>{value === 0 ? t("toolbar.scenarioComparison.showAllDifferences") : `\u00b1${value} ${continuous?.unit ?? ""}`}</option>)}
             </select>
             <span className="mt-1 block text-[11px] text-muted-foreground">{t("toolbar.scenarioComparison.minimumDifferenceHint")}</span>
-          </label>
+          </label>}
+          {s.metric === "flow_delta" && <label className="block text-xs">
+            {t("toolbar.scenarioComparison.flowDifferenceScale", { value: s.flowDifferenceScale })}
+            <input className="w-full" type="range" min={10} max={2000} step={10} value={s.flowDifferenceScale} onChange={(e) => setScenarioComparisonSettings({ flowDifferenceScale: Number(e.currentTarget.value) })} />
+          </label>}
           <div className="flex items-center gap-1.5">
             <Button variant={!viewMode.extruded ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={!viewMode.extruded} onClick={viewMode.setFlat}>
               <Square className="me-1.5 h-3.5 w-3.5" />
@@ -225,6 +226,10 @@ export function ScenarioComparisonPanel() {
           {t("toolbar.scenarioComparison.seeThroughBuildings")}
         </span>
       </label>
+      {s.mode === "side-by-side" && (s.metric === "flow" || s.metric === "density" || s.metric === "speed") && (() => {
+        const sideRamp = sideBySideLegend(s.metric);
+        return <div><div className="flex justify-between text-xs"><span>{sideRamp.label}</span><span>{sideRamp.unit}</span></div><div className="h-4 rounded" style={{ background: `linear-gradient(to right, ${sideRamp.colors.join(", ")})` }} /><div className="flex justify-between text-xs">{sideRamp.stops.map(x=><span key={x}>{x}</span>)}</div></div>;
+      })()}
       {s.mode === "diff" && (s.metric.startsWith("cmp_") && ramp ? (
         <div>
           {ramp.categories.map((c) => (
@@ -251,14 +256,12 @@ export function ScenarioComparisonPanel() {
     </div>
   );
 
-  const playbackContent = intervalPlayback.hasRealIntervals ? (
+  const playbackContent = intervalPlayback.hasRealIntervals || status.aggregateAvailable ? (
     <div className="space-y-1">
-      <div className="grid grid-cols-2 gap-1">
-        <PlaybackTimelineReadout timeline={status.timelineA} currentSeconds={intervalCurrentSeconds(status.timelineA, status.intervals, s.interval)} intervalSeconds={status.timelineA?.intervalDurationSeconds} />
-        <PlaybackTimelineReadout timeline={status.timelineB} currentSeconds={intervalCurrentSeconds(status.timelineB, status.intervals, s.interval)} intervalSeconds={status.timelineB?.intervalDurationSeconds} />
-      </div>
+      <PlaybackTimelineReadout timeline={status.timelineA} currentSeconds={status.currentTimeSeconds ?? Number.NaN} intervalSeconds={status.timelineA?.intervalDurationSeconds} />
+      {intervalPlayback.isAggregate && <span className="block text-xs text-muted-foreground">Whole period</span>}
       <span className="block text-xs text-muted-foreground">{t("toolbar.scenarioComparison.interval")}</span>
-      <input
+      {intervalPlayback.hasRealIntervals && <input
         className="h-5 w-full cursor-ew-resize accent-sky-500 disabled:opacity-50"
         type="range"
         min={0}
@@ -266,19 +269,23 @@ export function ScenarioComparisonPanel() {
         value={intervalPlayback.scrubberIndex}
         disabled={status.loading || intervalPlayback.isAggregate}
         onChange={(e) => intervalPlayback.setScrubberIndex(Number(e.currentTarget.value))}
-      />
+      />}
       <div className="flex items-center gap-1.5">
-        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("toolbar.scenarioComparison.previous")} onClick={() => intervalPlayback.step(-1)} disabled={status.loading}><SkipBack className="h-4 w-4" /></Button>
-        <Button variant="secondary" size="icon" className="h-9 w-9" aria-label={s.intervalPlaying ? t("toolbar.scenarioComparison.pause") : t("toolbar.scenarioComparison.play")} onClick={intervalPlayback.togglePlaying} disabled={status.loading}>{s.intervalPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("toolbar.scenarioComparison.next")} onClick={() => intervalPlayback.step(1)} disabled={status.loading}><SkipForward className="h-4 w-4" /></Button>
-        <label className="ms-auto flex items-center gap-2 text-xs"><input type="checkbox" checked={intervalPlayback.isAggregate} onChange={(e) => intervalPlayback.setAggregate(e.currentTarget.checked)} />Whole period</label>
+        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("toolbar.scenarioComparison.previous")} onClick={() => intervalPlayback.step(-1)} disabled={status.loading || !status.intervals.length}><SkipBack className="h-4 w-4" /></Button>
+        <Button variant="secondary" size="icon" className="h-9 w-9" aria-label={s.intervalPlaying ? t("toolbar.scenarioComparison.pause") : t("toolbar.scenarioComparison.play")} onClick={intervalPlayback.togglePlaying} disabled={status.loading || !status.intervals.length}>{s.intervalPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("toolbar.scenarioComparison.next")} onClick={() => intervalPlayback.step(1)} disabled={status.loading || !status.intervals.length}><SkipForward className="h-4 w-4" /></Button>
+        <label className="ms-auto flex items-center gap-2 text-xs"><input type="checkbox" checked={intervalPlayback.isAggregate} disabled={!status.aggregateAvailable} onChange={(e) => intervalPlayback.setAggregate(e.currentTarget.checked)} />Whole period</label>
       </div>
       <div className="flex items-center gap-2 text-xs text-muted-foreground"><label className="flex-1">Speed <input className="w-20 accent-sky-500" type="range" min="0.25" max="8" step="0.25" value={s.playbackSpeed} onChange={(e) => setScenarioComparisonSettings({ playbackSpeed: Number(e.currentTarget.value) })} /></label><span>{s.playbackSpeed}×</span><label className="flex items-center gap-1"><input type="checkbox" checked={s.loop} onChange={(e) => setScenarioComparisonSettings({ loop: e.currentTarget.checked })} />Loop</label></div>
     </div>
   ) : (
     <div className="rounded border px-2 py-3 text-xs text-muted-foreground">
       {hasPackage
-        ? (status.loading ? "Loading playback intervals…" : "No playback intervals are available for this comparison.")
+        ? (status.loading ? "Loading playback intervals…"
+          : status.timeMatchReason === "missing-timeline" ? "Playback comparison is disabled because one or both scenarios are missing timing metadata."
+          : status.timeMatchReason === "period-mismatch" ? "Playback comparison is disabled because the scenarios cover different simulation periods."
+          : status.timeMatchReason === "no-matching-times" ? "Playback comparison is disabled because the scenarios have no matching simulation times."
+          : "No playback intervals are available for this comparison.")
         : "Load a comparison package to enable playback."}
     </div>
   );

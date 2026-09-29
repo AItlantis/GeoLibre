@@ -57,7 +57,7 @@ export {
 export { PATH_METRICS, PATH_RAMPS, pathColorRgb, pathElevation, type PathMetric } from "./plugins/path-analysis-ramps";
 export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_STORE_LAYER_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, swapScenarioComparisonSides, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
 export { buildScenarioComparisonRows, type ComparisonInput, type ComparisonRow } from "./plugins/scenario-comparison-data";
-export { parseComparisonRamps, comparisonCategoricalRamp, type ComparisonMetric, type CategoricalRamp } from "./plugins/comparison-ramps";
+export { parseComparisonRamps, comparisonCategoricalRamp, comparisonDifferenceLegend, comparisonThresholdOptions, comparisonThresholdDefault, isComparisonDifferenceMetric, sideBySideLegend, COMPARISON_CONTINUOUS_RAMPS, type ComparisonMetric, type CategoricalRamp, type ComparisonDifferenceMetric } from "./plugins/comparison-ramps";
 export {
   loadPathAnalysis,
   parsePathAnalysisManifest,

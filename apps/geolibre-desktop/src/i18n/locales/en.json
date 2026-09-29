@@ -2452,9 +2452,11 @@
       "minimumDifference": "Hide differences below",
       "minimumDifferenceHint": "Applies to the 2D/3D difference map and its labels.",
       "showAllDifferences": "Show all differences",
+      "flowDifferenceScale": "Flow difference color scale: plus or minus {{value}} veh/h",
+      "missingTimeline": "Simulation timing is unavailable for one or both scenarios, so they cannot be compared.",
+      "noMatchingTimes": "The scenarios have no matching simulation times.",
       "metrics": {
         "flow_delta": "Flow delta",
-        "flow_density_product_delta": "Flow-density product delta",
         "cmp_flow_sign": "Flow sign",
         "cmp_flow_density_quadrant": "Flow-density quadrant"
       },
