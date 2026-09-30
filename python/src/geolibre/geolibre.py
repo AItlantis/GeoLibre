@@ -245,6 +245,8 @@ def render_project_html(
     width: str = "100%",
     height: str = "800px",
     app_url: str | None = None,
+    layout: str | None = None,
+    theme: str | None = None,
 ) -> str:
     """Render a project dict as a standalone HTML page.
 
@@ -263,13 +265,18 @@ def render_project_html(
         height: CSS height of the embedded map.
         app_url: Base URL of the GeoLibre app to embed. Defaults to
             :data:`DEFAULT_HTML_APP_URL`.
+        layout: The app chrome to embed with: ``"embed"``, ``"full"``, or
+            ``"maponly"``, as for :class:`Map`. ``None`` leaves the app's
+            default chrome.
+        theme: ``"light"`` or ``"dark"``; ``None`` follows the viewer's OS.
 
     Returns:
         The HTML document as a string.
 
     Raises:
-        ValueError: If ``width`` or ``height`` is not a plain CSS dimension, or
-            ``app_url`` is not an ``http``/``https`` URL.
+        ValueError: If ``width`` or ``height`` is not a plain CSS dimension,
+            ``app_url`` is not an ``http``/``https`` URL, or ``layout`` or
+            ``theme`` is not a recognized value.
     """
     base_url = app_url or DEFAULT_HTML_APP_URL
     # The project is posted into the frame, so the app URL decides where it
@@ -286,9 +293,36 @@ def render_project_html(
     # fragment would otherwise swallow a trailing "?embed=1" (browsers read it
     # as part of the fragment), so the app never sees the flag. partition keeps
     # the fragment and its "#" intact when present and yields "" when absent.
+    # The chrome flags ride along the same way, matching the query the widget
+    # front-end builds, so the export looks like the notebook map (#2764).
+    if layout is not None and layout not in _VALID_LAYOUTS:
+        raise ValueError(f"to_html: layout must be one of {sorted(_VALID_LAYOUTS)}, got {layout!r}")
+    if theme is not None and theme not in _VALID_THEMES:
+        raise ValueError(f"to_html: theme must be one of {sorted(_VALID_THEMES)}, got {theme!r}")
+    flags = ["embed=1"]
+    if layout == "maponly":
+        flags.append("maponly=1")
+    elif layout == "embed":
+        flags.append("layout=embed")
+    if theme is not None:
+        flags.append(f"theme={theme}")
     base, hash_sep, fragment = base_url.partition("#")
+    # A layout/theme key the app_url already sets wins, like the in-app
+    # exporter's flags. embed=1 is forced: without embed mode the app never
+    # accepts the posted project, and the app reads only the first "embed", so
+    # an app_url "embed" that does not enable it is dropped rather than kept.
+    path, query_sep, query = base.partition("?")
+    kept = [
+        pair
+        for pair in query.split("&")
+        if pair and not (pair.split("=", 1)[0] == "embed" and pair not in ("embed=1", "embed=true"))
+    ]
+    base = f"{path}{query_sep if kept else ''}{'&'.join(kept)}"
+    preset = {pair.split("=", 1)[0] for pair in kept}
+    flags = [flag for flag in flags if flag.split("=", 1)[0] not in preset]
     separator = "&" if "?" in base else "?"
-    iframe_src = f"{base}{separator}embed=1{hash_sep}{fragment}"
+    query = "&".join(flags)
+    iframe_src = f"{base}{separator if query else ''}{query}{hash_sep}{fragment}"
     # width/height land inside a <style> rule; _html_escape does not neutralise
     # CSS metacharacters like "}" or ";", so validate them as plain CSS
     # dimensions to keep a stray value from closing the rule and injecting CSS.
@@ -1020,7 +1054,8 @@ class Map(anywidget.AnyWidget):
 
         The page embeds the GeoLibre app in an ``<iframe>`` and injects the
         current project into it over the same ``postMessage`` bridge the widget
-        uses, so it renders the map exactly as configured here. Unlike
+        uses, so it renders the map exactly as configured here, in this map's
+        :attr:`layout` and :attr:`theme`. Unlike
         :meth:`to_image` this needs no running kernel to view; by default it
         loads the hosted GeoLibre app over the network so the file stays
         portable.
@@ -1052,6 +1087,8 @@ class Map(anywidget.AnyWidget):
             width=width,
             height=height or self.height,
             app_url=app_url,
+            layout=self.layout,
+            theme=self.theme,
         )
         if path is not None:
             out = pathlib.Path(path).expanduser()
