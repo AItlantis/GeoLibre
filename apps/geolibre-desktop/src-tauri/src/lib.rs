@@ -513,14 +513,16 @@ pub fn run() {
             // shells out to update-desktop-database and xdg-mime, and window
             // creation must not wait on them.
             #[cfg(target_os = "linux")]
-            {
-                use tauri_plugin_deep_link::DeepLinkExt;
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    if let Err(error) = handle.deep_link().register_all() {
-                        eprintln!("Deep link: could not register URL schemes ({error}).");
-                    }
-                });
+            spawn_deep_link_registration(app);
+            // The portable zip has no installer step, so nothing registers the
+            // OAuth callback scheme and a sign-in link from the browser never
+            // reaches the app (#2667). `build-portable.ps1` drops a marker next
+            // to the exe; only that build claims the scheme, per user, at
+            // runtime. NSIS/MSI already register it at install time, and MSIX
+            // declares it in the package manifest and virtualizes HKCU writes.
+            #[cfg(windows)]
+            if is_portable_windows_build() {
+                spawn_deep_link_registration(app);
             }
             Ok(())
         })
@@ -544,8 +546,37 @@ pub fn run() {
     });
 }
 
+#[cfg(any(target_os = "linux", windows))]
+fn spawn_deep_link_registration(app: &tauri::App) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    let handle = app.handle().clone();
+    std::thread::spawn(move || {
+        if let Err(error) = handle.deep_link().register_all() {
+            eprintln!("Deep link: could not register URL schemes ({error}).");
+        }
+    });
+}
+
 fn current_working_directory() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Marker file `packaging/portable/build-portable.ps1` writes next to the exe.
+#[cfg(any(windows, test))]
+const PORTABLE_MARKER_FILE: &str = "portable.marker";
+
+/// Whether this process runs from the portable zip rather than an installer.
+#[cfg(windows)]
+fn is_portable_windows_build() -> bool {
+    env::current_exe().is_ok_and(|exe| exe_has_portable_marker(&exe))
+}
+
+/// Whether a portable marker file sits next to `exe`. Kept free of
+/// `current_exe()` so the check is testable on every platform.
+#[cfg(any(windows, test))]
+fn exe_has_portable_marker(exe: &Path) -> bool {
+    exe.parent()
+        .is_some_and(|dir| dir.join(PORTABLE_MARKER_FILE).is_file())
 }
 
 fn has_geolibre_project_extension(path: &Path) -> bool {
@@ -4932,6 +4963,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    // Only a regular marker file next to the exe marks the portable build: an
+    // installed exe must never claim the scheme, and a same-named directory
+    // (or a marker elsewhere) is not the packaging script's output.
+    #[cfg(not(feature = "mas"))]
+    #[test]
+    fn portable_marker_requires_a_file_next_to_the_exe() {
+        let root = ScratchDir::new("portable-marker");
+        let exe = root.path().join("geolibre-desktop.exe");
+        assert!(!super::exe_has_portable_marker(&exe));
+
+        std::fs::create_dir(root.path().join(super::PORTABLE_MARKER_FILE)).unwrap();
+        assert!(!super::exe_has_portable_marker(&exe));
+        std::fs::remove_dir(root.path().join(super::PORTABLE_MARKER_FILE)).unwrap();
+
+        let nested = root.path().join("bin");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(root.path().join(super::PORTABLE_MARKER_FILE), "").unwrap();
+        assert!(super::exe_has_portable_marker(&exe));
+        assert!(!super::exe_has_portable_marker(
+            &nested.join("geolibre-desktop.exe")
+        ));
     }
 
     #[cfg(not(feature = "mas"))]
