@@ -11,6 +11,7 @@ import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
+import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
@@ -59,6 +60,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let generation = 0;
     let selectionGeneration = 0;
     let busy = false;
+    let investigationBusy = false;
     let openingLocalPicker = false;
     let readyTimer: ReturnType<typeof setInterval> | undefined;
     const emit = (type: string, payload: unknown, target = parentOrigin) => {
@@ -359,6 +361,41 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         openingLocalPicker = false;
       }
     };
+    const requestInvestigation = (request: MessageEvent["data"]) => {
+      const requestId = request.requestId as string;
+      const question = request.payload.question as string;
+      emit("ack", { requestId, ok: true, result: { requestId, accepted: true } });
+      const publishError = (error: unknown) => emit("testudoGeoAiInvestigationUpdate", {
+        requestId,
+        question,
+        status: "error",
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      });
+      const capability = current.capabilities.find(item => item.id === "geoai");
+      if (!directory || !capability?.available || !plugins.isGeoAiChatConfigured()) {
+        publishError(new Error(capability?.reason ?? "GeoAI is unavailable for this package."));
+        return;
+      }
+      if (investigationBusy || plugins.getGeoAiChatStatus().loading) {
+        publishError(new Error("GeoAI is already responding to another question."));
+        return;
+      }
+      investigationBusy = true;
+      const messageStart = plugins.getGeoAiChatStatus().messages.length;
+      void plugins.sendGeoAiChat(question).then(status => {
+        const answer = status.messages.slice(messageStart).filter(message => message.role === "assistant" || message.role === "error").at(-1);
+        if (!answer || answer.role !== "assistant") {
+          publishError(new Error(answer?.text ?? status.error ?? "GeoAI did not return a response."));
+          return;
+        }
+        emit("testudoGeoAiInvestigationUpdate", {
+          requestId,
+          question,
+          status: "complete",
+          summary: summarizeGeoAiInvestigation(answer.text, answer.scenarioAnalysis),
+        });
+      }).catch(publishError).finally(() => { investigationBusy = false; });
+    };
     const message = (event: MessageEvent) => {
       if (!acceptsTestudoMessage(event, window.parent, allowed, challenge)) return;
       clearInterval(readyTimer);
@@ -375,6 +412,10 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           update({ status: "error", error: detail });
           emit("ack", { requestId: request.requestId, ok: false, error: detail });
         });
+        return;
+      }
+      if (request.type === "testudoRequestInvestigation") {
+        requestInvestigation(request);
         return;
       }
       const run = async () => {

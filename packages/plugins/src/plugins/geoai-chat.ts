@@ -59,6 +59,7 @@ type ChatSession = PrincipalSession | GuestSession;
 
 const idleStatus: GeoAiChatStatus = { loading: false, error: null, available: false, messages: [] };
 const defaultSettings: GeoAiChatSettings = { visible: false };
+const GEOAI_CHAT_REQUEST_TIMEOUT_MS = 90_000;
 
 let status: GeoAiChatStatus = { ...idleStatus };
 let settings: GeoAiChatSettings = { ...defaultSettings };
@@ -111,13 +112,21 @@ function endpoint(current: ChatSession): URL {
 async function request<T>(current: ChatSession, body: Record<string, unknown>): Promise<T> {
   const credential = current.kind === "guest" ? current.getGuestEmbedToken() : current.bearerToken;
   const scheme = current.kind === "guest" ? "Testudo-Embed" : "Bearer";
-  const response = await fetch(endpoint(current), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `${scheme} ${credential}` },
-    body: JSON.stringify(body),
-    credentials: "omit",
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new DOMException("GeoAI request timed out.", "TimeoutError")), GEOAI_CHAT_REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(endpoint(current), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `${scheme} ${credential}` },
+      body: JSON.stringify(body),
+      credentials: "omit",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = (payload && (payload.error || payload.detail)) || `GeoAI request failed (${response.status})`;

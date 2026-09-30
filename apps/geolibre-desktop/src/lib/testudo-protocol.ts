@@ -2,7 +2,7 @@ import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@ge
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPreset", "testudoGetState"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -70,6 +70,13 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
     const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
     return keys.length === 2 && keys.includes("challenge") && keys.includes("open")
       && payload.challenge === challenge && typeof payload.open === "boolean";
+  }
+  if (request.type === "testudoRequestInvestigation") {
+    const payload = request.payload;
+    const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+    return keys.length === 2 && keys.includes("challenge") && keys.includes("question")
+      && payload.challenge === challenge && TESTUDO_CHALLENGE_RE.test(challenge)
+      && typeof payload.question === "string" && payload.question.trim().length > 0 && payload.question.length <= 4000;
   }
   return request.payload?.challenge === challenge;
 }

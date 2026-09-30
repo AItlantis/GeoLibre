@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -60,6 +60,7 @@ export type EmbedEventMap = {
    * that arrives with no request waiting for it).
    */
   ack: { requestId: string; ok: boolean; error?: string; result?: unknown };
+  testudoGeoAiInvestigationUpdate: TestudoGeoAiInvestigationUpdate;
   projectLoaded: { url: string | null; name: string; layerIds: string[] };
   selectionChanged: { layerId: string | null; featureIds: string[] };
   rendererchange: { renderer: MapRenderer };
@@ -88,6 +89,8 @@ export interface GeoLibreEmbedClient {
   testudoOpenLocalPackage(): Promise<TestudoViewerState>;
   testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoOpenGeoAiChat(payload: { open: boolean }): Promise<TestudoViewerState>;
+  /** Subscribe to testudoGeoAiInvestigationUpdate first, then submit a question and correlate by the returned requestId. */
+  testudoRequestInvestigation(question: string): Promise<{ requestId: string; accepted: true }>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
   testudoGetState(): Promise<TestudoViewerState>;
   loadProject(url: string): Promise<void>;
@@ -185,6 +188,12 @@ export function connect(
     testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
     testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),
+    testudoRequestInvestigation: (question) => {
+      if (typeof question !== "string" || !question.trim() || question.length > 4000) {
+        return Promise.reject(new Error("Investigation question must be nonblank and at most 4000 characters"));
+      }
+      return sendTestudo<{ requestId: string; accepted: true }>("testudoRequestInvestigation", { question });
+    },
     testudoSetPreset: (payload) => sendTestudo<TestudoViewerState>("testudoSetPreset", payload),
     testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
     loadProject: (url) => send("loadProject", { url }),

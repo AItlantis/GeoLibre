@@ -121,6 +121,35 @@ describe("Testudo GeoAI chat transport", () => {
     assert.equal(fetchCalled, false);
   });
 
+  it("aborts a chat request that exceeds the 90-second transport deadline", async () => {
+    const globals = globalThis as typeof globalThis & { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
+    const originalSetTimeout = globals.setTimeout;
+    const originalClearTimeout = globals.clearTimeout;
+    let fetchSawAbort = false;
+    globals.setTimeout = ((callback: TimerHandler, delay?: number) => {
+      assert.equal(delay, 90_000);
+      if (typeof callback === "function") callback();
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    globals.clearTimeout = (() => undefined) as typeof clearTimeout;
+    (globalThis as { fetch?: unknown }).fetch = async (_url: string | URL, init?: RequestInit) => {
+      fetchSawAbort = Boolean(init?.signal?.aborted);
+      throw init?.signal?.reason ?? new Error("request was not aborted");
+    };
+    initGeoAiChat({
+      origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "package-uuid",
+      packageVersionId: "accepted-version-uuid",
+    });
+    try {
+      const status = await sendGeoAiChat("hello");
+      assert.equal(fetchSawAbort, true);
+      assert.match(status.error ?? "", /timed out/i);
+    } finally {
+      globals.setTimeout = originalSetTimeout;
+      globals.clearTimeout = originalClearTimeout;
+    }
+  });
+
   it("posts signed-in chat with the platform package/version UUIDs and bounded viewer context", async () => {
     let capturedUrl: string | undefined;
     let capturedInit: RequestInit | undefined;

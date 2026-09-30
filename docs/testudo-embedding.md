@@ -9,8 +9,9 @@ the bounded Testudo commands.
 
 The typed `@geolibre/embed` client adds `testudoLoadPackage`,
 `testudoOpenLocalPackage`, `testudoSetGuestCapability`, `testudoSetPlugin`,
-`testudoSetMode`, `testudoOpenGeoAiChat`, `testudoSetPreset`, `testudoGetState`, and the
-`testudoStateChanged` event. See
+`testudoSetMode`, `testudoOpenGeoAiChat`, `testudoRequestInvestigation`,
+`testudoSetPreset`, `testudoGetState`, and the `testudoStateChanged` and
+`testudoGeoAiInvestigationUpdate` events. See
 `packages/embed/src/testudo.ts` for DTOs. Parent origins are exact entries in
 `VITE_GEOLIBRE_EMBED_ORIGINS`; the iframe announces a cryptographic 128-bit
 challenge, and every command carries that challenge. The child checks
@@ -23,9 +24,21 @@ closing GeoAI uses `testudoOpenGeoAiChat({ open: boolean })` and does not alter
 the selected plugin or mode. `assistantOpen` is included in acknowledgements,
 `testudoGetState`, and `testudoStateChanged`, including when the user closes the
 panel inside the iframe. This command accepts only the challenge and boolean
-`open` field. Prompts and credentials stay inside the iframe and are never sent
-through this parent bridge. Package changes and iframe teardown close the panel
-and clear its in-memory GeoAI session; mode changes leave an open panel in place.
+`open` field. Credentials and full scenario evidence stay inside the iframe.
+The parent can submit a bounded question through the dedicated investigation
+command below, which returns only a compact summary. Package changes and iframe
+teardown close the panel and clear its in-memory GeoAI session; mode changes
+leave an open panel in place.
+
+The host should subscribe to `testudoGeoAiInvestigationUpdate` before submitting
+a preset or free-text question with
+`testudoRequestInvestigation(question)`. The command carries only a nonblank
+question of at most 4000 characters plus the bridge challenge. The iframe
+acknowledges acceptance immediately, sends the question through its existing
+GeoAI chat transport, and later emits `testudoGeoAiInvestigationUpdate` with
+the same `requestId`. The update contains only a compact reply, selected
+scenario, up to three current and worsening sections, and bounded evidence-gap
+labels; full scenario analysis and credentials remain inside the iframe.
 
 The native chat panel sends prompts directly to Testudo's authenticated chat
 routes from inside the iframe. Signed-in sessions use

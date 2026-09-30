@@ -41,3 +41,25 @@ export interface TestudoSetGuestCapability {
   /** Unix epoch milliseconds. */
   expiresAt: number;
 }
+
+export interface TestudoInvestigationSectionSummary {
+  sectionId: string | number;
+  score: number | null;
+  metrics: Record<string, unknown>;
+}
+
+export interface TestudoGeoAiInvestigationSummary {
+  reply: string;
+  selectedScenario: { id: string | number; name?: string } | null;
+  currentTopSections: TestudoInvestigationSectionSummary[];
+  worseningTopSections: TestudoInvestigationSectionSummary[];
+  evidenceGaps: string[];
+}
+
+export interface TestudoGeoAiInvestigationUpdate {
+  requestId: string;
+  question: string;
+  status: "complete" | "error";
+  summary?: TestudoGeoAiInvestigationSummary;
+  error?: string;
+}
