@@ -2200,6 +2200,7 @@
     "saveButton": "Save Settings",
     "credentials": {
       "keychain": "Tokens and API keys you save in GeoLibre are stored in your system keychain.",
+      "projectKeychainUnavailable": "Project credential storage in the system keychain is unavailable. New project keys stay in this session; saving a local project asks whether to keep them in the file or strip them.",
       "browser": "Tokens and API keys you save here are stored in this browser's local storage, where scripts running on this site can read them.",
       "unavailable": "Your system keychain could not be used ({{error}}). New credentials last only until GeoLibre closes; previously saved credentials may remain in browser storage until migration succeeds."
     },
@@ -2453,7 +2454,12 @@
       "variablesTitle": "Environment variables",
       "variablesCount_one": "{{count}} enabled runtime variable.",
       "variablesCount_other": "{{count}} enabled runtime variables.",
-      "secretsWarning": "Values are stored in plain text in the project file and may be exposed when the project is shared. Avoid putting secrets here unless the project file stays private.",
+      "secretsWarning": "Values are saved in plain text in the project file. Values marked secret are removed when the project is shared or exported; other values are kept.",
+      "secretsWarningKeychain": "Values marked secret are kept in your system keychain, shared by every project on this computer that uses the same variable name; the project file keeps only the name. Other values are saved in the project file and are kept when the project is shared or exported.",
+      "secretsWarningUnavailable": "Project credential storage in the system keychain is unavailable. Secret values stay available this session; saving a local project asks whether to keep them in the file or strip them. Other values are saved in the project file and kept when shared or exported.",
+      "headerReferenceHint": "Use a variable in a layer's request headers as ${NAME}, e.g. Authorization: Bearer ${MY_TOKEN}.",
+      "secretOnAria": "{{name}} is a secret. Select to save its value in the project file instead.",
+      "secretOffAria": "{{name}} is saved in the project file. Select to treat it as a secret.",
       "empty": "No environment variables configured.",
       "variableFallback": "variable",
       "enableAria": "Enable {{name}}",
@@ -2487,6 +2493,8 @@
       "emailPlaceholder": "you@example.org",
       "emailHint": "Only used by Nominatim, which recommends providing it to help identify your application — sent only when provided.",
       "secretsWarning": "Keys are stored in plain text in the project file and may be exposed when the project is shared. They are also sent as query parameters, so they appear in geocoding request URLs visible in browser DevTools and any proxy logs.",
+      "secretsWarningKeychain": "Keys are kept in your system keychain and shared by every project on this computer, not saved in the project file. They are sent as query parameters, so they appear in geocoding request URLs visible in browser DevTools and any proxy logs.",
+      "secretsWarningUnavailable": "Project credential storage in the system keychain is unavailable. Saving a local project asks whether to keep API keys in the file or strip them; sharing and exporting strip them. Keys are sent in geocoding request URLs visible in browser DevTools and proxy logs.",
       "corsNote": "Google does not officially allow browser requests to its Geocoding API, so requests may be blocked unless served through a same-origin proxy."
     },
     "ai": {
@@ -3429,6 +3437,7 @@
       "couldNotOpenRecentProject": "Could not open the recent project.",
       "couldNotLoadRecentProject": "Could not load the recent project.",
       "couldNotSaveProject": "Could not save the project.",
+      "credentialRollbackFailed": "The project was not saved, and the credentials it moved to the system keychain could not be put back. Check the stored values in Settings → Geocoding and Settings → Environment.",
       "projectTooLargeToSave": "This project is too large to save. Convert its embedded vector data to PMTiles or FlatGeobuf and add those as remote layers instead of embedding the features.",
       "couldNotExportHtml": "Could not export the project to HTML.",
       "osmPbfNoFeatures": "No point, line, or polygon features were found in this OSM PBF file.",
@@ -8416,7 +8425,9 @@
   "plugin": {
     "3d-tiles": {
       "arcgisSourceUnsupported": "Use a 3D Tiles tileset.json URL in this ArcGIS view. Google Photorealistic and I3S tiles require another renderer.",
-      "globeGoogleKeyRequired": "Google Photorealistic 3D Tiles need a Google Maps API key in Settings to load on the globe."
+      "globeGoogleKeyRequired": "Google Photorealistic 3D Tiles need a Google Maps API key in Settings to load on the globe.",
+      "headersHint": "One per line as Name: Value. Use ${NAME} to insert an environment variable from Settings → Environment; the value is not saved with the layer.",
+      "insecureHeaders": "Request headers are only sent to an HTTPS tileset URL (or localhost)."
     },
     "geolibre-osm-downloader": {
       "title": "OSM Downloader",

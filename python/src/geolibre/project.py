@@ -78,6 +78,11 @@ _CREDENTIAL_URL_PARAMS = _CREDENTIAL_FIELD_NAMES | {
     for name in ("key", "sig", "se", "sp", "sv", "sr", "st", "skoid")
 }
 _MAX_REDACT_DEPTH = 12
+# A header value that only names an environment variable (`Bearer ${TOKEN}`)
+# carries no secret and survives redaction. Mirrors `isHeaderReferenceOnly` in
+# packages/core/src/header-references.ts.
+_HEADER_REFERENCE_ONLY = re.compile(r"(?:[A-Za-z][A-Za-z0-9._-]*\s+)?\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+_HEADER_FIELD_NAMES = {"requestheaders", "headers"}
 
 
 def _redact_url(value: str) -> str:
@@ -125,11 +130,22 @@ def _redact_config(value: Any, depth: int = 0) -> Any:
         return copy.deepcopy(value)
     if value.get("type") in {"FeatureCollection", "Feature", "GeometryCollection"}:
         return copy.deepcopy(value)
-    return {
-        key: _redact_config(nested, depth + 1)
-        for key, nested in value.items()
-        if _normalize_credential_name(key) not in _CREDENTIAL_FIELD_NAMES
-    }
+    result: dict[str, Any] = {}
+    for key, nested in value.items():
+        name = _normalize_credential_name(key)
+        if name in _HEADER_FIELD_NAMES and isinstance(nested, dict):
+            kept = {
+                header: header_value
+                for header, header_value in nested.items()
+                if isinstance(header_value, str)
+                and _HEADER_REFERENCE_ONLY.fullmatch(header_value.strip())
+            }
+            if kept:
+                result[key] = kept
+            continue
+        if name not in _CREDENTIAL_FIELD_NAMES:
+            result[key] = _redact_config(nested, depth + 1)
+    return result
 
 
 def _publishable_plugin_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -213,7 +229,14 @@ def redact_credentials(project: dict[str, Any]) -> dict[str, Any]:
         safe["basemapStyleUrl"] = _redact_url(safe["basemapStyleUrl"])
     preferences = safe.get("preferences")
     if isinstance(preferences, dict):
-        preferences["environmentVariables"] = []
+        # Only rows explicitly marked non-secret travel (same rule as the app's
+        # redactProjectCredentials); everything else is a credential.
+        variables = preferences.get("environmentVariables")
+        preferences["environmentVariables"] = (
+            [v for v in variables if isinstance(v, dict) and v.get("secret") is False]
+            if isinstance(variables, list)
+            else []
+        )
         geocoding = preferences.get("geocoding")
         if isinstance(geocoding, dict):
             geocoding["apiKeys"] = {}
