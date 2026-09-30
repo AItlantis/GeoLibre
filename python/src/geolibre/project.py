@@ -8,6 +8,7 @@ a project produced entirely from Python.
 
 from __future__ import annotations
 
+import base64
 import copy
 import ipaddress
 import json
@@ -16,6 +17,7 @@ import re
 import socket
 import uuid
 import warnings
+import zlib
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -1842,6 +1844,247 @@ def three_d_tiles_layer(
     }
     layer["sourcePath"] = url
     return layer
+
+
+LIDAR_SOURCE_KIND = "lidar-url"
+"""``metadata.sourceKind`` of a LiDAR point cloud the app streams from a URL."""
+
+
+def lidar_layer(name: str, url: str, **style: Any) -> dict[str, Any]:
+    """Build a LiDAR point cloud layer from a LAS, LAZ, COPC or EPT URL.
+
+    The layer matches what the app's LiDAR control writes, so a saved project
+    re-streams the point cloud when it opens (COPC and EPT by level of detail,
+    LAS/LAZ as a whole download).
+
+    Args:
+        name: Layer display name.
+        url: HTTP(S) URL of a ``.las``, ``.laz``, ``.copc.laz`` file or an EPT
+            ``ept.json``.
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+
+    Raises:
+        ValueError: If ``url`` is not an HTTP(S) URL.
+    """
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        raise ValueError("url must be an http(s) URL of a LAS/LAZ/COPC file or an EPT ept.json")
+    layer = _layer_base(name, "lidar", **style)
+    source_id = layer["id"]
+    layer["source"] = {"type": "lidar", "url": url, "sourceId": source_id}
+    layer["metadata"] = {
+        "sourceKind": LIDAR_SOURCE_KIND,
+        "externalNativeLayer": True,
+        "customLayerType": "lidar",
+        "identifiable": False,
+        "sourceId": source_id,
+    }
+    layer["sourcePath"] = url
+    return layer
+
+
+POINT_CLOUD_ANNOTATION_PLUGIN_ID = "geolibre-point-cloud-annotation"
+"""Plugin id under which the app saves point cloud labels and 3D boxes."""
+
+
+MAX_POINT_LABEL_NODE_BYTES = 16 * 1024 * 1024
+"""Largest inflated size of one node's saved labels (mirrors the app's cap)."""
+
+MAX_POINT_LABEL_BYTES = 256 * 1024 * 1024
+"""Largest total inflated size of all saved labels in one project."""
+
+MAX_POINT_LABEL_EDITS = 20_000_000
+"""Most decoded label entries across a project; bounds Python memory, since a
+dict entry costs far more than the two inflated bytes behind it."""
+
+
+def decode_point_label_node(text: str, limit: int = MAX_POINT_LABEL_NODE_BYTES) -> dict[int, int]:
+    """Decode one node's saved point labels.
+
+    The app stores a node's edits as raw-DEFLATE compressed pairs of
+    (delta-varint point index, class byte), base64 encoded.
+
+    Args:
+        text: The base64 string from the project.
+        limit: Maximum inflated size in bytes; a larger record is rejected
+            without being inflated in full (a crafted decompression bomb).
+
+    Returns:
+        Point index within the node -> ASPRS class code.
+
+    Raises:
+        ValueError: If the record is truncated, not valid DEFLATE, or
+            inflates past ``limit``.
+    """
+    return _decode_point_label_node_sized(text, limit)[0]
+
+
+def _decode_point_label_node_sized(text: str, limit: int) -> tuple[dict[int, int], int]:
+    """Decode one node's saved point labels and report its inflated size.
+
+    Args:
+        text: The base64 string from the project.
+        limit: Maximum inflated size in bytes.
+
+    Returns:
+        The edits (as :func:`decode_point_label_node`) and the number of bytes
+        inflated to produce them.
+
+    Raises:
+        ValueError: As :func:`decode_point_label_node`.
+    """
+    try:
+        inflater = zlib.decompressobj(-15)
+        data = inflater.decompress(base64.b64decode(text), limit + 1)
+    except (ValueError, zlib.error) as error:
+        raise ValueError(f"invalid point label record: {error}") from error
+    if len(data) > limit or inflater.unconsumed_tail:
+        raise ValueError("point label record is too large")
+    edits: dict[int, int] = {}
+    previous = -1
+    at = 0
+    while at < len(data):
+        delta = 0
+        shift = 0
+        while True:
+            if at >= len(data):
+                raise ValueError("truncated point label record")
+            byte = data[at]
+            at += 1
+            delta += (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                break
+            # A point index needs at most five varint bytes; a longer run is
+            # malformed (and would make this bigint loop quadratic).
+            if shift >= 35:
+                raise ValueError("invalid point label record: varint too long")
+        if at >= len(data):
+            raise ValueError("truncated point label record")
+        index = previous + 1 + delta
+        previous = index
+        edits[index] = data[at]
+        at += 1
+    return edits, len(data)
+
+
+def point_cloud_annotations(project: dict[str, Any]) -> dict[str, Any]:
+    """Read the point labels and 3D boxes the annotator saved in a project.
+
+    Labels are keyed by each point's stable identity: the source node key (a
+    COPC/EPT octree key such as ``"2-1-0-1"``, or ``"file"`` for a LAS/LAZ
+    loaded whole) and the point's index within that node.
+
+    Args:
+        project: A project dict (e.g. ``Map.project`` or a loaded file).
+
+    Returns:
+        ``{"labels": {url: {node_key: {index: class}}}, "boxes": [...]}``, where
+        each box is ``{"url", "id", "class_code", "center", "size", "yaw"}``:
+        ``center`` is ``[lng, lat, elevation_m]``, ``size`` ``[length, width,
+        height]`` in metres and ``yaw`` radians counter-clockwise from east.
+    """
+    plugins = project.get("plugins") if isinstance(project, dict) else None
+    settings = plugins.get("settings") if isinstance(plugins, dict) else None
+    state = settings.get(POINT_CLOUD_ANNOTATION_PLUGIN_ID) if isinstance(settings, dict) else None
+    if not isinstance(state, dict):
+        state = {}
+    labels: dict[str, dict[str, dict[int, int]]] = {}
+    budget = MAX_POINT_LABEL_BYTES
+    entries = MAX_POINT_LABEL_EDITS
+    sources = state.get("sources") if isinstance(state, dict) else None
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        url = source.get("url")
+        nodes = source.get("nodes") or {}
+        if not isinstance(url, str) or not isinstance(nodes, dict):
+            continue
+        decoded: dict[str, dict[int, int]] = {}
+        for key, text in nodes.items():
+            if not isinstance(text, str) or budget <= 0 or entries <= 0:
+                continue
+            cap = min(MAX_POINT_LABEL_NODE_BYTES, budget)
+            try:
+                edits, inflated = _decode_point_label_node_sized(text, cap)
+            except ValueError:
+                # A rejected node may have inflated up to its cap before
+                # failing, so charge the cap: bad nodes cannot bypass the budget.
+                budget -= cap
+                continue
+            # Charge what was actually inflated (varints run to five bytes).
+            budget -= inflated
+            if len(edits) > entries:
+                continue
+            entries -= len(edits)
+            decoded[key] = edits
+        # Merge repeated entries for one URL rather than dropping the first.
+        labels.setdefault(url, {}).update(decoded)
+    boxes: list[dict[str, Any]] = []
+    cuboids = state.get("cuboids") if isinstance(state, dict) else None
+    for entry in cuboids if isinstance(cuboids, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        if not isinstance(url, str):
+            continue
+        entry_boxes = entry.get("boxes")
+        for box in entry_boxes if isinstance(entry_boxes, list) else []:
+            if not isinstance(box, dict):
+                continue
+            boxes.append(
+                {
+                    "url": url,
+                    "id": box.get("id"),
+                    "class_code": box.get("classCode"),
+                    "center": box.get("center"),
+                    "size": box.get("size"),
+                    "yaw": box.get("yaw"),
+                }
+            )
+    return {"labels": labels, "boxes": boxes}
+
+
+def apply_point_labels(classification: Any, nodes: dict[str, dict[int, int]]) -> int:
+    """Apply saved labels to the classification of a LAS/LAZ loaded whole.
+
+    Labels on a whole-file source are keyed ``"file"`` with the point's index
+    in file order, so they map straight onto e.g. ``laspy``'s
+    ``las.classification``. COPC/EPT labels are keyed by octree node and need
+    the node's point order; export those from the app as LAS/LAZ instead.
+
+    Args:
+        classification: A mutable sequence or NumPy array of class codes in
+            file order (modified in place).
+        nodes: One source's labels, as returned in
+            ``point_cloud_annotations(project)["labels"][url]``.
+
+    Returns:
+        The number of points whose class changed.
+
+    Raises:
+        ValueError: If the labels are keyed by COPC/EPT node, or an index is
+            past the end of ``classification``.
+    """
+    # Validate everything first, so a rejected record changes nothing.
+    for key, edits in nodes.items():
+        if key != "file":
+            raise ValueError(
+                f"labels keyed by octree node {key!r} need the COPC node order; "
+                "export the annotated cloud as LAS/LAZ from the app instead"
+            )
+        for index in edits:
+            if index < 0 or index >= len(classification):
+                raise ValueError(f"label index {index} is past the {len(classification)} points")
+    changed = 0
+    for edits in nodes.values():
+        for index, code in edits.items():
+            if int(classification[index]) != code:
+                classification[index] = code
+                changed += 1
+    return changed
 
 
 CESIUM_ION_SOURCE_KIND = "cesium-ion"
