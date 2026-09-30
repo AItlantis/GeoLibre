@@ -23,6 +23,9 @@ const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectab
   { id: "density", label: "Density", plugin: "network-kpi" },
 ];
 const empty: TestudoViewerState = { package: null, selectedPlugin: null, assistantOpen: false, capabilities: [], availableModes: [], status: "empty" };
+type LocalPackagePickerWindow = Window & {
+  showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<VehicleDirectoryHandle>;
+};
 const handlers = {
   "vehicle-playback": { open: plugins.openVehiclePlaybackPanel, close: plugins.closeVehiclePlaybackPanel, load: plugins.loadLocalVehiclePlaybackFolder, status: plugins.getVehiclePlaybackStatus, settings: plugins.setVehiclePlaybackSettings },
   "network-kpi": { open: plugins.openNetworkKpiPanel, close: plugins.closeNetworkKpiPanel, load: plugins.loadLocalNetworkKpiFolder, status: plugins.getNetworkKpiStatus, settings: plugins.setNetworkKpiSettings },
@@ -56,6 +59,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let generation = 0;
     let selectionGeneration = 0;
     let busy = false;
+    let openingLocalPicker = false;
     let readyTimer: ReturnType<typeof setInterval> | undefined;
     const emit = (type: string, payload: unknown, target = parentOrigin) => {
       if (!disposed && target && allowed.includes(target)) window.parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
@@ -333,6 +337,28 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       } catch (error) { update({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
       finally { busy = false; }
     };
+    const openLocalPackage = async () => {
+      if (busy || openingLocalPicker) throw new Error(t("testudo.loading"));
+      const pickerWindow = window as LocalPackagePickerWindow;
+      if (!pickerWindow.showDirectoryPicker) {
+        const error = t("testudo.folderUnsupported");
+        update({ status: "error", error });
+        throw new Error(error);
+      }
+      // Invoke the browser picker immediately in response to the validated
+      // host command so transient user activation is still available.
+      openingLocalPicker = true;
+      try {
+        const selected = await pickerWindow.showDirectoryPicker({ mode: "read" });
+        await picker.current?.(selected);
+        return current;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return current;
+        throw error;
+      } finally {
+        openingLocalPicker = false;
+      }
+    };
     const message = (event: MessageEvent) => {
       if (!acceptsTestudoMessage(event, window.parent, allowed, challenge)) return;
       clearInterval(readyTimer);
@@ -341,6 +367,14 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (request.type === "testudoSetGuestCapability") {
         guestCredential = { token: request.payload.guestEmbedToken, expiresAt: request.payload.expiresAt };
         emit("ack", { requestId: request.requestId, ok: true, result: { protocol: 1, challenge, expiresAt: guestCredential.expiresAt } });
+        return;
+      }
+      if (request.type === "testudoOpenLocalPackage") {
+        void openLocalPackage().then(result => emit("ack", { requestId: request.requestId, ok: true, result }), error => {
+          const detail = error instanceof Error ? error.message : String(error);
+          update({ status: "error", error: detail });
+          emit("ack", { requestId: request.requestId, ok: false, error: detail });
+        });
         return;
       }
       const run = async () => {
@@ -380,13 +414,19 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
+  const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));
+  const hasVisibleStatus = state.status === "loading" || Boolean(state.error);
+  if (!canOpenGeoAi && !hasVisibleStatus) return null;
+
   // The embedding Testudo shell renders its own "open package" control and mode/plugin
   // switcher outside this iframe (ProductApp.tsx / EmbeddedViewer.tsx), so this panel no
   // longer duplicates them here (see the Testudo-side UI reconciliation pass) — it now only
   // surfaces what the shell cannot: the GeoAI trigger and inline loading/error status.
-  return <div className="absolute end-3 top-3 z-40 max-w-xs rounded-md border border-border bg-background p-3 shadow-lg" data-testudo-controls>
-    {app && state.capabilities.some(item => item.id === "geoai" && item.available) && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => handlers["geoai"].open(app)}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
-    {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
-    {state.error && <p role="alert" className="mt-2 text-sm text-red-600">{state.error}</p>}
+  return <div className="pointer-events-none absolute inset-x-3 top-3 z-40 flex justify-end" data-testudo-controls>
+    <div className="pointer-events-auto w-fit min-w-0 max-w-[min(20rem,100%)] rounded-md border border-border bg-background p-3 shadow-lg">
+      {canOpenGeoAi && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => { if (app) handlers["geoai"].open(app); }}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
+      {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
+      {state.error && <p role="alert" className="mt-2 break-words text-sm text-red-600">{state.error}</p>}
+    </div>
   </div>;
 }

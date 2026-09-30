@@ -8,8 +8,8 @@ profile. Only the exact same-origin parent in the deployment allowlist can use
 the bounded Testudo commands.
 
 The typed `@geolibre/embed` client adds `testudoLoadPackage`,
-`testudoSetGuestCapability`, `testudoSetPlugin`, `testudoSetMode`,
-`testudoOpenGeoAiChat`, `testudoSetPreset`, `testudoGetState`, and the
+`testudoOpenLocalPackage`, `testudoSetGuestCapability`, `testudoSetPlugin`,
+`testudoSetMode`, `testudoOpenGeoAiChat`, `testudoSetPreset`, `testudoGetState`, and the
 `testudoStateChanged` event. See
 `packages/embed/src/testudo.ts` for DTOs. Parent origins are exact entries in
 `VITE_GEOLIBRE_EMBED_ORIGINS`; the iframe announces a cryptographic 128-bit
@@ -79,6 +79,12 @@ Local packages use one user-initiated folder picker inside the iframe. The same
 handle is reused for all plugins. No upload occurs. Chrome/Edge folder access is
 required; `.ang` models must first become render packages. Environment and
 comparison availability depends on dataset metadata, not merely plugin presence.
+The host invokes the picker's typed `testudoOpenLocalPackage()` command; it takes
+no package path or handle from the host. The child still validates the caller's
+source, exact allowlisted origin and challenge before presenting its own picker.
+Call it directly from the host button's click handler so the browser's transient
+user activation is available. Canceling the picker leaves the current package
+state unchanged.
 
 Scenario impact answers may include separate package facts, calculated severity/worsening rankings,
 and likely scenario candidates. Candidate scores are labeled as model match scores. A typed viewer

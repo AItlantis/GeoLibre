@@ -84,6 +84,8 @@ export interface GeoLibreEmbedClient {
   testudoSetGuestCapability(payload: Omit<TestudoSetGuestCapability, "challenge">): Promise<{ protocol: 1; challenge: string; expiresAt: number }>;
   testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
   testudoSetPlugin(payload: { id: TestudoSelectablePluginId }): Promise<TestudoViewerState>;
+  /** Open the native folder picker; call directly from a user-activation handler. */
+  testudoOpenLocalPackage(): Promise<TestudoViewerState>;
   testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoOpenGeoAiChat(payload: { open: boolean }): Promise<TestudoViewerState>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
@@ -179,6 +181,7 @@ export function connect(
   const client: GeoLibreEmbedClient = {
     testudoSetGuestCapability: (payload) => sendTestudo("testudoSetGuestCapability", payload),
     testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", { ...payload }),
+    testudoOpenLocalPackage: () => sendTestudo<TestudoViewerState>("testudoOpenLocalPackage"),
     testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
     testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),

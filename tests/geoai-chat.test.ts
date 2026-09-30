@@ -62,15 +62,19 @@ describe("GeoAI chat capability wiring (issue #273)", () => {
     // see the comment on TESTUDO_CONTROLS_SOURCE above) and evaluates the *actual* guard condition
     // against synthetic capability lists, so a regression that silently drops the gate (e.g.
     // hardcoding `true`, or checking the wrong capability id) fails this test.
-    const trigger = TESTUDO_CONTROLS_SOURCE.match(/\{app && (state\.capabilities\.some\([^)]+\)) && <button[^]*?onClick=\{\(\) => (handlers\["geoai"\]\.open\(app\))\}/);
+    const trigger = TESTUDO_CONTROLS_SOURCE.match(/\{(canOpenGeoAi) && <button[^]*?onClick=\{\(\) => \{ if \(app\) (handlers\["geoai"\]\.open\(app\));/);
     assert.ok(trigger, "TestudoControls must render a geoai trigger button gated on capability availability");
-    const [, guardExpr, openExpr] = trigger!;
+    const [, guardName, openExpr] = trigger!;
+    assert.equal(guardName, "canOpenGeoAi");
     assert.equal(openExpr, 'handlers["geoai"].open(app)', "the trigger must call the shared geoai open handler");
+    const guard = TESTUDO_CONTROLS_SOURCE.match(/const canOpenGeoAi = Boolean\(([^;]+)\);/);
+    assert.ok(guard, "the trigger guard must be derived from the active package capability");
+    assert.match(guard![1]!, /state\.capabilities\.some\(item => item\.id === "geoai" && item\.available\)/);
 
     const evalGuard = (capabilities: Array<{ id: string; available: boolean }>) => {
       const state = { capabilities };
       // eslint-disable-next-line no-new-func -- evaluating the extracted guard expression itself is the point of this test
-      return new Function("state", `return ${guardExpr};`)(state);
+      return new Function("app", "state", `return ${guard![1]};`)({}, state);
     };
     assert.equal(evalGuard([{ id: "geoai", available: true }]), true, "trigger must render when geoai is available");
     assert.equal(evalGuard([{ id: "geoai", available: false }]), false, "trigger must not render when geoai is unavailable");
