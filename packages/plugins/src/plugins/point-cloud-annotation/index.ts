@@ -53,9 +53,13 @@ import {
   refreshCloudColors,
 } from "./lidar-access";
 import {
+  collectPolygons,
   combineSelection,
   createOffsetProjector,
+  selectPointsInPolygons,
   selectPointsInShape,
+  type LngLatPolygon,
+  type SelectionFilters,
   type SelectionMode,
   type SelectionShape,
 } from "./selection";
@@ -339,6 +343,18 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
   zRow.append(minZ, maxZ);
   filters.root.append(zRow, onlyClassSelect);
 
+  // Polygons to points: lift a polygon layer's footprints (SAM masks, building
+  // outlines) straight up through the cloud.
+  const lift = section("");
+  const liftLayerSelect = select();
+  liftLayerSelect.dataset.testid = "pc-annotation-lift-layer";
+  const liftSelectButton = button("");
+  liftSelectButton.dataset.testid = "pc-annotation-lift-select";
+  const liftInstancesButton = button("");
+  liftInstancesButton.dataset.testid = "pc-annotation-lift-instances";
+  const liftNote = el("div", "", "line-height:1.4;color:hsl(var(--muted-foreground));");
+  lift.root.append(liftLayerSelect, row(liftSelectButton, liftInstancesButton), liftNote);
+
   // Assign.
   const assign = section("");
   const selectedCount = el("div", "", "font-weight:600;");
@@ -516,6 +532,7 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
   const sessionSections = [
     tools.root,
     filters.root,
+    lift.root,
     assign.root,
     objects.root,
     prelabel.root,
@@ -770,6 +787,143 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
     fillClassOptions(onlyClassSelect, presentCodes, onlyClass, tr(app, "anyClass", "Any class"));
   };
 
+  // The Z range, class filter and protected classes every selection applies:
+  // only points the renderer draws, and never locked or hidden ones.
+  const selectionFilters = (ctl: LidarControl): SelectionFilters => {
+    // Blank or unparseable means "no bound" rather than a NaN that would
+    // silently disable the filter.
+    const readZ = (input: HTMLInputElement) => {
+      const value = input.value.trim() === "" ? Number.NaN : Number(input.value);
+      return Number.isFinite(value) ? value : null;
+    };
+    const range = getRenderElevationRange(ctl);
+    return {
+      minZ: Math.max(readZ(minZ) ?? -Infinity, range?.[0] ?? -Infinity),
+      maxZ: Math.min(readZ(maxZ) ?? Infinity, range?.[1] ?? Infinity),
+      onlyClasses: onlyClass === null ? null : new Set([onlyClass]),
+      skipClasses: new Set([...ctl.getHiddenClassifications(), ...lockedClasses]),
+    };
+  };
+
+  // Vector layers with polygon features, for lifting onto points. Memoized
+  // per GeoJSON object: the store's layers change on every opacity or
+  // visibility edit, but a layer's geometry rarely does.
+  const polygonCache = new WeakMap<GeoJSON.FeatureCollection, LngLatPolygon[]>();
+  const polygonsOf = (collection: GeoJSON.FeatureCollection | undefined): LngLatPolygon[] => {
+    if (!collection) return [];
+    let polygons = polygonCache.get(collection);
+    if (!polygons) {
+      polygons = collectPolygons(collection);
+      polygonCache.set(collection, polygons);
+    }
+    return polygons;
+  };
+  const polygonLayers = () =>
+    useAppStore.getState().layers.filter((layer) => polygonsOf(layer.geojson).length > 0);
+
+  let liftLayerKey: string | null = null;
+  const renderLiftLayers = () => {
+    // Rebuild only when the polygon layers or their names change.
+    const key = JSON.stringify(polygonLayers().map((layer) => [layer.id, layer.name]));
+    if (key === liftLayerKey) return;
+    liftLayerKey = key;
+    const previous = liftLayerSelect.value;
+    liftLayerSelect.replaceChildren();
+    const layers = polygonLayers();
+    for (const layer of layers) liftLayerSelect.append(new Option(layer.name, layer.id));
+    if (layers.length === 0) {
+      liftLayerSelect.append(new Option(tr(app, "liftNoLayers", "No polygon layers"), ""));
+    } else if (layers.some((layer) => layer.id === previous)) {
+      liftLayerSelect.value = previous;
+    }
+    liftLayerSelect.disabled = layers.length === 0;
+    liftSelectButton.disabled = layers.length === 0;
+    liftInstancesButton.disabled = layers.length === 0;
+  };
+
+  // The filters (Z range, only class) plus hidden and locked classes, as a
+  // screen selection applies them.
+  const liftPolygons = (): { polygons: Uint32Array[]; layerName: string } | null => {
+    const ctl = control();
+    const data = activeData();
+    const layer = polygonLayers().find((entry) => entry.id === liftLayerSelect.value);
+    if (!ctl || !data || !session || !layer) return null;
+    const polygons = selectPointsInPolygons(
+      {
+        positions: data.positions,
+        classifications: liveClassifications(session.cloudId),
+        pointCount: data.pointCount,
+      },
+      data.coordinateOrigin,
+      polygonsOf(layer.geojson),
+      selectionFilters(ctl),
+    );
+    return { polygons, layerName: layer.name };
+  };
+
+  // Each point belongs to at most one polygon, so the union is a concatenation.
+  const concatIndices = (groups: readonly Uint32Array[]): Uint32Array => {
+    const out = new Uint32Array(groups.reduce((sum, group) => sum + group.length, 0));
+    let at = 0;
+    for (const group of groups) {
+      out.set(group, at);
+      at += group.length;
+    }
+    return out.sort();
+  };
+
+  const liftSelect = () => {
+    const lifted = liftPolygons();
+    if (!lifted || !session) return;
+    const picked = concatIndices(lifted.polygons);
+    session.selection = combineSelection(session.selection, picked, mode);
+    renderSelection();
+    renderHighlight();
+    setStatus(
+      tr(
+        app,
+        "liftSelected",
+        "Selected {{count}} points inside {{polygons}} polygons of {{layer}}.",
+        {
+          count: numberFormat.format(picked.length),
+          polygons: numberFormat.format(lifted.polygons.filter((p) => p.length > 0).length),
+          layer: lifted.layerName,
+        },
+      ),
+    );
+  };
+
+  const liftInstances = () => {
+    const lifted = liftPolygons();
+    const classes = session ? liveClassifications(session.cloudId) : undefined;
+    const ids = session ? sessionInstances(session.cloudId) : undefined;
+    if (!lifted || !session || !classes || !ids) return;
+    const firstId = nextObjectId();
+    const result = session.history.assignGroups(
+      session.cloudId,
+      classes,
+      ids,
+      lifted.polygons,
+      targetClass,
+      firstId,
+    );
+    recordLabels(concatIndices(lifted.polygons), true);
+    refreshAfterEdit(session.cloudId);
+    setStatus(
+      tr(
+        app,
+        "liftInstances",
+        "Created {{objects}} instances of {{name}} from {{layer}} ({{count}} points).",
+        {
+          objects: numberFormat.format(result.objects),
+          name: className(app, targetClass),
+          layer: lifted.layerName,
+          count: numberFormat.format(result.points),
+        },
+      ),
+    );
+  };
+
   const renderObjects = () => {
     objectsList.replaceChildren();
     const data = activeData();
@@ -937,6 +1091,18 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
     maxZ.setAttribute("aria-label", maxZ.placeholder);
     onlyClassSelect.setAttribute("aria-label", tr(app, "onlyClass", "Only points in class"));
     assign.heading.textContent = tr(app, "assign", "Assign class");
+    lift.heading.textContent = tr(app, "lift", "Polygons to points");
+    liftLayerSelect.setAttribute("aria-label", lift.heading.textContent);
+    liftSelectButton.textContent = tr(app, "liftSelect", "Select inside");
+    liftInstancesButton.textContent = tr(app, "liftInstancesButton", "Instance per polygon");
+    liftNote.textContent = tr(
+      app,
+      "liftNote",
+      "Lifts a polygon layer (SAM masks, building footprints) straight up through the cloud. Narrow it with the Z and class filters above; Instance per polygon gives each polygon's points the class to assign and their own instance.",
+    );
+    // Translated text changes the option labels, so force a rebuild.
+    liftLayerKey = null;
+    renderLiftLayers();
     applyButton.textContent = tr(app, "apply", "Apply (Enter)");
     newObjectButton.textContent = tr(app, "newObject", "New instance (N)");
     newObjectButton.title = tr(
@@ -1080,15 +1246,6 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
       return;
     }
     const started = performance.now();
-    // Blank or unparseable means "no bound" rather than a NaN that would
-    // silently disable the filter.
-    const readZ = (input: HTMLInputElement) => {
-      const value = input.value.trim() === "" ? Number.NaN : Number(input.value);
-      return Number.isFinite(value) ? value : null;
-    };
-    const range = getRenderElevationRange(ctl);
-    const zMin = readZ(minZ);
-    const zMax = readZ(maxZ);
     const picked = selectPointsInShape(
       {
         positions: data.positions,
@@ -1098,13 +1255,7 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
       },
       createOffsetProjector(viewport, data.coordinateOrigin),
       shape,
-      {
-        // Only points the renderer draws are selectable.
-        minZ: Math.max(zMin ?? -Infinity, range?.[0] ?? -Infinity),
-        maxZ: Math.min(zMax ?? Infinity, range?.[1] ?? Infinity),
-        onlyClasses: onlyClass === null ? null : new Set([onlyClass]),
-        skipClasses: new Set([...ctl.getHiddenClassifications(), ...lockedClasses]),
-      },
+      selectionFilters(ctl),
     );
     session.selection = combineSelection(session.selection, picked, combine);
     renderSelection();
@@ -1787,6 +1938,9 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
     targetClass = Number(targetSelect.value);
   });
   applyButton.addEventListener("click", applyClass);
+  liftLayerSelect.addEventListener("focus", renderLiftLayers);
+  liftSelectButton.addEventListener("click", liftSelect);
+  liftInstancesButton.addEventListener("click", liftInstances);
   newObjectButton.addEventListener("click", newObject);
   customAdd.addEventListener("click", addCustomClass);
   clearButton.addEventListener("click", clearSelection);
@@ -1811,6 +1965,10 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
   exportSegmentsButton.addEventListener("click", exportSegments);
   // Capture phase: a box nudge must win over the map's own arrow-key panning.
   document.addEventListener("keydown", onKeyDown, true);
+  // Keep the polygon-layer list current as layers are added, renamed or removed.
+  const unsubscribeLayers = useAppStore.subscribe((state, previous) => {
+    if (state.layers !== previous.layers) renderLiftLayers();
+  });
   const unsubscribeLocale = app.onLocaleChange?.(() => {
     renderLabels();
     if (session) {
@@ -1851,6 +2009,7 @@ function buildPanel(container: HTMLElement, app: GeoLibreAppAPI): () => void {
     boundControl?.off("load", onControlChange);
     boundControl?.off("unload", onControlChange);
     unsubscribeLocale?.();
+    unsubscribeLayers();
     container.replaceChildren();
   };
 }
