@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoSetGuestCapability } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -83,8 +83,9 @@ export interface ConnectOptions {
 export interface GeoLibreEmbedClient {
   testudoSetGuestCapability(payload: Omit<TestudoSetGuestCapability, "challenge">): Promise<{ protocol: 1; challenge: string; expiresAt: number }>;
   testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
-  testudoSetPlugin(payload: { id: TestudoCapabilityId }): Promise<TestudoViewerState>;
+  testudoSetPlugin(payload: { id: TestudoSelectablePluginId }): Promise<TestudoViewerState>;
   testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
+  testudoOpenGeoAiChat(payload: { open: boolean }): Promise<TestudoViewerState>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
   testudoGetState(): Promise<TestudoViewerState>;
   loadProject(url: string): Promise<void>;
@@ -180,6 +181,7 @@ export function connect(
     testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", { ...payload }),
     testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
+    testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),
     testudoSetPreset: (payload) => sendTestudo<TestudoViewerState>("testudoSetPreset", payload),
     testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
     loadProject: (url) => send("loadProject", { url }),

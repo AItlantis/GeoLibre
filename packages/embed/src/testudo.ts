@@ -1,4 +1,6 @@
 export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison" | "geoai" | "geoai-buildings";
+/** Map plugins replace one another; GeoAI chat is an independent persistent panel. */
+export type TestudoSelectablePluginId = Exclude<TestudoCapabilityId, "geoai">;
 export type TestudoDemoMode = "animation" | "flow" | "paths" | "density";
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
 export interface TestudoBootstrap {
@@ -10,11 +12,13 @@ export interface TestudoBootstrap {
   nativeManifestPath: string;
   artifactEndpoint: string;
   capabilities: TestudoCapability[];
-  presets: Array<{ id: string; label?: string; plugin: TestudoCapabilityId; settings?: Record<string, string | number | boolean>; view?: { center: [number, number]; zoom: number; pitch?: number; bearing?: number } }>;
+  presets: Array<{ id: string; label?: string; plugin: TestudoSelectablePluginId; settings?: Record<string, string | number | boolean>; view?: { center: [number, number]; zoom: number; pitch?: number; bearing?: number } }>;
 }
 export interface TestudoViewerState {
   package: { packageId: string; versionId: string | null; label: string; origin: "published" | "local" } | null;
-  selectedPlugin: TestudoCapabilityId | null;
+  selectedPlugin: TestudoSelectablePluginId | null;
+  /** Whether the independent GeoAI assistant panel is open. */
+  assistantOpen: boolean;
   capabilities: TestudoCapability[];
   availableModes: TestudoDemoMode[];
   selectedMode?: TestudoDemoMode;
@@ -27,7 +31,7 @@ export interface TestudoLoadPackage {
   /** Existing account transport; guest auth is injected from in-memory child state. */
   transport?: { bearerToken?: string };
   challenge?: string;
-  selectedPlugin?: TestudoCapabilityId;
+  selectedPlugin?: TestudoSelectablePluginId;
   presetId?: string;
 }
 export interface TestudoSetGuestCapability {

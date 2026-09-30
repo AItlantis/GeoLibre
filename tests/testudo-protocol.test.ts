@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptsTestudoMessage } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
+import { acceptsTestudoMessage, validateScenarioAnalysisAction } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
 
 const parent = {} as Window;
 const origin = "https://app.testudo.live";
@@ -59,4 +59,13 @@ test("testudoSetGuestCapability additionally requires protocol, token shape and 
   assert.equal(acceptsTestudoMessage(setGuest({ expiresAt: now - 1000 }), parent, [origin], challenge), false);
   assert.equal(acceptsTestudoMessage(setGuest({ expiresAt: now + 11 * 60_000 }), parent, [origin], challenge), false);
   assert.equal(acceptsTestudoMessage(setGuest({ expiresAt: "soon" }), parent, [origin], challenge), false);
+});
+
+test("scenario analysis actions are pinned to the active package and declared scenario roster", () => {
+  const action = { version_id: "version-1", source: "server_catalog", scenario_id: 2, section_id: 10 };
+  assert.deepEqual(validateScenarioAnalysisAction(action, "version-1", [1, 2]), action);
+  assert.equal(validateScenarioAnalysisAction({ ...action, version_id: "other" }, "version-1", [1, 2]), null);
+  assert.equal(validateScenarioAnalysisAction({ ...action, scenario_id: 3 }, "version-1", [1, 2]), null);
+  assert.equal(validateScenarioAnalysisAction({ ...action, source: "model" }, "version-1", [1, 2]), null);
+  assert.equal(validateScenarioAnalysisAction({ ...action, section_id: { unsafe: true } }, "version-1", [1, 2]), null);
 });

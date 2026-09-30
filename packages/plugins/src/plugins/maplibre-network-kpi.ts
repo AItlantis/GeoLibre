@@ -297,6 +297,15 @@ class NetworkKpiEngine {
   private networkVisible = true;
   private readonly networkClickHandlers = new Map<string, (event: any) => void>();
 
+  highlightSection(sectionId: string | number): boolean {
+    const rows = this.map.queryRenderedFeatures(undefined, { layers: ["network-kpi-sections"] });
+    const feature = rows.find((row: any) => String(row.properties?.oid ?? row.properties?.section_id ?? row.properties?.sectionId ?? row.id) === String(sectionId));
+    if (!feature) return false;
+    const source = this.map.getSource("network-kpi-selection") as { setData?: (data: unknown) => void } | undefined;
+    source?.setData?.({ type: "FeatureCollection", features: [feature] });
+    return true;
+  }
+
   constructor(
     map: MapLibreMap,
     settings: NetworkKpiSettings,
@@ -1078,6 +1087,19 @@ export async function setNetworkKpiScenario(scenarioIndex: number): Promise<void
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/** Switch to a scenario declared by the loaded package by its stable scid. */
+export async function selectNetworkKpiScenarioId(scenarioId: string | number): Promise<boolean> {
+  const index = status.scenarios.findIndex(scenario => String(scenario.scid) === String(scenarioId));
+  if (index < 0) return false;
+  await setNetworkKpiScenario(index);
+  return true;
+}
+
+/** Highlight a section only when it is present in the rendered package geometry. */
+export function highlightNetworkKpiSection(sectionId: string | number): boolean {
+  return engine?.highlightSection(sectionId) ?? false;
 }
 
 /** Select a replication (did) within the active scenario. */

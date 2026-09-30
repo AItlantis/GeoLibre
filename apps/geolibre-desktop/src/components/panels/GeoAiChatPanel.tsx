@@ -11,12 +11,14 @@ import { Button } from "@geolibre/ui";
 import { Loader2, MessageCircle, Send, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
+import { ScenarioAnalysisEvidence } from "./ScenarioAnalysisEvidence";
 
 const PANEL_WIDTH = 340;
 const EDGE_MARGIN = 12;
 
 /**
- * Floating chat panel for the GeoAI capability (Testudo's `/api/v1/ai/chat`).
+ * Floating chat panel for Testudo-managed GeoAI chat. The plugin selects the
+ * authenticated product or public-demo route without exposing credentials here.
  *
  * Ported from the legacy viewer's `#ai-panel` (`geolibre-ai-plugin.js` +
  * `geolibre-ai-adapter.js`) for the GeoLibre-native path (issue #273). The legacy panel also
@@ -75,7 +77,11 @@ function GeoAiChatCard() {
             <span className="me-1 text-xs font-medium text-muted-foreground">
               {message.role === "user" ? t("toolbar.geoai.you", "You") : message.role === "error" ? t("toolbar.geoai.errorLabel", "Error") : t("toolbar.geoai.assistant", "GeoAI")}
             </span>
+            {message.role === "assistant" && message.scenarioAnalysis && message.scenarioAnalysis.status !== "needs_clarification" && (
+              <div className="text-[11px] font-medium text-muted-foreground">Model-generated interpretation</div>
+            )}
             <span className="whitespace-pre-wrap">{message.text}</span>
+            {message.scenarioAnalysis && <ScenarioAnalysisEvidence analysis={message.scenarioAnalysis} />}
           </div>
         ))}
       </div>
