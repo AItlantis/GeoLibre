@@ -1063,6 +1063,48 @@ def test_point_cloud_annotations_cap_the_decoded_entry_count(monkeypatch):
     assert list(labels) == ["a"]
 
 
+def test_point_cloud_annotations_read_box_status_and_attributes():
+    from geolibre import project as p
+
+    box = {"id": 1, "classCode": 6, "center": [0, 0, 1], "size": [1, 1, 1], "yaw": 0}
+    project = {
+        "plugins": {
+            "settings": {
+                "geolibre-point-cloud-annotation": {
+                    "cuboids": [
+                        {
+                            "url": "https://x/a.laz",
+                            "boxes": [
+                                {
+                                    **box,
+                                    "status": "reviewed",
+                                    "attributes": {"make": "Ford", "n": 3},
+                                },
+                                {**box, "id": 2, "status": "bogus", "attributes": ["x"]},
+                                {**box, "id": 3},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    boxes = p.point_cloud_annotations(project)["boxes"]
+    # Lengths are UTF-16 code units, like the app: 40 emoji are 80 units.
+    assert p._box_attributes({"\U0001f600" * 40: "\U0001f600" * 200}) == {
+        "\U0001f600" * 32: "\U0001f600" * 128
+    }
+    # A pair that would be split is dropped whole.
+    assert p._clip_utf16("a" + "\U0001f600", 2) == "a"
+    # An interior unpaired surrogate is kept, as the app keeps it.
+    assert p._clip_utf16("\ud800" + "a" * 64, 64) == "\ud800" + "a" * 63
+    assert [(b["status"], b["attributes"]) for b in boxes] == [
+        ("reviewed", {"make": "Ford"}),
+        ("new", {}),
+        ("new", {}),
+    ]
+
+
 def test_point_cloud_annotations_merge_repeated_source_urls():
     from geolibre import project as p
 
