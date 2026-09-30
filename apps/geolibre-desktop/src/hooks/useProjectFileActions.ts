@@ -1325,6 +1325,92 @@ export function useProjectFileActions(mapControllerRef: MapControllerRef) {
 
   const cancelSaveNamePrompt = () => settleSaveNamePrompt(saveNamePrompt, null);
 
+  // Saving back to an editable shared project writes the version every group
+  // member opens, so it is built like Share: local vector data is embedded (never
+  // file references) and credentials are redacted. The local-save prompts do not
+  // apply, since neither choice can be honoured on the server.
+  const saveBackToShare = async (
+    remoteProject: RemoteSharedProjectTarget & { projectGeneration: number },
+    saveProjectGeneration: number,
+  ): Promise<boolean> => {
+    // Unembedded snapshot, compared after the upload to tell whether the user
+    // changed the project while the save was in flight.
+    const startContent = serializeForSave(
+      excludeHiddenFieldsFromProject(buildCurrentProject().project),
+    );
+    if (startContent === null) return false;
+    try {
+      const { project } = await buildEmbeddedProject();
+      if (useAppStore.getState().projectGeneration !== saveProjectGeneration) return false;
+      const contentToSave = serializeForSave(
+        redactProjectCredentials(excludeHiddenFieldsFromProject(project)).project,
+      );
+      if (contentToSave === null) return false;
+      // Re-resolved per save: an OAuth access token captured at open time
+      // may have expired; `remoteProject.token` is the personal-token fallback.
+      const token = await resolveShareRequestToken(remoteProject.token, remoteProject.baseUrl);
+      if (
+        remoteProject !== remoteProjectRef.current ||
+        (remoteProject.oauthSessionRevision !== undefined &&
+          remoteProject.oauthSessionRevision !== useShareOAuthStore.getState().sessionRevision)
+      )
+        return false;
+      const updated = await updateSharedProjectContent({
+        token,
+        projectId: remoteProject.id,
+        content: contentToSave,
+        expectedVersion: remoteProject.versionCount,
+        baseUrl: remoteProject.baseUrl,
+      });
+      if (
+        useAppStore.getState().projectGeneration !== saveProjectGeneration ||
+        remoteProject !== remoteProjectRef.current ||
+        (remoteProject.oauthSessionRevision !== undefined &&
+          remoteProject.oauthSessionRevision !== useShareOAuthStore.getState().sessionRevision)
+      )
+        return false;
+      const updatedRemoteProject = {
+        ...remoteProject,
+        versionCount: updated.versionCount,
+      };
+      remoteProjectRef.current = updatedRemoteProject;
+
+      // The upload already succeeded, so a failure here must not report an
+      // error; it only leaves the project marked unsaved.
+      let liveContent: string | null = null;
+      try {
+        liveContent = serializeProject(
+          excludeHiddenFieldsFromProject(buildCurrentProject().project),
+        );
+      } catch (error) {
+        console.error("Failed to compare the saved shared project", error);
+      }
+      if (liveContent && sharedProjectContentMatches(startContent, liveContent)) {
+        markSaved();
+        recordExplicitProjectSave();
+      }
+      setRemoteSaveWarning(updated.warning ? updatedRemoteProject : null);
+      return true;
+    } catch (error) {
+      console.error("Failed to update shared project", error);
+      setActionError(
+        error instanceof ShareOAuthError
+          ? t(shareOAuthErrorKey(error.code))
+          : error instanceof ShareUploadError && error.code === "unauthorized"
+            ? t(
+                supportsShareOAuth()
+                  ? "gallery.errorUnauthorizedOAuth"
+                  : "gallery.errorUnauthorized",
+                { shareHost: shareHostLabel() },
+              )
+            : error instanceof Error
+              ? error.message
+              : t("toolbar.error.couldNotSaveProject"),
+      );
+      return false;
+    }
+  };
+
   // Saving moves credentials to the device-wide keychain before the file is
   // written, so the prompt below has nothing to ask about. A save that never
   // writes (cancelled prompt or picker, failed write, a project switched in
@@ -1360,6 +1446,14 @@ export function useProjectFileActions(mapControllerRef: MapControllerRef) {
     credentials: SaveCredentials,
   ): Promise<boolean> => {
     const saveProjectGeneration = useAppStore.getState().projectGeneration;
+    const remoteProject = remoteProjectRef.current;
+    if (
+      !options?.saveAs &&
+      remoteProject?.canEdit &&
+      remoteProject.projectGeneration === saveProjectGeneration
+    ) {
+      return saveBackToShare(remoteProject, saveProjectGeneration);
+    }
     // Offer to embed local vector data (or, on desktop, save file references)
     // first, so the serialized content below reflects the user's choice.
     const layersForSave = await resolveLayersForSave();
@@ -1378,14 +1472,12 @@ export function useProjectFileActions(mapControllerRef: MapControllerRef) {
     // failed keychain writes fall through to the keep/strip prompt below, so
     // the user neither writes plaintext silently nor loses the value.
     let projectForSave = project;
-    let credentialsStripped = false;
     if (projectCredentialsInKeychain()) {
       const split = splitProjectCredentials(project);
       const rollback = projectCredentialRollback(split.secrets);
       if (Object.keys(rollback).length > 0) credentials.rollback = rollback;
       if (await rememberProjectCredentials(split.secrets)) {
         projectForSave = split.project;
-        credentialsStripped = true;
         credentials.stripped = true;
       }
       if (useAppStore.getState().projectGeneration !== saveProjectGeneration) return false;
@@ -1429,73 +1521,7 @@ export function useProjectFileActions(mapControllerRef: MapControllerRef) {
       contentToSave = serializeForSave(projectToEgress);
     }
     if (contentToSave === null) return false;
-    const remoteProject = remoteProjectRef.current;
-    if (
-      !options?.saveAs &&
-      remoteProject?.canEdit &&
-      remoteProject.projectGeneration === saveProjectGeneration
-    ) {
-      try {
-        // Re-resolved per save: an OAuth access token captured at open time
-        // may have expired; `remoteProject.token` is the personal-token fallback.
-        const token = await resolveShareRequestToken(remoteProject.token, remoteProject.baseUrl);
-        if (
-          remoteProject !== remoteProjectRef.current ||
-          (remoteProject.oauthSessionRevision !== undefined &&
-            remoteProject.oauthSessionRevision !== useShareOAuthStore.getState().sessionRevision)
-        )
-          return false;
-        const updated = await updateSharedProjectContent({
-          token,
-          projectId: remoteProject.id,
-          content: contentToSave,
-          expectedVersion: remoteProject.versionCount,
-          baseUrl: remoteProject.baseUrl,
-        });
-        credentials.written = true;
-        if (
-          useAppStore.getState().projectGeneration !== saveProjectGeneration ||
-          remoteProject !== remoteProjectRef.current ||
-          (remoteProject.oauthSessionRevision !== undefined &&
-            remoteProject.oauthSessionRevision !== useShareOAuthStore.getState().sessionRevision)
-        )
-          return false;
-        const updatedRemoteProject = {
-          ...remoteProject,
-          versionCount: updated.versionCount,
-        };
-        remoteProjectRef.current = updatedRemoteProject;
 
-        const live = buildCurrentProject().project;
-        const liveProject = excludeHiddenFieldsFromProject(
-          credentialsStripped ? splitProjectCredentials(live).project : live,
-        );
-        const liveContent = serializeForSave(liveProject);
-        if (liveContent && sharedProjectContentMatches(updated.savedContent, liveContent)) {
-          markSaved();
-          recordExplicitProjectSave();
-        }
-        setRemoteSaveWarning(updated.warning ? updatedRemoteProject : null);
-        return true;
-      } catch (error) {
-        console.error("Failed to update shared project", error);
-        setActionError(
-          error instanceof ShareOAuthError
-            ? t(shareOAuthErrorKey(error.code))
-            : error instanceof ShareUploadError && error.code === "unauthorized"
-              ? t(
-                  supportsShareOAuth()
-                    ? "gallery.errorUnauthorizedOAuth"
-                    : "gallery.errorUnauthorized",
-                  { shareHost: shareHostLabel() },
-                )
-              : error instanceof Error
-                ? error.message
-                : t("toolbar.error.couldNotSaveProject"),
-        );
-        return false;
-      }
-    }
     // Projects opened from a URL have no writable path, so both Save and
     // Save As fall back to the save dialog for them.
     const existingLocalPath = projectPath && !isHttpUrl(projectPath) ? projectPath : null;
