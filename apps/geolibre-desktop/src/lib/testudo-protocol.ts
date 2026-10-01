@@ -1,11 +1,36 @@
 import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@geolibre/embed";
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState"] as const;
+const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
 export const TESTUDO_GUEST_TOKEN_RE = /^[A-Za-z0-9._~-]{32,4096}$/;
+
+export interface ScenarioAnalysisViewerAction {
+  scenario_id: string | number;
+  section_id?: string | number | null;
+  version_id: string;
+  source: "server_catalog";
+}
+
+/** Accept only a server-derived action tied to the active version and package roster. */
+export function validateScenarioAnalysisAction(candidate: unknown, versionId: string, declaredScenarioIds: Array<string | number>): ScenarioAnalysisViewerAction | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const action = candidate as Record<string, unknown>;
+  const scenario = action.scenario_id;
+  if (action.version_id !== versionId || action.source !== "server_catalog"
+    || !(typeof scenario === "string" && scenario.length > 0 && scenario.length <= 128
+      || typeof scenario === "number" && Number.isSafeInteger(scenario))
+    || !declaredScenarioIds.some(id => String(id) === String(scenario))) return null;
+  const section = action.section_id;
+  if (section !== undefined && section !== null
+    && !(typeof section === "string" && section.length > 0 && section.length <= 128
+      || typeof section === "number" && Number.isSafeInteger(section))) return null;
+  return { scenario_id: scenario, section_id: section as string | number | null | undefined,
+    version_id: versionId, source: "server_catalog" };
+}
 
 /** Validate the package envelope without filtering or copying its declared modes/presets. */
 export function validateTestudoBootstrap(candidate: TestudoBootstrap, guest: boolean): TestudoBootstrap {
@@ -15,7 +40,7 @@ export function validateTestudoBootstrap(candidate: TestudoBootstrap, guest: boo
     || !Array.isArray(candidate.capabilities) || !Array.isArray(candidate.presets)
     || candidate.artifactEndpoint !== `/api/v1/view/${encodeURIComponent(candidate.versionId)}/artifact/`
     || candidate.capabilities.some(item => !CAPABILITY_IDS.includes(item.id) || typeof item.available !== "boolean")
-    || candidate.presets.some(item => !item || typeof item.id !== "string" || !item.id || !CAPABILITY_IDS.includes(item.plugin))) {
+    || candidate.presets.some(item => !item || typeof item.id !== "string" || !item.id || !PRESET_PLUGIN_IDS.includes(item.plugin as typeof PRESET_PLUGIN_IDS[number]))) {
     throw new Error("Invalid Testudo package bootstrap");
   }
   if (guest && (candidate.packageId !== "London/testudo-package-2026-09-24-website-demo-v1"
@@ -40,6 +65,19 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
   }
   if (request.type === "testudoSetMode") return request.payload?.challenge === challenge
     && TESTUDO_DEMO_MODES.includes(request.payload?.mode);
+  if (request.type === "testudoOpenGeoAiChat") {
+    const payload = request.payload;
+    const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+    return keys.length === 2 && keys.includes("challenge") && keys.includes("open")
+      && payload.challenge === challenge && typeof payload.open === "boolean";
+  }
+  if (request.type === "testudoRequestInvestigation") {
+    const payload = request.payload;
+    const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+    return keys.length === 2 && keys.includes("challenge") && keys.includes("question")
+      && payload.challenge === challenge && TESTUDO_CHALLENGE_RE.test(challenge)
+      && typeof payload.question === "string" && payload.question.trim().length > 0 && payload.question.length <= 4000;
+  }
   return request.payload?.challenge === challenge;
 }
 

@@ -9,13 +9,49 @@ the bounded Testudo commands.
 
 The typed `@geolibre/embed` client adds `testudoLoadPackage`,
 `testudoOpenLocalPackage`, `testudoSetGuestCapability`, `testudoSetPlugin`,
-`testudoSetMode`, `testudoSetPreset`, `testudoGetState`, and the
-`testudoStateChanged` event. See
+`testudoSetMode`, `testudoOpenGeoAiChat`, `testudoRequestInvestigation`,
+`testudoSetPreset`, `testudoGetState`, and the `testudoStateChanged` and
+`testudoGeoAiInvestigationUpdate` events. See
 `packages/embed/src/testudo.ts` for DTOs. Parent origins are exact entries in
 `VITE_GEOLIBRE_EMBED_ORIGINS`; the iframe announces a cryptographic 128-bit
 challenge, and every command carries that challenge. The child checks
 `event.source === window.parent`, the exact allowlisted parent origin, command
 type and challenge. The host must check the iframe source and exact app origin.
+
+GeoAI chat is a persistent assistant panel, independent of the selected map
+plugin and demo mode. Map selection remains in `selectedPlugin`; opening or
+closing GeoAI uses `testudoOpenGeoAiChat({ open: boolean })` and does not alter
+the selected plugin or mode. `assistantOpen` is included in acknowledgements,
+`testudoGetState`, and `testudoStateChanged`, including when the user closes the
+panel inside the iframe. This command accepts only the challenge and boolean
+`open` field. Credentials and full scenario evidence stay inside the iframe.
+The parent can submit a bounded question through the dedicated investigation
+command below, which returns only a compact summary. Package changes and iframe
+teardown close the panel and clear its in-memory GeoAI session; mode changes
+leave an open panel in place.
+
+The host should subscribe to `testudoGeoAiInvestigationUpdate` before submitting
+a preset or free-text question with
+`testudoRequestInvestigation(question)`. The command carries only a nonblank
+question of at most 4000 characters plus the bridge challenge. The iframe
+acknowledges acceptance immediately, sends the question through its existing
+GeoAI chat transport, and later emits `testudoGeoAiInvestigationUpdate` with
+the same `requestId`. The update contains only a compact reply, selected
+scenario, up to three current and worsening sections, and bounded evidence-gap
+labels; full scenario analysis and credentials remain inside the iframe.
+
+The native chat panel sends prompts directly to Testudo's authenticated chat
+routes from inside the iframe. Signed-in sessions use
+`POST /api/v1/ai/chat` with the principal bearer and the platform package and
+accepted version UUIDs. Public demos use
+`POST /api/public/demo/geoai-chat` with the in-memory `Testudo-Embed`
+credential; the server derives the demo scope from that credential. Both send
+only bounded viewer context. Guest requests may include up to ten prior chat
+turns; the current prompt is sent once. Credentials and prompts do not pass
+through the parent bridge. Ollama and optional Ollaya provider calls remain
+server-side, and any proposed actions continue through the existing approval
+flow. The public demo bootstrap must advertise GeoAI as available for its
+capability-guarded button to appear.
 
 For anonymous public demos, the host obtains a short-lived guest capability
 from its server and sends it only in `testudoSetGuestCapability` after the
@@ -62,6 +98,13 @@ source, exact allowlisted origin and challenge before presenting its own picker.
 Call it directly from the host button's click handler so the browser's transient
 user activation is available. Canceling the picker leaves the current package
 state unchanged.
+
+Scenario impact answers may include separate package facts, calculated severity/worsening rankings,
+and likely scenario candidates. Candidate scores are labeled as model match scores. A typed viewer
+action is accepted only when its package version matches the active bootstrap and its scenario ID
+exists in the loaded package. GeoLibre then changes the scenario in memory, switches to the KPI
+view, and highlights a section that exists in rendered package geometry. The independent GeoAI
+panel stays open. Guest actions do not write package data or persist a selection.
 
 Build the application artifact with explicit origins:
 

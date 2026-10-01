@@ -1,27 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as plugins from "@geolibre/plugins";
-import type { GeoLibreAppAPI } from "@geolibre/plugins";
-import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
+import type { GeoAiViewerContext, GeoLibreAppAPI } from "@geolibre/plugins";
+import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
 import { readEmbedOrigins } from "../../lib/embed-api";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, hasDeclaredPathIndex, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, hasDeclaredPathIndex, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
+import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
 export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
-const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoCapabilityId }> = [
+const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai");
+const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectablePluginId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
   { id: "flow", label: "Flow", plugin: "network-kpi" },
   { id: "paths", label: "Paths", plugin: "path-analysis" },
   { id: "density", label: "Density", plugin: "network-kpi" },
 ];
-const empty: TestudoViewerState = { package: null, selectedPlugin: null, capabilities: [], availableModes: [], status: "empty" };
+const empty: TestudoViewerState = { package: null, selectedPlugin: null, assistantOpen: false, capabilities: [], availableModes: [], status: "empty" };
 type LocalPackagePickerWindow = Window & {
   showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<VehicleDirectoryHandle>;
 };
@@ -52,11 +54,13 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let current = empty;
     let directory: VehicleDirectoryHandle | null = null;
     let bootstrap: TestudoBootstrap | null = null;
+    let declaredScenarioIds: Array<string | number> = [];
     let abort = new AbortController();
     let disposed = false;
     let generation = 0;
     let selectionGeneration = 0;
     let busy = false;
+    let investigationBusy = false;
     let openingLocalPicker = false;
     let readyTimer: ReturnType<typeof setInterval> | undefined;
     const emit = (type: string, payload: unknown, target = parentOrigin) => {
@@ -69,16 +73,94 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       emit("testudoStateChanged", current);
       return current;
     };
-    const close = () => { for (const id of ids) handlers[id].close(); };
-    const select = async (id: TestudoCapabilityId) => {
-      if (!ids.includes(id)) throw new Error("Unknown viewer plugin");
+    const getGeoAiViewerContext = (): GeoAiViewerContext => {
+      const plugin = current.selectedPlugin ?? undefined;
+      let mode: GeoAiViewerContext["mode"] = current.selectedMode;
+      if (!mode) {
+        if (plugin === "vehicle-playback") mode = "animation";
+        else if (plugin === "network-kpi") {
+          const metric = plugins.getNetworkKpiSettings().metric;
+          mode = metric === "flow" || metric === "density" ? metric : "results";
+        } else if (plugin === "path-analysis") mode = "paths";
+        else if (plugin === "emissions-h3" || plugin === "geoai-buildings") mode = "environment";
+        else if (plugin === "scenario-comparison") mode = "comparison";
+      }
+
+      let scenarioRows: Array<{ scid?: number | string }> = [];
+      let activeIndex = -1;
+      if (plugin === "vehicle-playback") {
+        const playback = plugins.getVehiclePlaybackStatus();
+        scenarioRows = playback.scenarios;
+        activeIndex = playback.scenarioIndex;
+      } else if (plugin === "network-kpi") {
+        const results = plugins.getNetworkKpiStatus();
+        scenarioRows = results.scenarios;
+        activeIndex = results.scenarioIndex;
+      } else if (plugin === "scenario-comparison") {
+        const comparison = plugins.getScenarioComparisonStatus();
+        const settings = plugins.getScenarioComparisonSnapshot();
+        scenarioRows = comparison.scenarios;
+        activeIndex = settings.scenarioA;
+      }
+      const scenarioIds = [...new Set(scenarioRows
+        .filter(row => row.scid !== undefined && row.scid !== null && row.scid !== "")
+        .map(row => Number(row.scid))
+        .filter(value => Number.isSafeInteger(value) && value >= 0))].slice(0, 16);
+      const activeScenario = scenarioRows[activeIndex]?.scid;
+      const activeScenarioId = activeScenario === undefined ? undefined : Number(activeScenario);
+
+      const context: GeoAiViewerContext = {
+        surface: "geolibre",
+        ...(mode ? { mode } : {}),
+        ...(plugin ? { plugin } : {}),
+        ...(scenarioIds.length ? { scenario_ids: scenarioIds } : {}),
+        ...(activeScenarioId !== undefined && Number.isSafeInteger(activeScenarioId) && activeScenarioId >= 0
+          ? { active_scenario_id: activeScenarioId } : {}),
+        ...(current.package?.label ? { package_name: current.package.label } : {}),
+      };
+      if (plugin === "path-analysis") {
+        const selectedSection = plugins.getPathAnalysisSnapshot().selectedSection;
+        if (typeof selectedSection === "number" && Number.isSafeInteger(selectedSection) && selectedSection >= 0) context.selected_section_id = selectedSection;
+      }
+      if (plugin === "vehicle-playback") {
+        const playback = plugins.getVehiclePlaybackStatus();
+        const settings = plugins.getVehiclePlaybackSnapshot();
+        const start = (playback.timeline?.initialTimeSeconds ?? 0) + settings.tick * playback.dt;
+        if (Number.isFinite(start) && Number.isFinite(playback.dt) && playback.dt > 0) {
+          context.time_window = { start, end: start + playback.dt };
+        }
+      } else if (plugin === "scenario-comparison") {
+        const comparison = plugins.getScenarioComparisonStatus();
+        const start = comparison.currentTimeSeconds;
+        const duration = comparison.timelineA?.intervalDurationSeconds ?? comparison.timelineB?.intervalDurationSeconds;
+        if (start !== null && Number.isFinite(start) && duration && Number.isFinite(duration) && duration > 0) {
+          context.time_window = { start, end: start + duration };
+        }
+      }
+      const map = app.getMap?.();
+      context.map = { available: Boolean(map) };
+      try {
+        const raw = map?.getBounds?.()?.toArray?.();
+        if (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[0]) && Array.isArray(raw[1])) {
+          context.camera_bounds = [Number(raw[0][0]), Number(raw[0][1]), Number(raw[1][0]), Number(raw[1][1])];
+        }
+      } catch { /* Camera bounds are optional context; omit on map/read errors. */ }
+      return context;
+    };
+    const closeMapPlugins = () => { for (const id of ids) if (id !== "geoai") handlers[id].close(); };
+    const closeAllPlugins = () => { for (const id of ids) handlers[id].close(); };
+    const syncAssistantOpen = () => update({ assistantOpen: plugins.isGeoAiChatPanelVisible() });
+    const unsubscribeAssistantPanel = plugins.subscribeGeoAiChatPanel(syncAssistantOpen);
+    const select = async (id: TestudoSelectablePluginId) => {
+      if (!selectableIds.includes(id)) throw new Error("Unknown map plugin");
       const capability = current.capabilities.find(item => item.id === id);
       if (!capability?.available) throw new Error(capability?.reason ?? "This plugin is unavailable for this package.");
       if (!directory) throw new Error("Select a package first.");
       const version = generation;
       const selection = ++selectionGeneration;
-      close();
-      update({ selectedPlugin: id, status: "loading", error: undefined });
+      // Map-mode changes replace map plugins without closing the independent GeoAI panel.
+      closeMapPlugins();
+      update({ selectedPlugin: id, selectedMode: undefined, status: "loading", error: undefined });
       handlers[id].open(app);
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let timedOut = false;
@@ -111,6 +193,26 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (status.error) throw new Error(status.error);
       return update({ status: "ready" });
     };
+    const applyScenarioAnalysisAction = async (event: Event) => {
+      const detail = bootstrap ? validateScenarioAnalysisAction(
+        (event as CustomEvent<unknown>).detail, bootstrap.versionId, declaredScenarioIds,
+      ) : null;
+      if (!detail) return;
+      try {
+        // Scenario changes are in-memory viewer state. The GeoAI panel is a
+        // separate plugin, so switching the map view leaves it open.
+        await select("network-kpi");
+        const selected = await plugins.selectNetworkKpiScenarioId(detail.scenario_id as string | number);
+        if (!selected) return;
+        if (typeof detail.section_id === "string" || (typeof detail.section_id === "number" && Number.isSafeInteger(detail.section_id))) {
+          plugins.highlightNetworkKpiSection(detail.section_id as string | number);
+        }
+        update({ assistantOpen: plugins.isGeoAiChatPanelVisible(), selectedMode: undefined });
+      } catch (error) {
+        update({ error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    window.addEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction);
     const selectMode = async (mode: TestudoDemoMode) => {
       if (!current.availableModes.includes(mode)) throw new Error("This mode is not available in this package.");
       const target = modes.find(item => item.id === mode)!;
@@ -143,7 +245,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       generation++;
       selectionGeneration++;
       abort.abort(); abort = new AbortController();
-      close(); directory = null; bootstrap = null;
+      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = [];
       plugins.resetGeoAiChat();
       plugins.resetGeoAiBuildings();
       update({ ...empty });
@@ -155,21 +257,28 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       reset(); bootstrap = candidate;
       const byteOrigins = (readDeploymentEnvValue("VITE_TESTUDO_BYTE_ORIGINS") ?? "").split(/[\s,]+/).filter(Boolean).map(value => new URL(value).origin);
       if (!byteOrigins.length) throw new Error("Package byte origin is not configured");
+      const getGuestEmbedToken = guestCredential ? () => {
+        if (!guestCredential || guestCredential.expiresAt <= Date.now()) throw new Error("Guest demo access expired; refresh the package to continue.");
+        return guestCredential.token;
+      } : undefined;
       const source = createSignedPackageSource({ origin, artifactEndpoint: candidate.artifactEndpoint,
-        ...(guestCredential ? { getGuestEmbedToken: () => {
-          if (!guestCredential || guestCredential.expiresAt <= Date.now()) throw new Error("Guest demo access expired; refresh the package to continue.");
-          return guestCredential.token;
-        } } : { bearerToken: payload.transport!.bearerToken }), byteOrigins, signal: abort.signal });
+        ...(getGuestEmbedToken ? { getGuestEmbedToken } : { bearerToken: payload.transport!.bearerToken }), byteOrigins, signal: abort.signal });
       directory = sourceDirectory(source, candidate.label);
-      // Guest-embed sessions have no principal bearer token, so GeoAI chat is left unconfigured
-      // for them: `/api/v1/ai/chat` only accepts `Authorization: Bearer <principal>`, not the
-      // `Testudo-Embed` guest scheme used for package bytes.
-      plugins.initGeoAiChat({ origin, bearerToken: payload.transport?.bearerToken, packageId: candidate.packageId });
+      plugins.initGeoAiChat({
+        origin,
+        bearerToken: payload.transport?.bearerToken,
+        packageId: candidate.packageId,
+        packageVersionId: candidate.versionId,
+        ...(getGuestEmbedToken ? { guest: { getGuestEmbedToken } } : {}),
+        getViewerContext: getGeoAiViewerContext,
+      });
       plugins.initGeoAiBuildings({ origin, bearerToken: payload.transport?.bearerToken, packageId: candidate.packageId });
       update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: candidate.capabilities, status: "loading" });
       const raw = await readLocalNetworkKpiManifestJson(directory);
       const pkg = getGeolibrePackage(raw);
-      const hasAnimation = listVehicleManifestScenarios(raw, { includeAnimationVariants: true }).length > 0;
+      const packageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
+      declaredScenarioIds = packageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined);
+      const hasAnimation = packageScenarios.length > 0;
       const root = raw as Record<string, unknown>;
       const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
       const contracts = pkg?.dataContracts ?? {};
@@ -200,8 +309,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         const pkg = getGeolibrePackage(raw);
         if (!pkg) throw new Error("Choose a built Testudo package containing manifest.json and geolibre/package.json. Raw models must be built first.");
         reset(); directory = selected;
-        // Local folder loads have no Testudo session (no origin, no bearer token), so GeoAI chat
-        // cannot reach `/api/v1/ai/chat` here — the alias intentionally never matches a
+        // Local folder loads have no Testudo session (no origin or chat credential), so GeoAI
+        // cannot reach the Testudo chat routes here — the alias intentionally never matches a
         // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
         const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "", "geoai-buildings": "" };
         const emissions = pkg.dataContracts.emissions as { status?: string } | undefined;
@@ -252,6 +361,41 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         openingLocalPicker = false;
       }
     };
+    const requestInvestigation = (request: MessageEvent["data"]) => {
+      const requestId = request.requestId as string;
+      const question = request.payload.question as string;
+      emit("ack", { requestId, ok: true, result: { requestId, accepted: true } });
+      const publishError = (error: unknown) => emit("testudoGeoAiInvestigationUpdate", {
+        requestId,
+        question,
+        status: "error",
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      });
+      const capability = current.capabilities.find(item => item.id === "geoai");
+      if (!directory || !capability?.available || !plugins.isGeoAiChatConfigured()) {
+        publishError(new Error(capability?.reason ?? "GeoAI is unavailable for this package."));
+        return;
+      }
+      if (investigationBusy || plugins.getGeoAiChatStatus().loading) {
+        publishError(new Error("GeoAI is already responding to another question."));
+        return;
+      }
+      investigationBusy = true;
+      const messageStart = plugins.getGeoAiChatStatus().messages.length;
+      void plugins.sendGeoAiChat(question).then(status => {
+        const answer = status.messages.slice(messageStart).filter(message => message.role === "assistant" || message.role === "error").at(-1);
+        if (!answer || answer.role !== "assistant") {
+          publishError(new Error(answer?.text ?? status.error ?? "GeoAI did not return a response."));
+          return;
+        }
+        emit("testudoGeoAiInvestigationUpdate", {
+          requestId,
+          question,
+          status: "complete",
+          summary: summarizeGeoAiInvestigation(answer.text, answer.scenarioAnalysis),
+        });
+      }).catch(publishError).finally(() => { investigationBusy = false; });
+    };
     const message = (event: MessageEvent) => {
       if (!acceptsTestudoMessage(event, window.parent, allowed, challenge)) return;
       clearInterval(readyTimer);
@@ -270,6 +414,10 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         });
         return;
       }
+      if (request.type === "testudoRequestInvestigation") {
+        requestInvestigation(request);
+        return;
+      }
       const run = async () => {
         if (request.type === "testudoGetState") return current;
         if (busy) throw new Error("The viewer is loading a package. Please wait.");
@@ -278,6 +426,16 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           if (request.type === "testudoLoadPackage") return await load(request.payload);
           if (request.type === "testudoSetPlugin") return await select(request.payload?.id);
           if (request.type === "testudoSetMode") return await selectMode(request.payload.mode);
+          if (request.type === "testudoOpenGeoAiChat") {
+            const open = request.payload.open as boolean;
+            if (open) {
+              const capability = current.capabilities.find(item => item.id === "geoai");
+              if (!capability?.available) throw new Error(capability?.reason ?? "GeoAI is unavailable for this session.");
+              if (!directory) throw new Error("Select a package first.");
+              handlers.geoai.open(app);
+            } else handlers.geoai.close(app);
+            return update({ assistantOpen: plugins.isGeoAiChatPanelVisible() });
+          }
           return await applyPreset(request.payload?.id);
         } finally { busy = false; }
       };
@@ -294,7 +452,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); close(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));

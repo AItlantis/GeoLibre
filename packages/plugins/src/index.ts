@@ -1304,6 +1304,8 @@ export {
   restoreNetworkKpi,
   setNetworkKpiManifestUrl,
   setNetworkKpiScenario,
+  selectNetworkKpiScenarioId,
+  highlightNetworkKpiSection,
   setNetworkKpiReplication,
   setNetworkKpiSettings,
   stepNetworkKpiInterval,
@@ -1358,7 +1360,7 @@ export {
   openGeoAiChatPanel, closeGeoAiChatPanel, isGeoAiChatPanelVisible, subscribeGeoAiChatPanel,
   loadGeoAiChat, checkGeoAiAvailability, sendGeoAiChat,
   getGeoAiChatStatus, subscribeGeoAiChat, getGeoAiChatSnapshot, setGeoAiChatSettings,
-  type GeoAiChatMessage, type GeoAiChatSettings, type GeoAiChatStatus,
+  type GeoAiChatMessage, type GeoAiChatSettings, type GeoAiChatStatus, type GeoAiViewerContext,
 } from "./plugins/geoai-chat";
 export {
   GEOAI_BUILDINGS_PLUGIN_ID, geoAiBuildingsPlugin,

@@ -62,15 +62,19 @@ describe("GeoAI chat capability wiring (issue #273)", () => {
     // see the comment on TESTUDO_CONTROLS_SOURCE above) and evaluates the *actual* guard condition
     // against synthetic capability lists, so a regression that silently drops the gate (e.g.
     // hardcoding `true`, or checking the wrong capability id) fails this test.
-    const trigger = TESTUDO_CONTROLS_SOURCE.match(/\{app && (state\.capabilities\.some\([^)]+\)) && <button[^]*?onClick=\{\(\) => (handlers\["geoai"\]\.open\(app\))\}/);
+    const trigger = TESTUDO_CONTROLS_SOURCE.match(/\{(canOpenGeoAi) && <button[^]*?onClick=\{\(\) => \{ if \(app\) (handlers\["geoai"\]\.open\(app\));/);
     assert.ok(trigger, "TestudoControls must render a geoai trigger button gated on capability availability");
-    const [, guardExpr, openExpr] = trigger!;
+    const [, guardName, openExpr] = trigger!;
+    assert.equal(guardName, "canOpenGeoAi");
     assert.equal(openExpr, 'handlers["geoai"].open(app)', "the trigger must call the shared geoai open handler");
+    const guard = TESTUDO_CONTROLS_SOURCE.match(/const canOpenGeoAi = Boolean\(([^;]+)\);/);
+    assert.ok(guard, "the trigger guard must be derived from the active package capability");
+    assert.match(guard![1]!, /state\.capabilities\.some\(item => item\.id === "geoai" && item\.available\)/);
 
     const evalGuard = (capabilities: Array<{ id: string; available: boolean }>) => {
       const state = { capabilities };
       // eslint-disable-next-line no-new-func -- evaluating the extracted guard expression itself is the point of this test
-      return new Function("state", `return ${guardExpr};`)(state);
+      return new Function("app", "state", `return ${guard![1]};`)({}, state);
     };
     assert.equal(evalGuard([{ id: "geoai", available: true }]), true, "trigger must render when geoai is available");
     assert.equal(evalGuard([{ id: "geoai", available: false }]), false, "trigger must not render when geoai is unavailable");
@@ -89,65 +93,144 @@ describe("GeoAI chat capability wiring (issue #273)", () => {
   });
 });
 
-describe("geoai-chat store (ported adapter contract: init/sendChat/checkAvailability)", () => {
+describe("Testudo GeoAI chat transport", () => {
   afterEach(() => {
     resetGeoAiChat();
     delete (globalThis as { fetch?: unknown }).fetch;
   });
 
-  it("is unconfigured until init() is called with a bearer token", () => {
+  it("is unconfigured until initialized with a complete authenticated transport", () => {
     assert.equal(isGeoAiChatConfigured(), false);
   });
 
-  it("stays unconfigured for a guest session (no bearer token) since the backend only accepts principal bearer auth", () => {
+  it("requires the accepted package version for signed-in chat", () => {
     initGeoAiChat({ origin: "https://app.testudo.live", packageId: "London/demo" });
     assert.equal(isGeoAiChatConfigured(), false);
   });
 
-  it("checkAvailability calls GET /api/v1/ai/status with the bearer token and package_id", async () => {
-    let capturedUrl: string | undefined;
-    let capturedAuth: string | undefined;
-    (globalThis as { fetch?: unknown }).fetch = async (url: string | URL, init?: RequestInit) => {
-      capturedUrl = String(url);
-      capturedAuth = (init?.headers as Record<string, string> | undefined)?.Authorization;
-      return {
-        ok: true,
-        json: async () => ({ ok: true, ai_available: true, code: null }),
-      } as Response;
-    };
-    initGeoAiChat({ origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "London/demo" });
+  it("checks configured transport locally without probing a provider or endpoint", async () => {
+    let fetchCalled = false;
+    (globalThis as { fetch?: unknown }).fetch = async () => { fetchCalled = true; throw new Error("unexpected provider probe"); };
+    initGeoAiChat({
+      origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "package-uuid",
+      packageVersionId: "accepted-version-uuid",
+    });
     const status = await checkGeoAiAvailability();
     assert.equal(status.available, true);
     assert.equal(status.error, null);
-    assert.equal(capturedAuth, "Bearer token-123");
-    assert.match(capturedUrl ?? "", /^https:\/\/app\.testudo\.live\/api\/v1\/ai\/status\?package_id=London%2Fdemo$/);
+    assert.equal(fetchCalled, false);
   });
 
-  it("sendChat posts to /api/v1/ai/chat and records the reply in the transcript", async () => {
-    let capturedBody: unknown;
+  it("aborts a chat request that exceeds the 90-second transport deadline", async () => {
+    const globals = globalThis as typeof globalThis & { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
+    const originalSetTimeout = globals.setTimeout;
+    const originalClearTimeout = globals.clearTimeout;
+    let fetchSawAbort = false;
+    globals.setTimeout = ((callback: TimerHandler, delay?: number) => {
+      assert.equal(delay, 90_000);
+      if (typeof callback === "function") callback();
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+    globals.clearTimeout = (() => undefined) as typeof clearTimeout;
     (globalThis as { fetch?: unknown }).fetch = async (_url: string | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body));
+      fetchSawAbort = Boolean(init?.signal?.aborted);
+      throw init?.signal?.reason ?? new Error("request was not aborted");
+    };
+    initGeoAiChat({
+      origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "package-uuid",
+      packageVersionId: "accepted-version-uuid",
+    });
+    try {
+      const status = await sendGeoAiChat("hello");
+      assert.equal(fetchSawAbort, true);
+      assert.match(status.error ?? "", /timed out/i);
+    } finally {
+      globals.setTimeout = originalSetTimeout;
+      globals.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  it("posts signed-in chat with the platform package/version UUIDs and bounded viewer context", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    (globalThis as { fetch?: unknown }).fetch = async (url: string | URL, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
       return {
         ok: true,
-        json: async () => ({ reply: "There are 12 sections with high flow." }),
+        json: async () => ({ ok: true, reply: "There are 12 sections with high flow.", ai_available: true, ollaya: { status: "classified", intent: "data_query" } }),
       } as Response;
     };
-    initGeoAiChat({ origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "London/demo" });
+    initGeoAiChat({
+      origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "package-uuid",
+      packageVersionId: "accepted-version-uuid",
+      getViewerContext: () => ({ surface: "geolibre", mode: "flow", plugin: "network-kpi", scenario_ids: [4, 5], active_scenario_id: 4 }),
+    });
     const status = await sendGeoAiChat("Which sections have the highest flow?");
     assert.equal(status.loading, false);
     assert.equal(status.messages.length, 2);
     assert.equal(status.messages[0]?.role, "user");
     assert.equal(status.messages[1]?.role, "assistant");
     assert.equal(status.messages[1]?.text, "There are 12 sections with high flow.");
-    assert.deepEqual(capturedBody, { prompt: "Which sections have the highest flow?", package_id: "London/demo" });
+    assert.equal(capturedUrl, "https://app.testudo.live/api/v1/ai/chat");
+    assert.equal(capturedInit?.method, "POST");
+    assert.equal((capturedInit?.headers as Record<string, string>).Authorization, "Bearer token-123");
+    assert.equal(capturedInit?.credentials, "omit");
+    assert.deepEqual(JSON.parse(String(capturedInit?.body)), {
+      package_id: "package-uuid",
+      package_version_id: "accepted-version-uuid",
+      prompt: "Which sections have the highest flow?",
+      messages: [],
+      viewer_context: { surface: "geolibre", mode: "flow", plugin: "network-kpi", scenario_ids: [4, 5], active_scenario_id: 4 },
+    });
   });
 
-  it("sendChat records a degraded AI_UNAVAILABLE-style response as an error message, not a thrown exception", async () => {
+  it("posts guest chat to the public route, keeps the current prompt separate, and sends no client-selected authority", async () => {
+    const guestCredential = "guest-capability-secret-12345678901234567890";
+    const fetched: Array<{ url: string; init: RequestInit | undefined }> = [];
+    (globalThis as { fetch?: unknown }).fetch = async (url: string | URL, init?: RequestInit) => {
+      fetched.push({ url: String(url), init });
+      return { ok: true, json: async () => ({ ok: true, reply: "The guest answer.", available: true, read_only: true }) } as Response;
+    };
+    initGeoAiChat({
+      origin: "https://app.testudo.live",
+      guest: { getGuestEmbedToken: () => guestCredential },
+      getViewerContext: () => ({ surface: "geolibre", mode: "comparison", scenario_ids: [2, 3] }),
+    });
+
+    await sendGeoAiChat("Compare scenario 2 with scenario 3.");
+    const status = await sendGeoAiChat("Which one has more delay?");
+    assert.equal(status.messages.at(-1)?.text, "The guest answer.");
+    assert.equal(fetched.length, 2);
+    const second = fetched[1]!;
+    assert.equal(second.url, "https://app.testudo.live/api/public/demo/geoai-chat");
+    assert.equal(second.init?.method, "POST");
+    assert.equal((second.init?.headers as Record<string, string>).Authorization, `Testudo-Embed ${guestCredential}`);
+    assert.equal(second.init?.credentials, "omit");
+    assert.equal(new URL(second.url).search, "");
+    const body = JSON.parse(String(second.init?.body));
+    assert.deepEqual(body, {
+      prompt: "Which one has more delay?",
+      messages: [
+        { role: "user", content: "Compare scenario 2 with scenario 3." },
+        { role: "assistant", content: "The guest answer." },
+      ],
+      viewer_context: { surface: "geolibre", mode: "comparison", scenario_ids: [2, 3] },
+    });
+    assert.equal(JSON.stringify(body).includes(guestCredential), false);
+    assert.equal(status.messages.some(message => message.text.includes(guestCredential)), false, "guest credential must stay out of the transcript");
+    for (const forbiddenKey of ["city", "package_id", "package_version_id", "model", "tool", "tools", "token", "bearer_token", "grant"]) {
+      assert.equal(Object.hasOwn(body, forbiddenKey), false, `guest body must not contain ${forbiddenKey}`);
+    }
+    assert.equal(fetched.every(call => call.url === "https://app.testudo.live/api/public/demo/geoai-chat"), true);
+  });
+
+  it("records an AI_UNAVAILABLE response as an error message", async () => {
     (globalThis as { fetch?: unknown }).fetch = async () => ({
       ok: true,
       json: async () => ({ error: "AI is currently unavailable.", code: "AI_UNAVAILABLE" }),
     } as Response);
-    initGeoAiChat({ origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "London/demo" });
+    initGeoAiChat({ origin: "https://app.testudo.live", bearerToken: "token-123", packageId: "package-uuid", packageVersionId: "accepted-version-uuid" });
     const status = await sendGeoAiChat("hello");
     assert.equal(status.messages.at(-1)?.role, "error");
     assert.equal(getGeoAiChatStatus().error, "AI is currently unavailable.");

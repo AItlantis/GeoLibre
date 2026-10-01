@@ -194,3 +194,26 @@ it("Testudo commands reject when the ready event carries no valid challenge", as
   await assert.rejects(client.testudoSetPlugin({ id: "network-kpi" }), /challenge is unavailable/i);
   client.disconnect();
 });
+
+it("sends a correlated investigation request and exposes its later update event", async () => {
+  const { iframe, receive, sent } = harness();
+  const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });
+  const challenge = "0123456789abcdef0123456789abcdef";
+  receive("ready", { challenge });
+  const client = await pending;
+  let update: unknown;
+  client.on("testudoGeoAiInvestigationUpdate", value => { update = value; });
+  const accepted = client.testudoRequestInvestigation("Compare scenario 2");
+  const request = sent.at(-1)!.message;
+  assert.equal(request.type, "testudoRequestInvestigation");
+  assert.deepEqual(request.payload, { question: "Compare scenario 2", challenge });
+  receive("ack", { requestId: request.requestId, ok: true, result: { requestId: request.requestId, accepted: true } });
+  assert.deepEqual(await accepted, { requestId: request.requestId, accepted: true });
+  const result = { requestId: request.requestId, question: "Compare scenario 2", status: "complete", summary: { reply: "Done", selectedScenario: { id: 2, name: "Roadworks" } } };
+  receive("testudoGeoAiInvestigationUpdate", result);
+  assert.deepEqual(update, result);
+  const failure = { requestId: request.requestId, question: "Compare scenario 2", status: "error", error: "GeoAI request timed out." };
+  receive("testudoGeoAiInvestigationUpdate", failure);
+  assert.deepEqual(update, failure);
+  client.disconnect();
+});

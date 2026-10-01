@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptsTestudoMessage } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
+import { acceptsTestudoMessage, validateScenarioAnalysisAction } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
 
 const parent = {} as Window;
 const origin = "https://app.testudo.live";
@@ -42,6 +42,20 @@ test("testudoSetMode additionally requires a recognized demo mode", () => {
   assert.equal(acceptsTestudoMessage(setMode(undefined), parent, [origin], challenge), false);
 });
 
+test("testudoRequestInvestigation requires a challenge-bound nonblank question of at most 4000 characters", () => {
+  const request = (question: unknown, extras: Record<string, unknown> = {}) => ({
+    ...event,
+    data: { ...event.data, type: "testudoRequestInvestigation", payload: { challenge, question, ...extras } },
+  });
+  assert.equal(acceptsTestudoMessage(request("Compare the active scenario"), parent, [origin], challenge), true);
+  assert.equal(acceptsTestudoMessage(request("x".repeat(4000)), parent, [origin], challenge), true);
+  assert.equal(acceptsTestudoMessage(request("  \n"), parent, [origin], challenge), false);
+  assert.equal(acceptsTestudoMessage(request("x".repeat(4001)), parent, [origin], challenge), false);
+  assert.equal(acceptsTestudoMessage(request(42), parent, [origin], challenge), false);
+  assert.equal(acceptsTestudoMessage(request("hello", { token: "secret" }), parent, [origin], challenge), false);
+  assert.equal(acceptsTestudoMessage(request("hello", { challenge: "wrong" }), parent, [origin], challenge), false);
+});
+
 test("testudoSetGuestCapability additionally requires protocol, token shape and a bounded, non-expired expiry", () => {
   const now = Date.now();
   const validToken = "a".repeat(32);
@@ -59,4 +73,13 @@ test("testudoSetGuestCapability additionally requires protocol, token shape and 
   assert.equal(acceptsTestudoMessage(setGuest({ expiresAt: now - 1000 }), parent, [origin], challenge), false);
   assert.equal(acceptsTestudoMessage(setGuest({ expiresAt: now + 11 * 60_000 }), parent, [origin], challenge), false);
   assert.equal(acceptsTestudoMessage(setGuest({ expiresAt: "soon" }), parent, [origin], challenge), false);
+});
+
+test("scenario analysis actions are pinned to the active package and declared scenario roster", () => {
+  const action = { version_id: "version-1", source: "server_catalog", scenario_id: 2, section_id: 10 };
+  assert.deepEqual(validateScenarioAnalysisAction(action, "version-1", [1, 2]), action);
+  assert.equal(validateScenarioAnalysisAction({ ...action, version_id: "other" }, "version-1", [1, 2]), null);
+  assert.equal(validateScenarioAnalysisAction({ ...action, scenario_id: 3 }, "version-1", [1, 2]), null);
+  assert.equal(validateScenarioAnalysisAction({ ...action, source: "model" }, "version-1", [1, 2]), null);
+  assert.equal(validateScenarioAnalysisAction({ ...action, section_id: { unsafe: true } }, "version-1", [1, 2]), null);
 });
