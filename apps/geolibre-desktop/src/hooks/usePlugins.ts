@@ -3,6 +3,9 @@ import {
   setExternalNativePaintBridge,
   useAppStore,
   type AppState,
+  explainS3ReadError,
+  isCredentialedS3Url,
+  resolveReadableUrl,
 } from "@geolibre/core";
 import { buildProjectEgressSnapshot } from "../lib/build-project-snapshot";
 import { nativeWmsTileUrl } from "../lib/native-wms-url";
@@ -56,6 +59,7 @@ import {
   maplibreSocrataPlugin,
   maplibreStacCatalogsPlugin,
   maplibreSourceCoopPlugin,
+  maplibreS3BrowserPlugin,
   maplibreNaturalEarthPlugin,
   maplibreHuggingFacePlugin,
   maplibreSatelliteEmbeddingsPlugin,
@@ -255,6 +259,7 @@ const BUILT_IN_PLUGINS: GeoLibrePlugin[] = [
   maplibreCkanPlugin,
   maplibreStacCatalogsPlugin,
   maplibreSourceCoopPlugin,
+  maplibreS3BrowserPlugin,
   maplibreNaturalEarthPlugin,
   maplibreHuggingFacePlugin,
   maplibreSatelliteEmbeddingsPlugin,
@@ -1340,9 +1345,14 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
     // Shared across the sibling layers of one multi-layer container, which all
     // carry the container's URL: without this a six-layer KMZ downloaded itself
     // six times over on every project open and every refresh tick.
-    fetchVectorUrl: (url: string) =>
-      dedupeVectorUrlFetch(url, async () => {
-        const name = vectorDownloadFileName(url);
+    fetchVectorUrl: (sourceUrl: string) =>
+      dedupeVectorUrlFetch(sourceUrl, async () => {
+        const name = vectorDownloadFileName(sourceUrl);
+        // A private bucket's object URL is downloaded through a presigned
+        // URL; the layer keeps `sourceUrl`, so a restore signs it again.
+        const url = isCredentialedS3Url(sourceUrl)
+          ? await resolveReadableUrl(sourceUrl)
+          : sourceUrl;
         // Each attempt gets its own budget rather than sharing one across all
         // three. A shared deadline would be spent by the native call in exactly
         // the case the fallbacks exist for (a slow origin), leaving them to
@@ -1379,6 +1389,21 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
               // same guarded proxy used by the web build.
             }
           }
+        }
+        if (url !== sourceUrl) {
+          // Handing the control null would make it read the unsigned URL
+          // itself, which a private bucket refuses. Download the signed one.
+          // A bucket whose CORS rules block this origin fails as "Failed to
+          // fetch"; explain that instead.
+          const response = await fetch(url, { signal: budget() }).catch(async (error: unknown) => {
+            throw await explainS3ReadError(sourceUrl, error, (key, fallback, params) =>
+              i18n.t(key as never, { defaultValue: fallback, ...params }),
+            );
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status} ${response.statusText}`);
+          }
+          return new File([await response.blob()], name);
         }
         const proxyUrl = githubRawVectorProxyUrl(url);
         if (!isTauriRuntime()) {
