@@ -158,7 +158,12 @@ describe("Testudo GeoAI chat transport", () => {
       capturedInit = init;
       return {
         ok: true,
-        json: async () => ({ ok: true, reply: "There are 12 sections with high flow.", ai_available: true, ollaya: { status: "classified", intent: "data_query" } }),
+        json: async () => ({
+          ok: true, reply: "There are 12 sections with high flow.", ai_available: true,
+          ollaya: { status: "classified", intent: "data_query" },
+          scenario_analysis: { status: "complete", evidence_reliability: { score: 0.8 } },
+          diagnostics: { stage_latency_ms: { ollaya_intent_ms: 10, total_chat_ms: 40 } },
+        }),
       } as Response;
     };
     initGeoAiChat({
@@ -172,6 +177,8 @@ describe("Testudo GeoAI chat transport", () => {
     assert.equal(status.messages[0]?.role, "user");
     assert.equal(status.messages[1]?.role, "assistant");
     assert.equal(status.messages[1]?.text, "There are 12 sections with high flow.");
+    assert.equal(status.messages[1]?.scenarioAnalysis?.status, "complete");
+    assert.deepEqual(status.messages[1]?.diagnostics, { stage_latency_ms: { ollaya_intent_ms: 10, total_chat_ms: 40 } });
     assert.equal(capturedUrl, "https://app.testudo.live/api/v1/ai/chat");
     assert.equal(capturedInit?.method, "POST");
     assert.equal((capturedInit?.headers as Record<string, string>).Authorization, "Bearer token-123");

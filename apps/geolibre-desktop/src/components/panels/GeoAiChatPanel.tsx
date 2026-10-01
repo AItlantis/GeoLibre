@@ -81,7 +81,7 @@ function GeoAiChatCard() {
               <div className="text-[11px] font-medium text-muted-foreground">Model-generated interpretation</div>
             )}
             <span className="whitespace-pre-wrap">{message.text}</span>
-            {message.scenarioAnalysis && <ScenarioAnalysisEvidence analysis={message.scenarioAnalysis} />}
+            {message.scenarioAnalysis && <ScenarioAnalysisEvidence analysis={message.scenarioAnalysis} diagnostics={message.diagnostics} />}
           </div>
         ))}
       </div>

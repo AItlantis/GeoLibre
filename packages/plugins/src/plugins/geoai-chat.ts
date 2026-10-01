@@ -8,6 +8,7 @@ export interface GeoAiChatMessage {
   role: "user" | "assistant" | "error";
   text: string;
   scenarioAnalysis?: Record<string, unknown>;
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface GeoAiChatSettings {
@@ -195,16 +196,16 @@ export async function sendGeoAiChat(prompt: string): Promise<GeoAiChatStatus> {
       ? { prompt: trimmed, messages, viewer_context: viewerContext }
       : { package_id: session.packageId, package_version_id: session.packageVersionId, prompt: trimmed, messages, viewer_context: viewerContext };
     const pathSession = session;
-    const result = await request<{ reply?: string | null; error?: string; code?: string; available?: boolean; ai_available?: boolean; scenario_analysis?: Record<string, unknown>; viewer_action?: Record<string, unknown> }>(pathSession, body);
+    const result = await request<{ reply?: string | null; error?: string; code?: string; available?: boolean; ai_available?: boolean; scenario_analysis?: Record<string, unknown>; viewer_action?: Record<string, unknown>; diagnostics?: Record<string, unknown> }>(pathSession, body);
     if (requestToken !== token) return status;
     if (result.viewer_action && result.viewer_action.version_id === pathSession.packageVersionId) {
       window.dispatchEvent(new CustomEvent("testudo-scenario-analysis-action", { detail: result.viewer_action }));
     }
     if (result.reply) {
-      const reply: GeoAiChatMessage = { id: `a-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: result.reply, scenarioAnalysis: result.scenario_analysis };
+      const reply: GeoAiChatMessage = { id: `a-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "assistant", text: result.reply, scenarioAnalysis: result.scenario_analysis, diagnostics: result.diagnostics };
       status = { ...status, loading: false, available: result.available ?? result.ai_available ?? true, messages: [...status.messages, reply] };
     } else {
-      const errorMessage: GeoAiChatMessage = { id: `e-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "error", text: result.error ?? result.code ?? "AI is currently unavailable.", scenarioAnalysis: result.scenario_analysis };
+      const errorMessage: GeoAiChatMessage = { id: `e-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "error", text: result.error ?? result.code ?? "AI is currently unavailable.", scenarioAnalysis: result.scenario_analysis, diagnostics: result.diagnostics };
       status = { ...status, loading: false, available: Boolean(result.scenario_analysis) || (result.available ?? result.ai_available ?? false), error: result.error ?? result.code ?? null, messages: [...status.messages, errorMessage] };
     }
   } catch (error) {
