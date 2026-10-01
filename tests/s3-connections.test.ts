@@ -9,6 +9,7 @@ import {
   normalizeS3Connections,
   normalizeS3DefaultLocation,
   parseBucketPatterns,
+  presignLifetimeSeconds,
   type S3Connection,
 } from "../apps/geolibre-desktop/src/lib/s3-connections";
 import {
@@ -94,6 +95,16 @@ describe("S3 connections", () => {
   });
 });
 
+describe("presign lifetime", () => {
+  it("caps at the maximum, follows expiring credentials, and refuses expired ones", () => {
+    assert.equal(presignLifetimeSeconds(undefined, 0, 43_200), 43_200);
+    assert.equal(presignLifetimeSeconds(3_600_000, 0, 43_200), 3_600);
+    assert.equal(presignLifetimeSeconds(10_000, 0, 43_200), 60);
+    assert.equal(presignLifetimeSeconds(1_000, 1_000, 43_200), null);
+    assert.equal(presignLifetimeSeconds(500, 1_000, 43_200), null);
+  });
+});
+
 describe("S3 connection secrets", () => {
   it("keeps secret keys and session tokens out of the stored settings blob", () => {
     const settings = normalizeDesktopSettings({
@@ -127,6 +138,11 @@ describe("S3 connection secrets", () => {
 });
 
 describe("SQL cloud URLs", () => {
+  it("leaves cloud URLs in quoted identifiers and comments alone", async () => {
+    const sql = `SELECT 1 AS "s3://not-a-source/key" -- s3://nor/this`;
+    assert.equal(await resolveCloudUrls(sql), sql);
+  });
+
   afterEach(() => registerS3UrlSigner(null));
 
   it("signs covered buckets and rewrites the rest to public HTTPS", async () => {
