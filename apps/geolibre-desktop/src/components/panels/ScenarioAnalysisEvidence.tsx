@@ -37,7 +37,7 @@ export function ScenarioAnalysisEvidence({ analysis, diagnostics }: { analysis: 
       </section>
       {current && <RankingEvidence title="Calculated current severity" ranking={current} />}
       {worsening && <RankingEvidence title="Calculated worsening versus baseline" ranking={worsening} />}
-      {(evidenceReliability || analysisPertinence || diagnostics) && <details>
+      {(evidenceReliability || analysisPertinence || diagnostics || analysis.evidence_coverage !== undefined) && <details>
         <summary>Evidence quality and workflow timing</summary>
         {evidenceReliability && <QualityScore title="Evidence reliability" value={evidenceReliability} />}
         {analysisPertinence && <QualityScore title="Request pertinence" value={analysisPertinence} />}

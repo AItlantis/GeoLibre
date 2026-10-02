@@ -176,3 +176,13 @@ test("renders uncalibrated evidence quality scores, their components, and workfl
   assert.match(html, /laya:en/);
   assert.match(html, /qwen3/);
 });
+
+test("renders standalone evidence coverage without score objects or diagnostics", () => {
+  const html = renderToStaticMarkup(createElement(ScenarioAnalysisEvidence, {
+    analysis: { status: "partial", evidence_coverage: { queried_section_count: 2 } },
+  }));
+
+  assert.match(html, /Evidence quality and workflow timing/);
+  assert.match(html, /Evidence coverage and score provenance/);
+  assert.match(html, /queried_section_count/);
+});
