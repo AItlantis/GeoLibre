@@ -9,12 +9,45 @@ the bounded Testudo commands.
 
 The typed `@geolibre/embed` client adds `testudoLoadPackage`,
 `testudoSetGuestCapability`, `testudoSetPlugin`, `testudoSetMode`, `testudoSetPreset`,
-`testudoGetState`, and the `testudoStateChanged` event. See
-`packages/embed/src/testudo.ts` for DTOs. Parent origins are exact entries in
+`testudoGetState`, and the `testudoStateChanged` event, plus host controls for
+legend visibility, Esri World Imagery, lane/section KPI geometry, the primary
+renderer, annotations, map-tour recording, and video recording. See
+`packages/embed/src/testudo.ts` for DTOs and `packages/embed/src/index.ts` for
+client method signatures. Parent origins are exact entries in
 `VITE_GEOLIBRE_EMBED_ORIGINS`; the iframe announces a cryptographic 128-bit
 challenge, and every command carries that challenge. The child checks
 `event.source === window.parent`, the exact allowlisted parent origin, command
 type and challenge. The host must check the iframe source and exact app origin.
+
+The added methods are `testudoSetLegendVisibility({ visible })`,
+`testudoSetEsriWorldImagery({ visible })`,
+`testudoSetKpiGeometry({ geometry: "lanes" | "sections", visible })`,
+`testudoGetKpiGeometryState()`,
+`testudoSetRenderer({ renderer: "maplibre" | "cesium" })`,
+`testudoSetPlaybackPlaying({ playing })`, `testudoRestartPlayback()`,
+`testudoSeekPlayback({ tick })`, `testudoSetPlaybackSpeed({ speed })`, and
+`testudoGetPlaybackState()`,
+`testudoOpenAnnotations()`, `testudoOpenRecordTour()`, and
+`testudoOpenRecordVideo()`. KPI geometry selection requires the active plugin to
+be `network-kpi`; each geometry visibility flag is independent, so lanes and
+sections can both be shown or hidden. `testudoGetKpiGeometryState()` returns
+`{ showLanes, showSections }`. Playback controls require the Animation mode to
+be loaded. `testudoGetPlaybackState()` returns `{ available, loading, playing,
+tick, maxTick, speed, dt, loop }`; `testudoPlaybackChanged` emits the same
+snapshot as the playhead changes, throttled to about 10 updates per second while
+playing and sent immediately while paused. Speed is bounded
+to the plugin's supported range of 0.25–20. Annotation activation can fail when the current renderer does
+not support that plugin. Recording methods open GeoLibre's existing recording
+dialogs in the iframe; they do not start or save a recording without the user's
+interaction in those dialogs. Esri imagery is added and removed through the
+GeoLibre layer store, including Esri attribution.
+
+`TestudoViewerState.progress` is present only when a native plugin supplies real
+progress. Vehicle playback reports its loaded chunk fraction, loaded count, and
+total count while chunks stream. This is playback-catalog progress, not total
+package-download progress. The signed artifact source buffers each artifact
+before returning it and exposes no byte progress; network KPI and path-analysis
+loaders currently expose only a loading flag.
 
 For anonymous public demos, the host obtains a short-lived guest capability
 from its server and sends it only in `testudoSetGuestCapability` after the

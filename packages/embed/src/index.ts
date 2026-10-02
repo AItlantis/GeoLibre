@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoSetGuestCapability } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoSetGuestCapability, TestudoRenderer, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoPlaybackState } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability, TestudoRenderer, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoPlaybackState } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -54,6 +54,7 @@ export interface AddDataOptions {
 export type EmbedEventMap = {
   ready: { version: string; challenge?: string };
   testudoStateChanged: TestudoViewerState;
+  testudoPlaybackChanged: TestudoPlaybackState;
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack
@@ -87,6 +88,19 @@ export interface GeoLibreEmbedClient {
   testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
   testudoGetState(): Promise<TestudoViewerState>;
+  testudoSetLegendVisibility(payload: { visible: boolean }): Promise<{ visible: boolean }>;
+  testudoSetEsriWorldImagery(payload: { visible: boolean }): Promise<{ visible: boolean }>;
+  testudoSetKpiGeometry(payload: { geometry: TestudoKpiGeometry; visible: boolean }): Promise<TestudoKpiGeometryState>;
+  testudoGetKpiGeometryState(): Promise<TestudoKpiGeometryState>;
+  testudoSetRenderer(payload: { renderer: TestudoRenderer }): Promise<{ renderer: TestudoRenderer }>;
+  testudoSetPlaybackPlaying(payload: { playing: boolean }): Promise<TestudoPlaybackState>;
+  testudoRestartPlayback(): Promise<TestudoPlaybackState>;
+  testudoSeekPlayback(payload: { tick: number }): Promise<TestudoPlaybackState>;
+  testudoSetPlaybackSpeed(payload: { speed: number }): Promise<TestudoPlaybackState>;
+  testudoGetPlaybackState(): Promise<TestudoPlaybackState>;
+  testudoOpenAnnotations(): Promise<{ active: boolean }>;
+  testudoOpenRecordTour(): Promise<{ opened: true }>;
+  testudoOpenRecordVideo(): Promise<{ opened: true }>;
   loadProject(url: string): Promise<void>;
   setView(target: ViewTarget): Promise<void>;
   highlightFeature(payload: {
@@ -182,6 +196,19 @@ export function connect(
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
     testudoSetPreset: (payload) => sendTestudo<TestudoViewerState>("testudoSetPreset", payload),
     testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
+    testudoSetLegendVisibility: (payload) => sendTestudo<{ visible: boolean }>("testudoSetLegendVisibility", payload),
+    testudoSetEsriWorldImagery: (payload) => sendTestudo<{ visible: boolean }>("testudoSetEsriWorldImagery", payload),
+    testudoSetKpiGeometry: (payload) => sendTestudo<TestudoKpiGeometryState>("testudoSetKpiGeometry", payload),
+    testudoGetKpiGeometryState: () => sendTestudo<TestudoKpiGeometryState>("testudoGetKpiGeometryState"),
+    testudoSetRenderer: (payload) => sendTestudo<{ renderer: TestudoRenderer }>("testudoSetRenderer", payload),
+    testudoSetPlaybackPlaying: (payload) => sendTestudo<TestudoPlaybackState>("testudoSetPlaybackPlaying", payload),
+    testudoRestartPlayback: () => sendTestudo<TestudoPlaybackState>("testudoRestartPlayback"),
+    testudoSeekPlayback: (payload) => sendTestudo<TestudoPlaybackState>("testudoSeekPlayback", payload),
+    testudoSetPlaybackSpeed: (payload) => sendTestudo<TestudoPlaybackState>("testudoSetPlaybackSpeed", payload),
+    testudoGetPlaybackState: () => sendTestudo<TestudoPlaybackState>("testudoGetPlaybackState"),
+    testudoOpenAnnotations: () => sendTestudo<{ active: boolean }>("testudoOpenAnnotations"),
+    testudoOpenRecordTour: () => sendTestudo<{ opened: true }>("testudoOpenRecordTour"),
+    testudoOpenRecordVideo: () => sendTestudo<{ opened: true }>("testudoOpenRecordVideo"),
     loadProject: (url) => send("loadProject", { url }),
     setView: (target) => send("setView", target as unknown as Record<string, unknown>),
     highlightFeature: (payload) =>

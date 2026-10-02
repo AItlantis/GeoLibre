@@ -2932,7 +2932,7 @@ export function DesktopShell({
           >
             <FlightSimulatorPanel />
           </SectionErrorBoundary>
-          {new URLSearchParams(window.location.search).get("layout") === "testudo" && <TestudoControls app={mapAppAPI} />}
+          {new URLSearchParams(window.location.search).get("layout") === "testudo" && <TestudoControls app={mapAppAPI} mapControllerRef={mapControllerRef} />}
           <PathAnalysisPanel />
           <ScenarioComparisonPanel />
           <KnowledgeCardConsentDialog

@@ -21,6 +21,8 @@ export interface TestudoViewerState {
   status: "empty" | "loading" | "ready" | "error";
   error?: string;
   presetId?: string;
+  /** Native plugin progress only; absent when the loader has no progress source. */
+  progress?: { label: string; value?: number; loaded?: number; total?: number };
 }
 export interface TestudoLoadPackage {
   bootstrap: TestudoBootstrap;
@@ -36,4 +38,18 @@ export interface TestudoSetGuestCapability {
   guestEmbedToken: string;
   /** Unix epoch milliseconds. */
   expiresAt: number;
+}
+
+export type TestudoRenderer = "maplibre" | "cesium";
+export type TestudoKpiGeometry = "lanes" | "sections";
+export interface TestudoKpiGeometryState { showLanes: boolean; showSections: boolean }
+export interface TestudoPlaybackState {
+  available: boolean;
+  loading: boolean;
+  playing: boolean;
+  tick: number;
+  maxTick: number;
+  speed: number;
+  dt: number;
+  loop: boolean;
 }

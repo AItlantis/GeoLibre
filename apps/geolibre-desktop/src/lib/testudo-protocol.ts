@@ -1,7 +1,13 @@
 import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@geolibre/embed";
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState"] as const;
+export const TESTUDO_COMMANDS = [
+  "testudoSetGuestCapability", "testudoLoadPackage", "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState",
+  "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoSetRenderer",
+  "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo",
+  "testudoGetKpiGeometryState", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback",
+  "testudoSetPlaybackSpeed", "testudoGetPlaybackState",
+] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -40,6 +46,21 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
   }
   if (request.type === "testudoSetMode") return request.payload?.challenge === challenge
     && TESTUDO_DEMO_MODES.includes(request.payload?.mode);
+  if (request.type === "testudoSetLegendVisibility" || request.type === "testudoSetEsriWorldImagery") {
+    return request.payload?.challenge === challenge && typeof request.payload?.visible === "boolean";
+  }
+  if (request.type === "testudoSetKpiGeometry") return request.payload?.challenge === challenge
+    && (request.payload?.geometry === "lanes" || request.payload?.geometry === "sections")
+    && typeof request.payload?.visible === "boolean";
+  if (request.type === "testudoSetRenderer") return request.payload?.challenge === challenge
+    && (request.payload?.renderer === "maplibre" || request.payload?.renderer === "cesium");
+  if (request.type === "testudoSetPlaybackPlaying") return request.payload?.challenge === challenge
+    && typeof request.payload?.playing === "boolean";
+  if (request.type === "testudoSeekPlayback") return request.payload?.challenge === challenge
+    && typeof request.payload?.tick === "number" && Number.isFinite(request.payload.tick) && request.payload.tick >= 0;
+  if (request.type === "testudoSetPlaybackSpeed") return request.payload?.challenge === challenge
+    && typeof request.payload?.speed === "number" && Number.isFinite(request.payload.speed)
+    && request.payload.speed >= 0.25 && request.payload.speed <= 20;
   return request.payload?.challenge === challenge;
 }
 

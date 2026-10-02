@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useAppStore } from "@geolibre/core";
 import * as plugins from "@geolibre/plugins";
 import type { GeoLibreAppAPI } from "@geolibre/plugins";
-import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
+import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoLoadPackage, TestudoPlaybackState, TestudoRenderer, TestudoViewerState } from "@geolibre/embed";
+import type { MapEngine } from "@geolibre/map";
+import type { RefObject } from "react";
 import { readEmbedOrigins } from "../../lib/embed-api";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
@@ -11,6 +14,11 @@ import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
+import { RecordTourDialog } from "./RecordTourDialog";
+import { RecordVideoDialog } from "./RecordVideoDialog";
+
+const ESRI_WORLD_IMAGERY = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+const ESRI_WORLD_IMAGERY_LAYER = "Testudo Esri World Imagery";
 
 const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoCapabilityId }> = [
@@ -29,9 +37,11 @@ const handlers = {
 };
 
 /** Curated native runtime. The host owns navigation; these plugins own their map layers. */
-export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
+export function TestudoControls({ app, mapControllerRef }: { app: GeoLibreAppAPI | null; mapControllerRef: RefObject<MapEngine | null> }) {
   const { t } = useTranslation();
   const [state, setState] = useState<TestudoViewerState>(empty);
+  const [recordTourOpen, setRecordTourOpen] = useState(false);
+  const [recordVideoOpen, setRecordVideoOpen] = useState(false);
   const picker = useRef<((directory: VehicleDirectoryHandle) => Promise<void>) | null>(null);
   const modeSelector = useRef<((mode: TestudoDemoMode) => Promise<TestudoViewerState>) | null>(null);
   useEffect(() => {
@@ -50,6 +60,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let generation = 0;
     let selectionGeneration = 0;
     let busy = false;
+    let previousCesiumBasemap: import("@geolibre/core").CesiumBasemapId | undefined;
+    let playbackSyncTimer: ReturnType<typeof setTimeout> | undefined;
     let readyTimer: ReturnType<typeof setInterval> | undefined;
     const emit = (type: string, payload: unknown, target = parentOrigin) => {
       if (!disposed && target && allowed.includes(target)) window.parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
@@ -61,6 +73,38 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       emit("testudoStateChanged", current);
       return current;
     };
+    const getPlaybackState = (): TestudoPlaybackState => {
+      const selected = current.selectedPlugin === "vehicle-playback";
+      const playback = plugins.getVehiclePlaybackSettings();
+      const status = plugins.getVehiclePlaybackStatus();
+      return {
+        available: selected && current.status === "ready",
+        loading: selected && (current.status === "loading" || status.loading),
+        playing: selected && playback.playing,
+        tick: playback.tick,
+        maxTick: status.maxTick,
+        speed: playback.speed,
+        dt: status.dt,
+        loop: playback.loop,
+      };
+    };
+    const publishPlaybackState = () => emit("testudoPlaybackChanged", getPlaybackState());
+    const onPlaybackStateChange = () => {
+      if (current.selectedPlugin !== "vehicle-playback") return;
+      if (!plugins.getVehiclePlaybackSettings().playing) {
+        if (playbackSyncTimer) clearTimeout(playbackSyncTimer);
+        playbackSyncTimer = undefined;
+        publishPlaybackState();
+        return;
+      }
+      if (!playbackSyncTimer) {
+        publishPlaybackState();
+        playbackSyncTimer = setTimeout(() => {
+          playbackSyncTimer = undefined;
+          if (current.selectedPlugin === "vehicle-playback") publishPlaybackState();
+        }, 100);
+      }
+    };
     const close = () => { for (const id of ids) handlers[id].close(); };
     const select = async (id: TestudoCapabilityId) => {
       if (!ids.includes(id)) throw new Error("Unknown viewer plugin");
@@ -70,8 +114,20 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       const version = generation;
       const selection = ++selectionGeneration;
       close();
-      update({ selectedPlugin: id, status: "loading", error: undefined });
+      update({ selectedPlugin: id, status: "loading", error: undefined, progress: undefined });
+      publishPlaybackState();
       handlers[id].open(app);
+      const stopProgress = id === "vehicle-playback"
+        ? plugins.subscribeVehiclePlaybackStatus(() => {
+            const status = plugins.getVehiclePlaybackStatus();
+            if (status.loading) update({ progress: {
+              label: "Loading playback chunks",
+              value: status.loadedFraction,
+              loaded: status.loadedChunks,
+              total: status.totalChunks,
+            } });
+          })
+        : undefined;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let timedOut = false;
       const loading = handlers[id].load(directory);
@@ -80,10 +136,10 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       void loading.then(() => {
         if (!timedOut || disposed || generation !== version || selectionGeneration !== selection) return;
         const status = handlers[id].status();
-        update(status.error ? { status: "error", error: status.error } : { status: "ready", error: undefined });
+        update(status.error ? { status: "error", error: status.error, progress: undefined } : { status: "ready", error: undefined, progress: undefined });
       }, error => {
         if (!timedOut || disposed || generation !== version || selectionGeneration !== selection) return;
-        update({ status: "error", error: error instanceof Error ? error.message : String(error) });
+        update({ status: "error", error: error instanceof Error ? error.message : String(error), progress: undefined });
       });
       try {
         await Promise.race([
@@ -97,11 +153,14 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         ]);
       } finally {
         if (timeout) clearTimeout(timeout);
+        stopProgress?.();
       }
       if (disposed || generation !== version) throw new Error("Package selection changed");
       const status = handlers[id].status();
       if (status.error) throw new Error(status.error);
-      return update({ status: "ready" });
+      const result = update({ status: "ready", progress: undefined });
+      publishPlaybackState();
+      return result;
     };
     const selectMode = async (mode: TestudoDemoMode) => {
       if (!current.availableModes.includes(mode)) throw new Error("This mode is not available in this package.");
@@ -131,12 +190,81 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (preset.view) app.getMap?.()?.flyTo(preset.view);
       return update({ presetId: id });
     };
+    const setLegendVisibility = (visible: boolean) => {
+      const { legend, setLegend } = useAppStore.getState();
+      setLegend({ ...legend, panelVisible: visible });
+      return { visible };
+    };
+    const setEsriWorldImagery = (visible: boolean) => {
+      const store = useAppStore.getState();
+      if ((visible && store.primaryRenderer === "cesium") || (!visible && previousCesiumBasemap !== undefined)) {
+        if (visible) {
+          previousCesiumBasemap ??= store.preferences.map.cesiumBasemap ?? "project";
+          store.setPreferences({ ...store.preferences, map: { ...store.preferences.map, cesiumBasemap: "esri-imagery" } });
+        } else {
+          store.setPreferences({ ...store.preferences, map: { ...store.preferences.map, cesiumBasemap: previousCesiumBasemap ?? "project" } });
+          previousCesiumBasemap = undefined;
+        }
+        return { visible };
+      }
+      const existing = store.layers.find(layer => layer.name === ESRI_WORLD_IMAGERY_LAYER);
+      if (visible && !existing) {
+        if (!app.addTileLayer) throw new Error("This GeoLibre build cannot add tile layers.");
+        app.addTileLayer(ESRI_WORLD_IMAGERY_LAYER, ESRI_WORLD_IMAGERY, {
+          attribution: 'Tiles &copy; <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a>',
+          visible: true,
+        });
+      } else if (!visible && existing) {
+        store.removeLayer(existing.id);
+      }
+      return { visible };
+    };
+    const getKpiGeometryState = (): TestudoKpiGeometryState => {
+      const settings = plugins.getNetworkKpiSettings();
+      return { showLanes: settings.showLanes, showSections: settings.showSections };
+    };
+    const applyKpiGeometry = (geometry: TestudoKpiGeometry, visible: boolean) => {
+      if (current.selectedPlugin !== "network-kpi") throw new Error("Select Flow or Density before choosing lanes or sections.");
+      plugins.setNetworkKpiSettings(geometry === "lanes" ? { showLanes: visible } : { showSections: visible });
+      return getKpiGeometryState();
+    };
+    const setPlaybackPlaying = (playing: boolean) => {
+      if (current.selectedPlugin !== "vehicle-playback" || current.status !== "ready") throw new Error("Load the Animation mode before using playback controls.");
+      if (plugins.getVehiclePlaybackSettings().playing !== playing) plugins.toggleVehiclePlaybackPlaying();
+      return getPlaybackState();
+    };
+    const restartPlayback = () => {
+      if (current.selectedPlugin !== "vehicle-playback" || current.status !== "ready") throw new Error("Load the Animation mode before using playback controls.");
+      plugins.setVehiclePlaybackSettings({ playing: false, tick: 0 });
+      return getPlaybackState();
+    };
+    const seekPlayback = (tick: number) => {
+      if (current.selectedPlugin !== "vehicle-playback" || current.status !== "ready") throw new Error("Load the Animation mode before using playback controls.");
+      plugins.setVehiclePlaybackTick(tick);
+      return getPlaybackState();
+    };
+    const setPlaybackSpeed = (speed: number) => {
+      if (current.selectedPlugin !== "vehicle-playback" || current.status !== "ready") throw new Error("Load the Animation mode before using playback controls.");
+      plugins.setVehiclePlaybackSettings({ speed });
+      return getPlaybackState();
+    };
+    const applyRenderer = (next: TestudoRenderer) => {
+      useAppStore.getState().setPrimaryRenderer(next);
+      return { renderer: next };
+    };
+    const openAnnotations = async () => {
+      if (!app.activatePlugin) throw new Error("Annotation controls are unavailable in this GeoLibre build.");
+      const active = await app.activatePlugin(plugins.ANNOTATIONS_PLUGIN_ID);
+      if (!active) throw new Error("The annotation plugin could not be activated for this renderer.");
+      return { active: true };
+    };
     const reset = () => {
       generation++;
       selectionGeneration++;
       abort.abort(); abort = new AbortController();
       close(); directory = null; bootstrap = null;
       update({ ...empty });
+      publishPlaybackState();
     };
     const load = async (payload: TestudoLoadPackage) => {
       const candidate = payload?.bootstrap && validateTestudoBootstrap(payload.bootstrap, !!guestCredential);
@@ -220,7 +348,20 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       }
       const run = async () => {
         if (request.type === "testudoGetState") return current;
+        if (request.type === "testudoGetPlaybackState") return getPlaybackState();
+        if (request.type === "testudoGetKpiGeometryState") return getKpiGeometryState();
         if (busy) throw new Error("The viewer is loading a package. Please wait.");
+        if (request.type === "testudoSetLegendVisibility") return setLegendVisibility(request.payload.visible);
+        if (request.type === "testudoSetEsriWorldImagery") return setEsriWorldImagery(request.payload.visible);
+        if (request.type === "testudoSetKpiGeometry") return applyKpiGeometry(request.payload.geometry, request.payload.visible);
+        if (request.type === "testudoSetRenderer") return applyRenderer(request.payload.renderer);
+        if (request.type === "testudoSetPlaybackPlaying") return setPlaybackPlaying(request.payload.playing);
+        if (request.type === "testudoRestartPlayback") return restartPlayback();
+        if (request.type === "testudoSeekPlayback") return seekPlayback(request.payload.tick);
+        if (request.type === "testudoSetPlaybackSpeed") return setPlaybackSpeed(request.payload.speed);
+        if (request.type === "testudoOpenAnnotations") return await openAnnotations();
+        if (request.type === "testudoOpenRecordTour") { setRecordTourOpen(true); return { opened: true as const }; }
+        if (request.type === "testudoOpenRecordVideo") { setRecordVideoOpen(true); return { opened: true as const }; }
         busy = true;
         try {
           if (request.type === "testudoLoadPackage") return await load(request.payload);
@@ -236,16 +377,18 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       });
     };
     window.addEventListener("message", message);
+    const unsubscribePlayback = plugins.subscribeVehiclePlayback(onPlaybackStateChange);
     document.title = "Testudo";
     ready();
     // The host can import the client after iframe load. Repeat readiness until
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); close(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); if (playbackSyncTimer) clearTimeout(playbackSyncTimer); unsubscribePlayback(); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); close(); };
   }, [app]);
 
-  return <div className="absolute end-3 top-3 z-40 max-w-xs rounded-md border border-border bg-background p-3 shadow-lg" data-testudo-controls>
+  return <>
+  <div className="absolute end-3 top-3 z-40 max-w-xs rounded-md border border-border bg-background p-3 shadow-lg" data-testudo-controls>
     {state.package?.origin !== "published" && <button className="rounded border px-3 py-2 text-sm" disabled={state.status === "loading"} onClick={() => {
       const pick = (window as unknown as { showDirectoryPicker?: () => Promise<VehicleDirectoryHandle> }).showDirectoryPicker;
       if (!pick) { setState(current => ({ ...current, status: "error", error: t("testudo.folderUnsupported") })); return; }
@@ -254,5 +397,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     {state.package && <div role="group" aria-label="Demo modes" className="mt-2 flex flex-wrap gap-1">{modes.map(mode => <button key={mode.id} type="button" className={`rounded border px-2 py-1 text-xs ${state.selectedMode === mode.id ? "bg-primary text-primary-foreground" : ""}`} aria-pressed={state.selectedMode === mode.id} disabled={state.status === "loading" || !state.availableModes.includes(mode.id)} title={state.availableModes.includes(mode.id) ? mode.label : `${mode.label} is not declared by this package`} onClick={() => { void modeSelector.current?.(mode.id).catch(error => setState(current => ({ ...current, status: "error", error: error instanceof Error ? error.message : String(error) }))); }}>{mode.label}</button>)}</div>}
     {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
     {state.error && <p role="alert" className="mt-2 text-sm text-red-600">{state.error}</p>}
-  </div>;
+  </div>
+  <RecordTourDialog open={recordTourOpen} onOpenChange={setRecordTourOpen} mapControllerRef={mapControllerRef} />
+  <RecordVideoDialog open={recordVideoOpen} onOpenChange={setRecordVideoOpen} mapControllerRef={mapControllerRef} />
+  </>;
 }
