@@ -143,3 +143,46 @@ test("renders version-scoped route assignment rows without describing them as ob
   assert.match(html, /p-1/);
   assert.match(html, /delay/);
 });
+
+test("renders uncalibrated evidence quality scores, their components, and workflow timings", () => {
+  const html = renderToStaticMarkup(createElement(ScenarioAnalysisEvidence, {
+    analysis: {
+      status: "partial",
+      evidence_reliability: {
+        score: 0.812, calibration: "not_calibrated",
+        components: { current_metric_results: 1, baseline_interval_alignment: 0.75 },
+      },
+      analysis_pertinence: {
+        score: 0.625, calibration: "not_calibrated",
+        components: { requested_scope_match: 1, requested_comparison_supported: 0 },
+      },
+      evidence_coverage: { queried_section_count: 12, network_section_universe_count: null },
+    },
+    diagnostics: {
+      stage_latency_ms: { ollaya_intent_ms: 24.5, scenario_analysis_ms: 70, ollama_generation_ms: 950, total_chat_ms: 1050 },
+      providers: { ollaya: { provider: "ollaya", model: "laya:en" }, ollama: { provider: "ollama", model: "qwen3" } },
+      timing_scope: "server_request_stages",
+    },
+  }));
+
+  assert.match(html, /Evidence quality and workflow timing/);
+  assert.match(html, /Evidence reliability: 0\.812 \/ 1/);
+  assert.match(html, /Request pertinence: 0\.625 \/ 1/);
+  assert.match(html, /Uncalibrated heuristic; this score is not a probability/);
+  assert.match(html, /baseline_interval_alignment/);
+  assert.match(html, /requested_comparison_supported/);
+  assert.match(html, /queried_section_count/);
+  assert.match(html, /ollama_generation_ms/);
+  assert.match(html, /laya:en/);
+  assert.match(html, /qwen3/);
+});
+
+test("renders standalone evidence coverage without score objects or diagnostics", () => {
+  const html = renderToStaticMarkup(createElement(ScenarioAnalysisEvidence, {
+    analysis: { status: "partial", evidence_coverage: { queried_section_count: 2 } },
+  }));
+
+  assert.match(html, /Evidence quality and workflow timing/);
+  assert.match(html, /Evidence coverage and score provenance/);
+  assert.match(html, /queried_section_count/);
+});

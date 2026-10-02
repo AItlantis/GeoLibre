@@ -2,7 +2,7 @@ import * as React from "react";
 
 type EvidenceRecord = Record<string, unknown>;
 
-export function ScenarioAnalysisEvidence({ analysis }: { analysis: EvidenceRecord }) {
+export function ScenarioAnalysisEvidence({ analysis, diagnostics }: { analysis: EvidenceRecord; diagnostics?: EvidenceRecord }) {
   const facts = asRecord(analysis.intervention_facts);
   const interventions = Array.isArray(facts?.interventions)
     ? facts.interventions.filter(isRecord) : [];
@@ -14,6 +14,8 @@ export function ScenarioAnalysisEvidence({ analysis }: { analysis: EvidenceRecor
   const phaseRows = asRecord(phases?.periods);
   const odEvidence = asRecord(analysis.od_evidence);
   const routeAssignmentEvidence = asRecord(analysis.route_assignment_evidence);
+  const evidenceReliability = asRecord(analysis.evidence_reliability);
+  const analysisPertinence = asRecord(analysis.analysis_pertinence);
   const modelMatchScore = typeof analysis.model_match_score === "number" ? analysis.model_match_score : null;
 
   return (
@@ -35,6 +37,16 @@ export function ScenarioAnalysisEvidence({ analysis }: { analysis: EvidenceRecor
       </section>
       {current && <RankingEvidence title="Calculated current severity" ranking={current} />}
       {worsening && <RankingEvidence title="Calculated worsening versus baseline" ranking={worsening} />}
+      {(evidenceReliability || analysisPertinence || diagnostics || analysis.evidence_coverage !== undefined) && <details>
+        <summary>Evidence quality and workflow timing</summary>
+        {evidenceReliability && <QualityScore title="Evidence reliability" value={evidenceReliability} />}
+        {analysisPertinence && <QualityScore title="Request pertinence" value={analysisPertinence} />}
+        {analysis.evidence_coverage !== undefined && <section>
+          <div className="font-medium">Evidence coverage and score provenance</div>
+          <EvidenceValue value={analysis.evidence_coverage} />
+        </section>}
+        {diagnostics && <WorkflowDiagnostics diagnostics={diagnostics} />}
+      </details>}
       {odEvidence && <OdEvidence evidence={odEvidence} />}
       {routeAssignmentEvidence && <RouteAssignmentEvidence evidence={routeAssignmentEvidence} />}
       {analysis.path_evidence !== undefined && analysis.path_evidence !== null && <details>
@@ -67,6 +79,29 @@ export function ScenarioAnalysisEvidence({ analysis }: { analysis: EvidenceRecor
       <div className="text-muted-foreground">Model explanation is separate from these verified facts and calculations.</div>
     </div>
   );
+}
+
+function QualityScore({ title, value }: { title: string; value: EvidenceRecord }) {
+  const score = typeof value.score === "number" && Number.isFinite(value.score)
+    ? value.score.toFixed(3) : "unavailable";
+  const components = asRecord(value.components);
+  return <section>
+    <div className="font-medium">{title}: {score} / 1</div>
+    <div className="text-muted-foreground">Uncalibrated heuristic; this score is not a probability.</div>
+    {components && <EvidenceValue value={components} />}
+  </section>;
+}
+
+function WorkflowDiagnostics({ diagnostics }: { diagnostics: EvidenceRecord }) {
+  const latency = asRecord(diagnostics.stage_latency_ms);
+  const providers = asRecord(diagnostics.providers);
+  if (!latency && !providers) return null;
+  return <section>
+    <div className="font-medium">Workflow timing and configured models</div>
+    {latency && <EvidenceValue value={latency} />}
+    {providers && <EvidenceValue value={providers} />}
+    {typeof diagnostics.timing_scope === "string" && <div className="text-muted-foreground">{diagnostics.timing_scope}</div>}
+  </section>;
 }
 
 function RankingEvidence({ title, ranking }: { title: string; ranking: EvidenceRecord }) {
