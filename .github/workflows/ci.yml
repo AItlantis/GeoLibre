@@ -134,6 +134,53 @@ jobs:
             exit 1
           fi
 
+  testudo-native-build:
+    name: Testudo native build and provenance
+    runs-on: ubuntu-22.04
+    env:
+      # These are the deployed Testudo origins documented by docs/testudo-embedding.md.
+      # The build needs no credentials, and wildcard origins are rejected by the build script.
+      VITE_GEOLIBRE_EMBED_ORIGINS: https://app.testudo.live,https://www.testudo.live
+      VITE_TESTUDO_BYTE_ORIGINS: https://bytes.testudo.live
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test native build manifest verifier
+        run: node --test scripts/verify-testudo-build.test.mjs
+
+      - name: Build Testudo native artifact
+        run: node scripts/build-testudo.mjs --out-dir "$RUNNER_TEMP/geolibre-testudo-native"
+
+      - name: Verify source, lockfile, and artifact hashes
+        run: >-
+          node scripts/verify-testudo-build.mjs
+          --artifact "$RUNNER_TEMP/geolibre-testudo-native"
+          --revision "$GITHUB_SHA"
+          --embed-origins "$VITE_GEOLIBRE_EMBED_ORIGINS"
+          --byte-origins "$VITE_TESTUDO_BYTE_ORIGINS"
+
+      - name: Retain verified native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: geolibre-testudo-native-${{ github.sha }}
+          path: ${{ runner.temp }}/geolibre-testudo-native/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
   collab-image:
     name: Collab relay image
     runs-on: ubuntu-22.04
