@@ -82,6 +82,20 @@ describe("@geolibre/embed client", () => {
     client.disconnect();
   });
 
+  it("exposes the Testudo map-control state as a typed read-only command", async () => {
+    const { iframe, receive, sent } = harness();
+    const pending = connect(iframe, { origin: "https://app.test" });
+    receive("ready", { challenge: "0123456789abcdef0123456789abcdef" });
+    const client = await pending;
+    const state = client.testudoGetMapControlState();
+    const request = sent.at(-1)!.message;
+    assert.equal(request.type, "testudoGetMapControlState");
+    assert.deepEqual(request.payload, { challenge: "0123456789abcdef0123456789abcdef" });
+    receive("ack", { requestId: request.requestId, ok: true, result: { renderer: "cesium" } });
+    assert.deepEqual(await state, { renderer: "cesium" });
+    client.disconnect();
+  });
+
   it("delivers ack to subscribers as well as to the waiting command", async () => {
     // `ack` is a key of EmbedEventMap, so `on("ack", ...)` type-checks — it has
     // to actually fire, including for an ack no request is waiting on.

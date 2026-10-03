@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptsTestudoMessage, validateScenarioAnalysisAction } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
+import { acceptsTestudoMessage, testudoMapControlState, validateScenarioAnalysisAction } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
 
 const parent = {} as Window;
 const origin = "https://app.testudo.live";
@@ -29,6 +29,20 @@ test("Testudo protocol rejects a command whose payload challenge does not match"
   assert.equal(acceptsTestudoMessage(wrongChallenge, parent, [origin], challenge), false);
   const missingChallenge = { ...event, data: { ...event.data, payload: {} } };
   assert.equal(acceptsTestudoMessage(missingChallenge, parent, [origin], challenge), false);
+});
+
+test("testudoGetMapControlState is a challenge-bound read-only command with no extra inputs", () => {
+  const readState = (payload: Record<string, unknown>) => ({
+    ...event,
+    data: { ...event.data, type: "testudoGetMapControlState", payload },
+  });
+  assert.equal(acceptsTestudoMessage(readState({ challenge }), parent, [origin], challenge), true);
+  assert.equal(acceptsTestudoMessage(readState({ challenge, renderer: "cesium" }), parent, [origin], challenge), false);
+  assert.equal(acceptsTestudoMessage(readState({ challenge: "wrong" }), parent, [origin], challenge), false);
+  assert.equal(acceptsTestudoMessage({ ...event, data: { ...event.data, type: "testudoGetMapControlState", payload: null } }, parent, [origin], challenge), false);
+  assert.deepEqual(testudoMapControlState("maplibre"), { renderer: "maplibre" });
+  assert.deepEqual(testudoMapControlState("cesium"), { renderer: "cesium" });
+  assert.deepEqual(testudoMapControlState("arcgis"), { renderer: null });
 });
 
 test("testudoSetMode additionally requires a recognized demo mode", () => {

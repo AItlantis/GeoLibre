@@ -10,13 +10,18 @@ the bounded Testudo commands.
 The typed `@geolibre/embed` client adds `testudoLoadPackage`,
 `testudoOpenLocalPackage`, `testudoSetGuestCapability`, `testudoSetPlugin`,
 `testudoSetMode`, `testudoOpenGeoAiChat`, `testudoRequestInvestigation`,
-`testudoSetPreset`, `testudoGetState`, and the `testudoStateChanged` and
+`testudoSetPreset`, `testudoGetState`, `testudoGetMapControlState`, and the `testudoStateChanged` and
 `testudoGeoAiInvestigationUpdate` events. See
 `packages/embed/src/testudo.ts` for DTOs. Parent origins are exact entries in
 `VITE_GEOLIBRE_EMBED_ORIGINS`; the iframe announces a cryptographic 128-bit
 challenge, and every command carries that challenge. The child checks
 `event.source === window.parent`, the exact allowlisted parent origin, command
 type and challenge. The host must check the iframe source and exact app origin.
+
+`testudoGetMapControlState()` is read-only and accepts only the active bridge
+challenge. It returns `{ renderer: "maplibre" | "cesium" | null }`; `null`
+means the current renderer is not one of the two choices exposed by the Testudo
+demo selector.
 
 GeoAI chat is a persistent assistant panel, independent of the selected map
 plugin and demo mode. Map selection remains in `selectedPlugin`; opening or

@@ -42,6 +42,12 @@ export interface TestudoSetGuestCapability {
   expiresAt: number;
 }
 
+/** Renderer state exposed by the Testudo iframe controls. Unsupported GeoLibre
+ * renderers are represented as null because the public Testudo selector only
+ * offers MapLibre and Cesium. */
+export type TestudoRenderer = "maplibre" | "cesium";
+export interface TestudoMapControlState { renderer: TestudoRenderer | null }
+
 export interface TestudoInvestigationSectionSummary {
   sectionId: string | number;
   score: number | null;
