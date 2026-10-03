@@ -91,6 +91,7 @@ import { AttributeTable } from "../panels/AttributeTable";
 import { RasterAttributeTable } from "../panels/RasterAttributeTable";
 import { BrowserPanel } from "../panels/BrowserPanel";
 import { LayerPanel } from "../panels/LayerPanel";
+import { useLayerRefresh } from "../panels/layer-panel/useLayerRefresh";
 import { ViewerLayerPanel } from "../panels/ViewerLayerPanel";
 import { FloatingPanels } from "../panels/FloatingPanels";
 import { SunPanel } from "../panels/SunPanel";
@@ -233,6 +234,7 @@ export function DesktopShell({
   // the Raster Subset panel and opened from the Add Data menu in the toolbar.
   const [basemapExtractOpen, setBasemapExtractOpen] = useState(false);
   const projectGeneration = useAppStore((s) => s.projectGeneration);
+  const layers = useAppStore((s) => s.layers);
   const pythonConsoleOpen = useAppStore((s) => s.ui.pythonConsoleOpen);
   const setPythonConsoleOpen = useAppStore((s) => s.setPythonConsoleOpen);
   const sqlWorkspaceOpen = useAppStore((s) => s.ui.sqlWorkspaceOpen);
@@ -261,6 +263,16 @@ export function DesktopShell({
   // Style (right) or Layers (left) sidebar surface (issue #765).
   const replaceStylePanelId = useReplaceStylePanelId();
   const replaceLayersPanelId = useReplaceLayersPanelId();
+  const layerRefresh = useLayerRefresh({
+    layers,
+    isCollapsed:
+      layoutOptions.panelsHidden ||
+      layoutOptions.viewer ||
+      !layoutOptions.layerPanelVisible ||
+      layoutOptions.panelsCollapsed ||
+      storymapPresenting ||
+      autoCollapsedPanel === "layers",
+  });
   const enforceViewerPlugins = useViewerPluginGuard(layoutOptions, mapControllerRef);
   const {
     activePanelId,
@@ -596,6 +608,7 @@ export function DesktopShell({
                   forceBuiltinCollapsed={storymapPresenting}
                   renderBuiltin={({ collapsed, onCollapsedChange }) => (
                     <LayerPanel
+                      refresh={layerRefresh}
                       themeMode={themeMode}
                       mapControllerRef={mapControllerRef}
                       collaborationApi={collaboration}
@@ -627,6 +640,7 @@ export function DesktopShell({
                   />
                 ) : (
                   <LayerPanel
+                    refresh={layerRefresh}
                     themeMode={themeMode}
                     mapControllerRef={mapControllerRef}
                     collaborationApi={collaboration}

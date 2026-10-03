@@ -147,6 +147,7 @@ export interface GeoLibreAppAPI {
     options?: GeoLibreTileLayerOptions
   ) => string;
   addWmsLayer?: (name: string, options: GeoLibreWmsLayerOptions) => string;
+  addWfsLayer?: (name: string, options: GeoLibreWfsLayerOptions) => Promise<string>;
   // Native client-side COG (reads the GeoTIFF directly; band/rescale/colormap/
   // nodata controls). Resolves with the new layer's id (see "Raster and tile
   // layers" below).
@@ -714,6 +715,13 @@ export interface GeoLibreWmsLayerOptions extends GeoLibreTileLayerOptions {
   crs?: string; // "EPSG:3857" (default), "EPSG:4326", "CRS:84" (1.3.0 only), any "EPSG:<code>"
 }
 
+export interface GeoLibreWfsLayerOptions {
+  url: string; // WFS GetFeature endpoint
+  typeName: string; // advertised feature type
+  version?: string; // defaults to "2.0.0"
+  bbox?: [number, number, number, number]; // [west, south, east, north] in WGS84
+}
+
 export interface GeoLibreCogLayerOptions {
   bands?: string; // "1" (single band) or "1,2,3" (RGB)
   colormap?: string; // named colormap for a single-band COG, e.g. "terrain"
@@ -765,6 +773,20 @@ const cogId = await app.addCogLayer?.(
   "https://cog.example.nz/dem.tif",
   { colormap: "terrain", nodata: -9999 }
 );
+```
+
+WFS layers use the host's GetFeature loader, including GeoJSON/GML fallback, reprojection, desktop native HTTP, and refresh. `addWfsLayer` resolves with the new layer id and rejects if loading fails or the service returns no features. Saved projects normally keep the request URL rather than embedding the downloaded collection, and reopening fetches it again. Exception: if saving strips credentials from the URL, the fetched collection is embedded so the layer remains visible without storing the secret; it is not refetched from the sanitized URL. The optional bbox is WGS84 `[west, south, east, north]` and must not cross the antimeridian (`west` must not exceed `east` — a Pacific-spanning box throws); the host applies the existing 1,000-feature limit.
+
+`addWfsLayer` requires an absolute HTTP(S) URL and sends its request through the same host-managed WFS path Add Data uses: the desktop app fetches through the native HTTP client (bypassing CORS) and the web build through its development proxy. Credentials in the URL are never written to diagnostics or a saved project: the native diagnostics log records userinfo and credential query values (including AWS `x-amz-*` parameters) as `[redacted]`, and a save strips the URL's userinfo and credential parameters while keeping the fetched collection embedded so it stays visible without persisting the secret.
+
+The example uses a hostname, which the desktop app and the Vite development server accept. Any destination your plugin chooses is fetched from the user's own browser or desktop network position, so treat the URL as untrusted input and do not embed credentials you would not want a shared project or diagnostics log to reveal.
+
+```typescript
+const layerId = await app.addWfsLayer?.("Roads", {
+  url: "https://services.example.org/geoserver/wfs",
+  typeName: "transport:roads",
+  bbox: [10, 40, 12, 42],
+});
 ```
 
 `options.engine` picks the renderer (`"maplibre-gl-raster"` for the GPU/deck.gl path, `"cog-tiler-wasm"` for the WebAssembly tiler, `"titiler"` for a TiTiler server). Unlike the other options it is **not per layer**: the raster control holds one engine for every raster it manages, so naming one re-renders the rasters already on the map. Pass `"auto"` to leave whatever the control is on alone; omit it and the GPU renderer is used. The GPU renderer requires a Mercator projection, so a plugin that expects to work on the globe should ask for `"cog-tiler-wasm"`.
