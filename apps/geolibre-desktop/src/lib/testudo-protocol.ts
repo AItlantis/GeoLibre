@@ -1,12 +1,17 @@
-import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@geolibre/embed";
+import type { MapRenderer, TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode, TestudoMapControlState } from "@geolibre/embed";
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoGetMapControlState"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
 export const TESTUDO_GUEST_TOKEN_RE = /^[A-Za-z0-9._~-]{32,4096}$/;
+
+/** Keep the selector's state aligned with its two supported renderer options. */
+export function testudoMapControlState(renderer: MapRenderer): TestudoMapControlState {
+  return { renderer: renderer === "maplibre" || renderer === "cesium" ? renderer : null };
+}
 
 export interface ScenarioAnalysisViewerAction {
   scenario_id: string | number;
@@ -65,6 +70,11 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
   }
   if (request.type === "testudoSetMode") return request.payload?.challenge === challenge
     && TESTUDO_DEMO_MODES.includes(request.payload?.mode);
+  if (request.type === "testudoGetMapControlState") {
+    const payload = request.payload;
+    return payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      && payload.challenge === challenge && Object.keys(payload).length === 1;
+  }
   if (request.type === "testudoOpenGeoAiChat") {
     const payload = request.payload;
     const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];

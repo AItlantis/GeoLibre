@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as plugins from "@geolibre/plugins";
+import { useAppStore } from "@geolibre/core";
 import type { GeoAiViewerContext, GeoLibreAppAPI } from "@geolibre/plugins";
 import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
 import { readEmbedOrigins } from "../../lib/embed-api";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, hasDeclaredPathIndex, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, hasDeclaredPathIndex, testudoMapControlState, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
@@ -420,6 +421,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       }
       const run = async () => {
         if (request.type === "testudoGetState") return current;
+        if (request.type === "testudoGetMapControlState") return testudoMapControlState(useAppStore.getState().primaryRenderer);
         if (busy) throw new Error("The viewer is loading a package. Please wait.");
         busy = true;
         try {
