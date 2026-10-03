@@ -97,8 +97,13 @@ schema.
 5. Push your branch and open a pull request against `main`. Describe what
    changed and why, and link any related issue.
 
-Pull requests are reviewed before merging. Automated reviewers may leave inline
-comments; address them or explain why a suggestion does not apply.
+Pull requests are reviewed before merging. The optional paid Claude code review
+does not run automatically. A maintainer can request it on an open pull request
+by commenting `/claude-review` or applying the `claude-review` label. It reviews
+the current head once; request it again after later pushes. If the repository's
+Claude credential is not configured, the request is skipped successfully and
+does not fail pull request CI. Automated review suggestions are comments, not
+approval to merge; address them or explain why a suggestion does not apply.
 
 ## Quality checks
 

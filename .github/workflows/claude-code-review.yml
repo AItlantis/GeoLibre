@@ -30,123 +30,48 @@ name: Claude Code Review
 # work — the token is not there — it will only burn credits on commands that
 # fail unauthenticated.
 #
-# Who gets an automatic review, and who needs a maintainer to trigger one:
-#   - Known authors (OWNER / MEMBER / COLLABORATOR / CONTRIBUTOR) are reviewed
-#     automatically when they open or push to a PR.
-#   - First-time contributors (FIRST_TIME_CONTRIBUTOR / FIRST_TIMER / NONE) are
-#     NOT reviewed automatically. This blocks the low-effort economic-DoS vector
-#     where throwaway accounts spam PRs to burn CLAUDE_CODE_OAUTH_TOKEN budget.
-#     A maintainer opts such a PR in either by commenting `/claude-review` on it
-#     (only OWNER / MEMBER / COLLABORATOR comments are honored) or by applying
-#     the `claude-review` label. Labelling needs no author_association check:
-#     GitHub only lets accounts with write or triage access add a label, so a
-#     fork author cannot self-trigger a review. It is still restricted to human
-#     senders, so a future auto-labeler cannot become an indirect opt-in.
+# Every paid Claude review is opt-in. A maintainer must comment
+# `/claude-review` (only OWNER / MEMBER / COLLABORATOR comments are honored) or
+# apply the `claude-review` label. Opening, updating, reopening, or marking a PR
+# ready never spends review credits. Both opt-ins are one-shot: they review the
+# head as it stands; trigger again after later pushes. Labelling needs no
+# author_association check because GitHub only lets accounts with write or
+# triage access add labels; it is restricted to human senders so a future
+# auto-labeler cannot become an indirect opt-in.
 #
-#     Both opt-ins are one-shot: they review the head as it stands. Later pushes
-#     to a first-timer PR are not re-reviewed (that would hand a throwaway
-#     account an unbounded budget drain once opted in) — re-trigger by
-#     commenting again, or by removing and re-adding the label.
+# If CLAUDE_CODE_OAUTH_TOKEN is not configured, the opted-in run exits
+# successfully before it checks out the PR or stages its diff. The review is
+# skipped; the workflow never treats a missing paid-service credential as a PR
+# code failure.
 on:
   pull_request_target:
-    types: [opened, synchronize, ready_for_review, reopened, labeled]
+    types: [labeled]
   issue_comment:
     types: [created]
 
-# Cancel a superseded run when a PR is pushed to repeatedly, capping the
-# CI-minute / Claude-credit cost from rapid synchronize events.
+# Keep repeated maintainer opt-ins for the same PR from overlapping.
 #
-# The group key is evaluated at the RUN level, before the job's `if:` gate. So it
-# must NOT collapse unrelated issue_comment events into the same group as a
-# running review — otherwise any comment (from anyone) would spawn a run that,
-# though ultimately skipped by `if:`, cancels the in-flight review first. We
-# therefore key on the event name plus, for comments, the unique comment id:
-#   - pull_request_target pushes to PR N  -> claude-review-pull_request_target-N-push
-#     (shared across pushes, so cancel-in-progress dedupes rapid synchronizes)
+# The group key is evaluated at the RUN level, before the job's `if:` gate. It
+# includes the event name and the unique comment id or label name, so unrelated
+# maintainer actions cannot cancel an in-flight review.
 #   - issue_comment on PR N               -> claude-review-issue_comment-N-<comment id>
-#     (unique per comment, so it never cancels — and is never cancelled by — anything)
+#     (unique per comment)
 #   - `labeled` on PR N                   -> claude-review-pull_request_target-N-label-<label name>
-#     (keyed on the label NAME, not a shared `label` slot: the GitHub UI fires
-#     one `labeled` event per label, so a shared slot would let adding `bug`
-#     cancel an in-flight `claude-review` run — the second run skips at `if:`,
-#     but cancel-in-progress has already killed the first. Per-name keeps the
-#     review isolated from every other label, while remove-and-re-add of
-#     `claude-review` still supersedes its own older run, which is what we want.)
+#     (keyed by label name)
 concurrency:
   group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event.comment.id || (github.event.action == 'labeled' && format('label-{0}', github.event.label.name)) || 'push' }}
   cancel-in-progress: true
 
 jobs:
   claude-review:
-    # Run when ANY of:
-    #  (a) a known author (not a first-timer) opens/updates a PR,
-    #  (b) a maintainer comments `/claude-review` on a PR, OR
-    #  (c) a maintainer applies the `claude-review` label to a PR.
-    # (b) and (c) are the opt-in paths for first-time-contributor PRs.
-    #
-    # author_association on the comment gates (b): only OWNER/MEMBER/COLLABORATOR
-    # accounts — i.e. people with write/admin on the repo — can trigger a review.
-    # (c) needs no such check: GitHub itself restricts labelling to accounts with
-    # write or triage access, so the event cannot originate from a fork author.
-    # It does check the label NAME, because `labeled` fires for every label —
-    # without it, tagging a PR `bug` would spend a review.
-    #
-    # (c) also requires a human sender. GitHub's write/triage restriction covers
-    # people, but automation with write access can label too, so an auto-labeler
-    # that keys off PR title/paths (i.e. attacker-controlled content) would
-    # become an indirect way for a first-timer to self-trigger a paid review.
-    # Nothing here auto-labels today; the check keeps that from silently becoming
-    # a hole if something ever does. If you later WANT a bot to apply this label,
-    # drop the check deliberately and re-reason about the economic-DoS guard
-    # rather than just deleting it.
-    #
-    # Note the limit of that check: it tests the actor TYPE, so it stops a
-    # GitHub App or `GITHUB_TOKEN` workflow, but automation driven by a PAT acts
-    # as a real user and is indistinguishable from a human click. GitHub exposes
-    # nothing that would separate them, so this narrows the gap rather than
-    # closing it; a PAT-driven labeler would need its own review of this gate.
-    #
-    # (c) also requires the PR to still be OPEN. `labeled` fires on closed and
-    # merged PRs too, and reviewing one spends the budget this whole gate exists
-    # to protect on a diff nobody can act on. Branch (a) needs no such check —
-    # `synchronize`/`reopened` imply an open PR.
-    #
-    # Draft PRs are deliberately NOT excluded. The repo has no draft gate at all
-    # (a draft PR fires `opened`, so branch (a) already reviews drafts), and
-    # asking for a review ON a draft is a normal thing to want — that is the
-    # point of an explicit opt-in.
-    #
-    # Branch (c) needs no `opened` + `contains(labels.*)` fallback for a PR that
-    # arrives already labelled, the way e2e-full.yml has. The create-PR API takes
-    # no `labels` field, so labelling is always a separate act that fires its own
-    # `labeled` event — and it requires triage or write access, which means the
-    # actor is OWNER/MEMBER/COLLABORATOR and already covered by branch (a)
-    # anyway. The case this gate exists for, a first-time contributor, cannot
-    # self-attach the label at all. The gap is unreachable from either
-    # direction, and adding the fallback would widen the trigger surface for no
-    # gain. (e2e-full.yml's comment says such a PR fires no `labeled` event; that
-    # is not right, but the extra `opened` type is harmless there since the job
-    # re-checks `contains(labels.*.name, …)` on every event.)
-    #
-    # Branch (a) must exclude `labeled`, or adding any label to a known
-    # contributor's PR would re-review it under the automatic path and sidestep
-    # the name check in (c).
-    #
-    # sender.type gates out bot-initiated events (e.g. a pre-commit.ci autofix
-    # push firing `synchronize`): claude-code-action hard-fails on non-human
-    # actors not in its allowed_bots list, and an autofix formatting commit does
-    # not need a fresh (paid) review anyway. Skipping here shows the run as
-    # skipped instead of failed; a maintainer can still `/claude-review`.
+    # No author/event automatically spends credits. The only accepted triggers
+    # are a maintainer slash-command comment or a human-applied label on an open
+    # PR. GitHub restricts labels to triage/write users; the human check prevents
+    # a future automation rule from silently spending review credits.
     if: >
-      (github.event_name == 'pull_request_target' &&
-        github.event.action != 'labeled' &&
-        github.event.sender.type != 'Bot' &&
-        (github.event.pull_request.author_association == 'OWNER' ||
-         github.event.pull_request.author_association == 'MEMBER' ||
-         github.event.pull_request.author_association == 'COLLABORATOR' ||
-         github.event.pull_request.author_association == 'CONTRIBUTOR')) ||
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
+        github.event.issue.state == 'open' &&
         (github.event.comment.body == '/claude-review' ||
          startsWith(github.event.comment.body, '/claude-review ')) &&
         (github.event.comment.author_association == 'OWNER' ||
@@ -165,11 +90,24 @@ jobs:
       issues: write
 
     steps:
+      - name: Check whether Claude review credentials are configured
+        id: review-auth
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Claude review skipped: CLAUDE_CODE_OAUTH_TOKEN is not configured."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # The PR number and head SHA live in different event fields depending on
       # whether we were triggered by a PR event or a maintainer's comment. On the
       # comment path the payload has no PR head SHA, so resolve it from the API.
       - name: Resolve target PR
         id: pr
+        if: steps.review-auth.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -184,6 +122,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR head for review context (read-only; never executed)
+        if: steps.review-auth.outputs.enabled == 'true'
         uses: actions/checkout@v7
         with:
           # Check out the PR head so Read/Grep/Glob show the *proposed* file
@@ -202,9 +141,8 @@ jobs:
           # against "pwn request", where a workflow checks out fork code and
           # then *executes* it (npm ci, build, test, a lifecycle script) with the
           # base repo's write-scoped token and secrets. That guard landed in a
-          # v7 patch release, so every fork PR — including known contributors,
-          # who are the ones the `if:` above lets through — started failing this
-          # step with no change on our side.
+          # v7 patch release, so explicitly opted-in fork PRs started failing
+          # this step with no change on our side.
           #
           # This job does none of the things the guard protects against: it never
           # installs dependencies, never runs a build or test, and never executes
@@ -225,6 +163,7 @@ jobs:
       # clears the directory first, so a PR that ships its own `pr-context/`
       # cannot pre-seed what the reviewer reads.
       - name: Stage PR context for the reviewer
+        if: steps.review-auth.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -263,6 +202,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
+        if: steps.review-auth.outputs.enabled == 'true'
         # Pinned to a full commit SHA, not the mutable `v1` tag. This workflow's
         # behaviour depends on action internals that `v1` has silently changed
         # under us before — the env scrub that broke review for nine days
@@ -334,7 +274,7 @@ jobs:
       # `execution_file` is a JSON array of SDK turns; the last `result` turn
       # holds the final assistant message.
       - name: Post review summary
-        if: ${{ steps.claude-review.outputs.execution_file != '' }}
+        if: ${{ steps.review-auth.outputs.enabled == 'true' && steps.claude-review.outputs.execution_file != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
