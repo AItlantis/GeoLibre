@@ -58,6 +58,7 @@ test("malformed advisory rows and via entries fail closed", () => {
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [null] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [42] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: ["bad dependency ref"] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: ["@unscoped"] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [{}] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [{ name: "braces", url: "https://example.test/advisory" }] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "unknown", via: [{ name: "braces", severity: "high", url: "https://example.test/advisory" }] } } },

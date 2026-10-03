@@ -42,7 +42,7 @@ function validateVia(via, context) {
     const packageName = via.trim();
     if (
       packageName.length === 0 ||
-      !/^@?[a-z0-9._-]+(?:\/[a-z0-9._-]+)?$/.test(packageName)
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)
     ) {
       throw new Error(`${context} has a malformed dependency reference.`);
     }
