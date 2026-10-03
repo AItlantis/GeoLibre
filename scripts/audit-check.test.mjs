@@ -42,6 +42,7 @@ test("advisory collection keeps only named advisory objects and groups packages"
         severity: "high",
         via: [
           { name: "braces", severity: "high", url: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm" },
+          "@changesets/config",
         ],
       },
     },
@@ -56,11 +57,11 @@ test("malformed advisory rows and via entries fail closed", () => {
     { vulnerabilities: { braces: { name: "braces", via: [] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [null] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [42] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: ["bad dependency ref"] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [{}] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "high", via: [{ name: "braces", url: "https://example.test/advisory" }] } } },
     { vulnerabilities: { braces: { name: "braces", severity: "unknown", via: [{ name: "braces", severity: "high", url: "https://example.test/advisory" }] } } },
     { vulnerabilities: { braces: { name: "other", severity: "high", via: [{ name: "braces", severity: "high", url: "https://example.test/advisory" }] } } },
-    { vulnerabilities: { braces: { name: "braces", severity: "high", via: ["missing-dependency"] } } },
   ];
   for (const report of malformedReports) assert.throws(() => collectAdvisories(report));
 });

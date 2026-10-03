@@ -39,7 +39,13 @@ function requireSeverity(value, context) {
 
 function validateVia(via, context) {
   if (typeof via === "string") {
-    if (via.trim().length === 0) throw new Error(`${context} has an empty dependency reference.`);
+    const packageName = via.trim();
+    if (
+      packageName.length === 0 ||
+      !/^@?[a-z0-9._-]+(?:\/[a-z0-9._-]+)?$/.test(packageName)
+    ) {
+      throw new Error(`${context} has a malformed dependency reference.`);
+    }
     return;
   }
   if (via === null || typeof via !== "object" || Array.isArray(via)) {
@@ -87,7 +93,14 @@ export function collectAdvisories(report) {
   if (report === null || typeof report !== "object" || Array.isArray(report)) {
     throw new Error("audit report must be an object.");
   }
-  const rows = Object.entries(report.vulnerabilities ?? {});
+  if (
+    report.vulnerabilities === null ||
+    typeof report.vulnerabilities !== "object" ||
+    Array.isArray(report.vulnerabilities)
+  ) {
+    throw new Error("audit report has a malformed `vulnerabilities` section.");
+  }
+  const rows = Object.entries(report.vulnerabilities);
   for (const [key, vuln] of rows) {
     const context = `vulnerability ${key}`;
     if (vuln === null || typeof vuln !== "object" || Array.isArray(vuln)) {
@@ -101,17 +114,6 @@ export function collectAdvisories(report) {
       throw new Error(`${context} has no advisory/dependency references.`);
     }
     for (const via of vuln.via) validateVia(via, context);
-  }
-
-  const advisoryPackages = new Set(
-    rows.flatMap(([, vuln]) => vuln.via.filter((via) => typeof via === "object").map((via) => via.name)),
-  );
-  for (const [key, vuln] of rows) {
-    for (const via of vuln.via) {
-      if (typeof via === "string" && (!report.vulnerabilities[via] || !advisoryPackages.has(via))) {
-        throw new Error(`vulnerability ${key} references unverified dependency ${via}.`);
-      }
-    }
   }
 
   const advisories = new Map();
