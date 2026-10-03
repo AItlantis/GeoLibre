@@ -11,7 +11,7 @@ export const ALLOWLIST = new Map([
       dependencyPath:
         "@osmix/geojson@0.0.15 -> @placemarkio/geojson-rewind@1.0.3 -> @changesets/cli -> micromatch -> braces@3.0.3; patch-package@8.0.1 -> find-yarn-workspace-root -> micromatch -> braces@3.0.3",
       reason:
-        "The GitHub advisory lists no patched version. @placemarkio/geojson-rewind declares @changesets/cli as a production dependency, but its published runtime entry is a self-contained GeoJSON function and does not import Changesets or micromatch; patch-package is only run by the repository postinstall script. The exact-head app source-map audit must also show no braces module in emitted JavaScript.",
+        "The GitHub advisory lists no patched version. @placemarkio/geojson-rewind declares @changesets/cli as a production dependency, but its published runtime entry is a self-contained GeoJSON function and does not import Changesets or micromatch; patch-package is only run by the repository postinstall script. Exact-head module-graph proofs must also show that braces is absent from both GeoLibre and Testudo runtime bundles.",
     },
   ],
   [
@@ -24,7 +24,7 @@ export const ALLOWLIST = new Map([
       dependencyPath:
         "maplibre-gl-earth-engine / maplibre-gl-geoagent -> @google/earthengine -> googleapis -> google-auth-library -> gtoken -> google-p12-pem -> node-forge@1.4.0",
       reason:
-        "The GitHub advisory lists no patched version. The affected ASN.1/RSA verification implementation is not imported into the browser app; the exact-head app source-map audit must show no node-forge module in emitted JavaScript.",
+        "The GitHub advisory lists no patched version. The affected ASN.1/RSA verification implementation is not imported into the browser app; exact-head module-graph proofs must show that node-forge is absent from both GeoLibre and Testudo runtime bundles.",
     },
   ],
 ]);
