@@ -29,6 +29,35 @@ export const ALLOWLIST = new Map([
   ],
 ]);
 
+const SEVERITY = new Set(["low", "moderate", "high", "critical"]);
+const SEVERITY_RANK = new Map([["low", 0], ["moderate", 1], ["high", 2], ["critical", 3]]);
+
+function requireSeverity(value, context) {
+  if (!SEVERITY.has(value)) throw new Error(`${context} has an invalid or missing severity.`);
+  return value;
+}
+
+function validateVia(via, context) {
+  if (typeof via === "string") {
+    if (via.trim().length === 0) throw new Error(`${context} has an empty dependency reference.`);
+    return;
+  }
+  if (via === null || typeof via !== "object" || Array.isArray(via)) {
+    throw new Error(`${context} has a malformed advisory entry.`);
+  }
+  if (typeof via.name !== "string" || via.name.trim().length === 0) {
+    throw new Error(`${context} advisory has no package name.`);
+  }
+  requireSeverity(via.severity, `${context} advisory ${via.name}`);
+  if (
+    (typeof via.url !== "string" || via.url.trim().length === 0) &&
+    !((typeof via.source === "string" && via.source.trim().length > 0) ||
+      (Number.isSafeInteger(via.source) && via.source > 0))
+  ) {
+    throw new Error(`${context} advisory ${via.name} has no URL or source identifier.`);
+  }
+}
+
 export function parseAuditReport(stdout) {
   let report;
   try {
@@ -55,9 +84,39 @@ export function parseAuditReport(stdout) {
 }
 
 export function collectAdvisories(report) {
+  if (report === null || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error("audit report must be an object.");
+  }
+  const rows = Object.entries(report.vulnerabilities ?? {});
+  for (const [key, vuln] of rows) {
+    const context = `vulnerability ${key}`;
+    if (vuln === null || typeof vuln !== "object" || Array.isArray(vuln)) {
+      throw new Error(`${context} is malformed.`);
+    }
+    if (typeof vuln.name !== "string" || vuln.name !== key) {
+      throw new Error(`${context} has a missing or mismatched package name.`);
+    }
+    requireSeverity(vuln.severity, context);
+    if (!Array.isArray(vuln.via) || vuln.via.length === 0) {
+      throw new Error(`${context} has no advisory/dependency references.`);
+    }
+    for (const via of vuln.via) validateVia(via, context);
+  }
+
+  const advisoryPackages = new Set(
+    rows.flatMap(([, vuln]) => vuln.via.filter((via) => typeof via === "object").map((via) => via.name)),
+  );
+  for (const [key, vuln] of rows) {
+    for (const via of vuln.via) {
+      if (typeof via === "string" && (!report.vulnerabilities[via] || !advisoryPackages.has(via))) {
+        throw new Error(`vulnerability ${key} references unverified dependency ${via}.`);
+      }
+    }
+  }
+
   const advisories = new Map();
-  for (const vuln of Object.values(report.vulnerabilities)) {
-    for (const via of vuln.via ?? []) {
+  for (const [, vuln] of rows) {
+    for (const via of vuln.via) {
       if (typeof via !== "object") continue;
       const id =
         /(GHSA-[\w-]+)/.exec(via.url ?? "")?.[1] ??
@@ -68,6 +127,9 @@ export function collectAdvisories(report) {
         url: via.url,
         packages: new Set(),
       };
+      if (SEVERITY_RANK.get(vuln.severity) > SEVERITY_RANK.get(entry.severity)) {
+        entry.severity = vuln.severity;
+      }
       entry.packages.add(via.name);
       advisories.set(id, entry);
     }

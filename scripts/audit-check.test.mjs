@@ -38,9 +38,10 @@ test("advisory collection keeps only named advisory objects and groups packages"
   const report = {
     vulnerabilities: {
       braces: {
+        name: "braces",
+        severity: "high",
         via: [
           { name: "braces", severity: "high", url: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm" },
-          "micromatch",
         ],
       },
     },
@@ -48,6 +49,36 @@ test("advisory collection keeps only named advisory objects and groups packages"
   const advisories = collectAdvisories(report);
   assert.deepEqual([...advisories.keys()], ["GHSA-vfj7-8cjw-p6xm"]);
   assert.equal(isAllowlisted("GHSA-vfj7-8cjw-p6xm", advisories.get("GHSA-vfj7-8cjw-p6xm")), true);
+});
+
+test("malformed advisory rows and via entries fail closed", () => {
+  const malformedReports = [
+    { vulnerabilities: { braces: { name: "braces", via: [] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: [null] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: [42] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: [{}] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: [{ name: "braces", url: "https://example.test/advisory" }] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "unknown", via: [{ name: "braces", severity: "high", url: "https://example.test/advisory" }] } } },
+    { vulnerabilities: { braces: { name: "other", severity: "high", via: [{ name: "braces", severity: "high", url: "https://example.test/advisory" }] } } },
+    { vulnerabilities: { braces: { name: "braces", severity: "high", via: ["missing-dependency"] } } },
+  ];
+  for (const report of malformedReports) assert.throws(() => collectAdvisories(report));
+});
+
+test("unrecognized but well-formed advisory identifiers remain blocking candidates", () => {
+  const advisories = collectAdvisories({
+    vulnerabilities: {
+      "custom-package": {
+        name: "custom-package",
+        severity: "critical",
+        via: [{ name: "custom-package", severity: "critical", source: 12345 }],
+      },
+    },
+  });
+  const [id, advisory] = [...advisories][0];
+  assert.match(id, /unidentified advisory/);
+  assert.equal(advisory.severity, "critical");
+  assert.equal(isAllowlisted(id, advisory), false);
 });
 
 test("emitted-artifact proof requires the exact checkout and omits allowlisted code", async (t) => {
@@ -95,4 +126,40 @@ test("emitted-artifact proof requires the exact checkout and omits allowlisted c
     }),
   );
   await assert.rejects(verifyArtifactModuleManifest(dist, [advisory], commit), /belongs to/);
+});
+
+test("native module proof checks both viewer and esbuild embed-client artifacts", async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "geolibre-native-audit-proof-"));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const manifestFile = path.join(tempRoot, "native-module-manifest.json");
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  }).trim();
+  const manifest = {
+    schemaVersion: 2,
+    commit,
+    artifacts: {
+      viewer: { chunks: ["assets/app.js"], modules: ["src/app.ts"] },
+      embedClient: { chunks: ["embed-client.js"], modules: ["packages/embed/src/index.ts"] },
+    },
+  };
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  const advisory = { id: "GHSA-86w9-cpqp-85rv", packageName: "node-forge" };
+  const proof = await verifyArtifactModuleManifest(manifestFile, [advisory], commit);
+  assert.deepEqual(proof.artifacts, ["viewer", "embedClient"]);
+
+  const { embedClient: _embedClient, ...viewerOnly } = manifest.artifacts;
+  await writeFile(manifestFile, JSON.stringify({ ...manifest, artifacts: viewerOnly }));
+  await assert.rejects(
+    verifyArtifactModuleManifest(manifestFile, [advisory], commit),
+    /must prove both viewer and embedClient/,
+  );
+
+  manifest.artifacts.embedClient.modules.push("../../node_modules/node-forge/lib/asn1.js");
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  await assert.rejects(
+    verifyArtifactModuleManifest(manifestFile, [advisory], commit),
+    /exact-head embedClient artifact/,
+  );
 });

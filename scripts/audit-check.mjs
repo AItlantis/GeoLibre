@@ -68,16 +68,33 @@ const activeAllowlist = allowed.filter(([id, a]) =>
   isAllowlisted(id, a),
 );
 if (activeAllowlist.length > 0) {
-  let proof;
-  try {
-    proof = await verifyArtifactModuleManifest(
-      new URL("../apps/geolibre-desktop/dist", import.meta.url),
-      activeAllowlist.map(([id]) => ({ id, ...ALLOWLIST.get(id) })),
+  const nativeManifestPath = process.env.GEOLIBRE_AUDIT_NATIVE_MANIFEST;
+  if (!nativeManifestPath) {
+    unusable(
+      "the Testudo native/embedded module manifest was not provided.",
+      "Set GEOLIBRE_AUDIT_NATIVE_MANIFEST to the manifest emitted by scripts/build-testudo.mjs.",
     );
-  } catch (error) {
-    unusable("the exact-head runtime artifact could not be verified.", error.stack || error.message);
   }
-  console.log(`\n${proof.message}`);
+  const checkout = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
+  if (checkout.error || checkout.status !== 0) {
+    unusable("the checked-out commit could not be identified.", checkout.error?.message || checkout.stderr);
+  }
+  const manifests = [
+    ["GeoLibre web runtime", new URL("../apps/geolibre-desktop/dist", import.meta.url)],
+    ["Testudo native/embedded runtime", nativeManifestPath],
+  ];
+  try {
+    for (const [label, manifestPath] of manifests) {
+      const proof = await verifyArtifactModuleManifest(
+        manifestPath,
+        activeAllowlist.map(([id]) => ({ id, ...ALLOWLIST.get(id) })),
+        checkout.stdout.trim(),
+      );
+      console.log(`${label}: ${proof.message}`);
+    }
+  } catch (error) {
+    unusable("an exact-head runtime artifact could not be verified.", error.stack || error.message);
+  }
 }
 
 // Stale entries are a warning, not a failure: the advisory database is a live

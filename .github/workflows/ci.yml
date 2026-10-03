@@ -18,6 +18,7 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-22.04
+    needs: testudo-native-build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -40,6 +41,12 @@ jobs:
       - name: Test dependency-audit policy and artifact verifier
         run: node --test scripts/audit-check.test.mjs
 
+      - name: Download exact-head Testudo native module manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: geolibre-testudo-audit-manifest-${{ github.sha }}
+          path: ${{ runner.temp }}/geolibre-testudo-audit
+
       # Queries the lockfile against the registry after building the app from
       # this exact checkout. Blocking at `high` catches high/critical advisories
       # without reddening CI for the moderate/low noise Dependabot handles via PR.
@@ -52,6 +59,8 @@ jobs:
       # manifest proving their vulnerable package code is absent from this build.
       - name: Audit npm dependencies (high and critical)
         run: npm run audit:ci
+        env:
+          GEOLIBRE_AUDIT_NATIVE_MANIFEST: ${{ runner.temp }}/geolibre-testudo-audit/geolibre-testudo-audit-module-manifest.json
 
   e2e:
     # Only the `core` Playwright project gates a PR: the app boots and renders a
@@ -149,6 +158,7 @@ jobs:
     name: Testudo native build and provenance
     runs-on: ubuntu-22.04
     env:
+      GEOLIBRE_AUDIT_MODULE_MANIFEST: "1"
       # These are the deployed Testudo origins documented by docs/testudo-embedding.md.
       # The build needs no credentials, and wildcard origins are rejected by the build script.
       VITE_GEOLIBRE_EMBED_ORIGINS: https://app.testudo.live,https://www.testudo.live
@@ -173,7 +183,10 @@ jobs:
         run: node --test scripts/verify-testudo-build.test.mjs
 
       - name: Build Testudo native artifact
-        run: node scripts/build-testudo.mjs --out-dir "$RUNNER_TEMP/geolibre-testudo-native"
+        run: >-
+          node scripts/build-testudo.mjs
+          --out-dir "$RUNNER_TEMP/geolibre-testudo-native"
+          --audit-manifest "$RUNNER_TEMP/geolibre-testudo-audit-module-manifest.json"
 
       - name: Verify source, lockfile, and artifact hashes
         run: >-
@@ -191,6 +204,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+      - name: Retain native runtime module manifest for dependency audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: geolibre-testudo-audit-manifest-${{ github.sha }}
+          path: ${{ runner.temp }}/geolibre-testudo-audit-module-manifest.json
+          if-no-files-found: error
+          retention-days: 7
 
   collab-image:
     name: Collab relay image
