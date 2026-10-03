@@ -127,7 +127,11 @@ import {
   closeFloatingPanel,
   getOpenFloatingPanels,
 } from "@geolibre/plugins";
-import { readDeploymentEnvValue } from "../lib/deployment-env";
+import { getDeploymentPolicy, readDeploymentEnvValue } from "../lib/deployment-env";
+import type { DeploymentPolicy } from "../lib/deployment-policy";
+import { evaluatePlugin, type PluginPolicyDenial } from "../lib/plugin-policy";
+import { fetchPluginRegistryShared } from "../lib/plugin-registry";
+import { bundleFromZipBytes } from "../lib/plugin-archive-unpack";
 import { CesiumEngine, getPrimaryCesiumControlHost, type MapEngine } from "@geolibre/map";
 import type {
   GeoLibreCogLayerOptions,
@@ -163,6 +167,7 @@ import {
   unloadRemovedUrlPlugins,
   type HeldBackPluginBundle,
   type InstalledWebPlugin,
+  PluginPolicyError,
 } from "../lib/external-plugins";
 import { appendDiagnostic } from "../lib/diagnostics";
 import { pickZarrDirectory, zarrDirectoryPickerSupported } from "../lib/zarr-directory-picker";
@@ -515,7 +520,11 @@ manager.subscribe(() => {
 let externalPluginsLoaded = false;
 let externalPluginsLoadPromise: Promise<void> | null = null;
 let externalPluginsLoadKey: string | null = null;
-let externalPluginLoadIssues = new Map<string, string>();
+type ExternalPluginLoadIssueDisplay = {
+  message: string;
+  policyDenial?: PluginPolicyDenial;
+};
+let externalPluginLoadIssues = new Map<string, ExternalPluginLoadIssueDisplay>();
 let externalPluginHeldBack = new Map<string, HeldBackPluginBundle>();
 const externalPluginsListeners = new Set<() => void>();
 const EMPTY_PLUGIN_MANIFEST_URLS: string[] = [];
@@ -524,7 +533,7 @@ export function getPluginManager(): PluginManager {
   return manager;
 }
 
-export function getExternalPluginLoadIssues(): ReadonlyMap<string, string> {
+export function getExternalPluginLoadIssues(): ReadonlyMap<string, ExternalPluginLoadIssueDisplay> {
   return externalPluginLoadIssues;
 }
 
@@ -548,12 +557,23 @@ export async function upgradeExternalPlugin(
   mapControllerRef: RefObject<MapEngine | null>,
   expectedVersion?: string,
 ): Promise<void> {
-  await reloadExternalUrlPlugin(
-    manager,
-    manifestUrl,
-    createAppAPI(mapControllerRef),
-    expectedVersion,
+  const policy = getDeploymentPolicy();
+  const bundledManifestUrls = bundledPluginManifestUrls();
+  const registryManifestUrls = await registryManifestUrlsForPolicy(
+    policy,
+    [manifestUrl],
+    bundledManifestUrls,
   );
+  const source = bundledManifestUrls.includes(manifestUrl)
+    ? "bundled"
+    : registryManifestUrls.includes(manifestUrl)
+      ? "registry"
+      : "manifest-url";
+  await reloadExternalUrlPlugin(manager, manifestUrl, createAppAPI(mapControllerRef), {
+    policy,
+    source,
+    expectedVersion,
+  });
   // A held-back bundle that just loaded is no longer a failure.
   if (externalPluginHeldBack.has(manifestUrl) || externalPluginLoadIssues.has(manifestUrl)) {
     externalPluginHeldBack = new Map(externalPluginHeldBack);
@@ -577,6 +597,20 @@ export async function installPluginArchive(
 ): Promise<string> {
   if (!isTauriRuntime()) {
     throw new Error("Installing plugin archives requires the desktop app.");
+  }
+  const policy = getDeploymentPolicy();
+  // Reject sideloading before even reading the selected archive, and reject its
+  // manifest id before the install IPC can persist it in the app-data directory.
+  const sideloadDecision = evaluatePlugin("", "zip", policy);
+  if (policy?.plugins?.sideload === false && !sideloadDecision.allowed) {
+    throw new PluginPolicyError(sourcePath, sideloadDecision);
+  }
+  if (policy?.plugins?.allowed !== undefined || policy?.plugins?.blocked?.length) {
+    const bundle = await bundleFromZipBytes(sourcePath, await readFile(sourcePath));
+    const decision = evaluatePlugin(bundle.manifest.id, "zip", policy);
+    if (!decision.allowed) {
+      throw new PluginPolicyError(sourcePath, decision);
+    }
   }
   const pluginId = await invoke<string>("install_external_plugin_archive", {
     sourcePath,
@@ -602,7 +636,19 @@ export async function installPluginArchiveFromFile(
   bytes: Uint8Array,
   mapControllerRef: RefObject<MapEngine | null>,
 ): Promise<string> {
-  return installWebPluginArchive(manager, fileName, bytes, createAppAPI(mapControllerRef));
+  const app = createAppAPI(mapControllerRef);
+  const policy = getDeploymentPolicy();
+  const pluginId = await installWebPluginArchive(manager, fileName, bytes, app, policy);
+  if (policy?.plugins?.defaultActive?.includes(pluginId)) {
+    // Re-enter the normal ready/restore cycle, just like a desktop archive
+    // install, so defaults apply only when there is no saved project state.
+    await ensureExternalPluginsLoadedWithSettings(
+      useDesktopSettingsStore.getState().desktopSettings,
+      app,
+      { force: true },
+    );
+  }
+  return pluginId;
 }
 
 // Uninstall a plugin that was installed from a file in the browser.
@@ -784,18 +830,20 @@ export function useProjectPluginTrust(): ProjectPluginTrustState {
     (state) => state.desktopSettings.pluginManifestUrls,
   );
   const [dismissedUrls, setDismissedUrls] = useState<ReadonlySet<string>>(() => new Set());
+  const policy = getDeploymentPolicy();
 
   const pendingUrls = useMemo(() => {
     const { untrusted } = partitionProjectPluginManifestUrls(
       projectManifestUrls,
       trustedManifestUrls,
       bundledPluginManifestUrls(),
+      policy,
     );
     return untrusted.filter((url) => !dismissedUrls.has(url));
-  }, [projectManifestUrls, trustedManifestUrls, dismissedUrls]);
+  }, [projectManifestUrls, trustedManifestUrls, dismissedUrls, policy]);
 
   const trust = useCallback(() => {
-    if (pendingUrls.length === 0) return;
+    if (getDeploymentPolicy()?.plugins?.sideload === false || pendingUrls.length === 0) return;
     const current = useDesktopSettingsStore.getState().desktopSettings;
     useDesktopSettingsStore.getState().setDesktopSettings({
       ...current,
@@ -863,7 +911,35 @@ export function bundledPluginManifestUrls(): string[] {
   );
 }
 
-function ensureExternalPluginsLoadedWithSettings(
+/**
+ * Installed URL settings do not retain their marketplace origin. Under a
+ * no-sideload policy, reclassify them against the current registry rather than
+ * treating a past user trust decision as deployment approval. Bundled URLs
+ * need no registry lookup; a failed lookup leaves all other URLs unapproved.
+ */
+async function registryManifestUrlsForPolicy(
+  policy: DeploymentPolicy | null,
+  manifestUrls: readonly string[],
+  bundledManifestUrls: readonly string[],
+): Promise<string[]> {
+  if (
+    policy?.plugins?.sideload !== false ||
+    !manifestUrls.some((url) => !bundledManifestUrls.includes(url))
+  ) {
+    return [];
+  }
+  try {
+    const registry = await fetchPluginRegistryShared();
+    return registry.entries
+      .filter((entry) => evaluatePlugin(entry.id, "registry", policy).allowed)
+      .map((entry) => entry.manifestUrl);
+  } catch (error) {
+    console.warn("Could not classify installed plugins against the deployment registry.", error);
+    return [];
+  }
+}
+
+async function ensureExternalPluginsLoadedWithSettings(
   desktopSettings: ReturnType<typeof useDesktopSettingsStore.getState>["desktopSettings"],
   app: ReturnType<typeof createAppAPI>,
   options?: { force?: boolean },
@@ -874,13 +950,30 @@ function ensureExternalPluginsLoadedWithSettings(
   // reach this scan only after the user trusts them, at which point they are in
   // desktopSettings.pluginManifestUrls (see useProjectPluginTrust / #1062).
   const bundledManifestUrls = bundledPluginManifestUrls();
+  const policy = getDeploymentPolicy();
+  const additionalPluginDirectories =
+    policy?.plugins?.sideload === false ? [] : desktopSettings.additionalPluginDirectories;
   const pluginManifestUrls = mergeStringLists(
     bundledManifestUrls,
     desktopSettings.pluginManifestUrls,
   );
+  const registryManifestUrls = await registryManifestUrlsForPolicy(
+    policy,
+    desktopSettings.pluginManifestUrls,
+    bundledManifestUrls,
+  );
+  const eligibleManifestUrls =
+    policy?.plugins?.sideload === false
+      ? pluginManifestUrls.filter(
+          (url) => bundledManifestUrls.includes(url) || registryManifestUrls.includes(url),
+        )
+      : pluginManifestUrls;
   const loadKey = JSON.stringify({
-    additionalPluginDirectories: desktopSettings.additionalPluginDirectories,
+    additionalPluginDirectories,
+    configuredPluginDirectories: desktopSettings.additionalPluginDirectories,
     pluginManifestUrls,
+    eligibleManifestUrls,
+    policy: policy?.plugins,
   });
   // `force` re-scans even when the merged settings are unchanged. Installing a
   // zip writes a new archive into the app-data plugins directory without
@@ -905,27 +998,41 @@ function ensureExternalPluginsLoadedWithSettings(
   const previousLoad = externalPluginsLoadPromise ?? Promise.resolve();
   const loadPromise = previousLoad
     .then(() => {
-      // Unregister URL plugins whose manifest URL was removed from the merged
-      // list (e.g. uninstalled from the marketplace) so the Plugins menu updates
-      // and any active control is torn down without a reload. This runs after
-      // the previous scan settles so a plugin whose load was still in flight is
-      // already recorded and can be removed.
-      const unloaded = unloadRemovedUrlPlugins(manager, pluginManifestUrls, app);
+      // Remove uninstalled or no-longer-registry-approved URLs after the
+      // previous scan settles, including forced scans. Keep installed URLs'
+      // integrity pins so temporary denial cannot silently trust changed code.
+      const unloaded = unloadRemovedUrlPlugins(
+        manager,
+        eligibleManifestUrls,
+        app,
+        pluginManifestUrls,
+      );
       if (unloaded.length) {
         console.info(`Unloaded external GeoLibre plugins: ${unloaded.join(", ")}`);
       }
       return loadExternalPlugins(
         manager,
-        desktopSettings.additionalPluginDirectories,
+        additionalPluginDirectories,
         pluginManifestUrls,
         // Only manifests fetched from the bundled drop-in URLs may use
         // activeByDefault (they are baked into the build, hence trusted).
-        { bundledManifestUrls },
+        {
+          bundledManifestUrls,
+          policy,
+          registryManifestUrls,
+          configuredPluginDirectories: desktopSettings.additionalPluginDirectories,
+        },
       );
     })
     .then((result) => {
       externalPluginLoadIssues = new Map(
-        result.issues.map((issue) => [issue.sourceUrl ?? issue.archiveName, issue.message]),
+        result.issues.map((issue) => [
+          issue.sourceUrl ?? issue.archiveName,
+          {
+            message: issue.message,
+            ...(issue.policyDenial ? { policyDenial: issue.policyDenial } : {}),
+          },
+        ]),
       );
       externalPluginHeldBack = new Map(
         result.issues.flatMap((issue) =>

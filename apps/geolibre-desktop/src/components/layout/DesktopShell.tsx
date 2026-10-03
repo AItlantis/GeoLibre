@@ -372,13 +372,34 @@ export function DesktopShell({
     fetchPluginRegistry(undefined, controller.signal).catch(() => {});
     return () => controller.abort();
   }, [canInstallPlugins]);
-  usePluginStateRestore({
+  const restoredProjectGeneration = usePluginStateRestore({
     mapControllerRef,
     enforceViewerPlugins,
     externalPluginsReady,
     mapReadyGeneration,
     projectGeneration,
   });
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.geolibreProjectGeneration = String(projectGeneration);
+    root.dataset.geolibreProjectReadyGeneration =
+      externalPluginsReady &&
+      projectPluginTrust.pendingUrls.length === 0 &&
+      restoredProjectGeneration === projectGeneration
+        ? String(projectGeneration)
+        : "";
+    // Clear both markers on unmount so an embed teardown or hot reload cannot
+    // leave a stale "ready" generation on the root element for external readers.
+    return () => {
+      delete root.dataset.geolibreProjectReadyGeneration;
+      delete root.dataset.geolibreProjectGeneration;
+    };
+  }, [
+    externalPluginsReady,
+    projectGeneration,
+    projectPluginTrust.pendingUrls.length,
+    restoredProjectGeneration,
+  ]);
   // After the restore above, so a `?url=` project's plugin state cannot close
   // what the link opened.
   const registryPluginLink = usePluginDeepLink({
