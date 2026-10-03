@@ -27,7 +27,7 @@ for (const theme of ["light", "dark"]) {
 
     const exportLibrary = async () => {
       const downloading = page.waitForEvent("download");
-      await panel.getByRole("button", { name: "Export…", exact: true }).click();
+      await panel.getByRole("button", { name: /^Export\b/ }).click();
       const download = await downloading;
       return JSON.parse(await readFile((await download.path())!, "utf8"));
     };
@@ -55,7 +55,7 @@ for (const theme of ["light", "dark"]) {
     await expect(row).toBeVisible();
     await row.getByText("Renamed preset", { exact: true }).dblclick();
     await editor.fill("Final preset");
-    await panel.getByRole("textbox", { name: "Search styles and tags…" }).click();
+    await panel.getByRole("textbox", { name: /^Search styles and tags\b/ }).click();
     await expect(panel.getByText("Final preset", { exact: true })).toBeVisible();
 
     const builtIn = panel.getByRole("listitem").filter({ hasText: "Boundary outline (bold)" });
@@ -69,7 +69,7 @@ for (const theme of ["light", "dark"]) {
     await page.reload();
     await openStyleManager(page);
     await expect(panel.getByText("Final preset", { exact: true })).toBeVisible();
-    await panel.getByRole("textbox", { name: "Search styles and tags…" }).fill("Final preset");
+    await panel.getByRole("textbox", { name: /^Search styles and tags\b/ }).fill("Final preset");
     await expect(panel.getByRole("listitem")).toHaveCount(1);
     await panel.getByRole("button", { name: "Preset actions" }).click();
     await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
