@@ -1,6 +1,6 @@
 import { isArcGISWritableLayer } from "@geolibre/plugins";
 import type { ParseKeys, TFunction } from "i18next";
-import { NETCDF_IMAGE_SOURCE_KIND } from "@geolibre/core";
+import { NETCDF_IMAGE_SOURCE_KIND, redactConfigurationCredentials } from "@geolibre/core";
 import type { GeoLibreLayer } from "@geolibre/core";
 import { MIN_REFRESH_INTERVAL_MS } from "../../../lib/layer-refresh";
 import { rasterExportUrl } from "../../../lib/raster-export";
@@ -162,20 +162,105 @@ export function layerMetadataPayload(
   layer: GeoLibreLayer,
   rasterInfo?: RasterInfo | null,
 ): Record<string, unknown> {
-  const videoSourceUrls = sourceUrlsFromLayer(layer);
+  // The dialog offers Copy, so the payload is what a user pastes into an email
+  // or a report: scrub credentials the way a saved project does (#2855). Each
+  // part is scrubbed on its own, as the project pass does, so a `type` in the
+  // metadata that reads as GeoJSON cannot make the whole payload skip redaction.
+  const source = redactConfigurationCredentials(layerSourceSummary(layer));
+  const sourceUrls = redactConfigurationCredentials(sourceUrlsFromLayer(layer));
   return {
     ...(rasterInfo ? { raster: rasterInfo } : {}),
-    ...layer.metadata,
+    ...redactLayerMetadata(layer.metadata),
     layerName: layer.name,
     layerType: layer.type,
-    ...(videoSourceUrls.length > 0
+    ...(source ? { source } : {}),
+    ...(sourceUrls.length > 0
       ? {
-          sourceUrl: videoSourceUrls[0],
-          ...(videoSourceUrls[1] ? { fallbackSourceUrl: videoSourceUrls[1] } : {}),
+          sourceUrl: sourceUrls[0],
+          ...(sourceUrls[1] ? { fallbackSourceUrl: sourceUrls[1] } : {}),
         }
       : {}),
-    sourcePath: layer.sourcePath,
+    sourcePath: redactConfigurationCredentials(layer.sourcePath),
   };
+}
+
+/**
+ * Scrub a layer's metadata for the Metadata dialog. The redaction pass copies a
+ * GeoJSON-shaped object verbatim, and it recognizes one by a `type` of
+ * `Feature`/`FeatureCollection`, so the top-level `type` is set aside first:
+ * otherwise a metadata record that happens to carry such a `type` would skip
+ * redaction entirely. Nested collections (`embeddedGeoJSON`) still copy as is.
+ *
+ * @param metadata - The layer's metadata.
+ * @returns A redacted copy.
+ */
+function redactLayerMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const { type, ...rest } = metadata ?? {};
+  return {
+    ...(type !== undefined ? { type: redactConfigurationCredentials(type) } : {}),
+    ...redactConfigurationCredentials(rest),
+  };
+}
+
+/**
+ * Layer types whose `source` describes a remote service or tile archive (the
+ * service address and request fields), so the Metadata dialog shows it.
+ * GeoJSON-like layers are left out: their source is the data itself, or the
+ * `sourcePath` the payload already reports.
+ */
+const SOURCE_SUMMARY_LAYER_TYPES: ReadonlySet<GeoLibreLayer["type"]> = new Set([
+  "wms",
+  "wmts",
+  "xyz",
+  "vector-tiles",
+  "arcgis",
+  "pmtiles",
+  "mbtiles",
+  "raster",
+  "cog",
+  "zarr",
+  "3d-tiles",
+  "gaussian-splat",
+  "lidar",
+  "flatgeobuf",
+  "geoparquet",
+]);
+
+/**
+ * Source keys that may carry data rather than a description of where the data
+ * lives: inlined payloads that would bury the service fields in the dialog.
+ * An HTTP(S) URL under one of them is a reference and is kept; anything else
+ * (an object, or inline text such as a stringified collection) is omitted.
+ */
+const SOURCE_SUMMARY_DATA_KEYS = new Set(["data", "geojson"]);
+
+/** Source keys never shown: `kerchunkRefs` is a chunk reference map, not an address. */
+const SOURCE_SUMMARY_OMITTED_KEYS = new Set(["kerchunkRefs"]);
+
+/**
+ * The part of a service or tile layer's `source` worth showing in its Metadata
+ * dialog: the service address and the request fields (layers, styles, format,
+ * version, CRS, ...) GeoLibre keeps to rebuild the layer. Credentials are
+ * removed by the caller.
+ *
+ * @param layer - The layer whose source to summarize.
+ * @returns The source fields, or null for a layer type without a service source.
+ */
+function layerSourceSummary(layer: GeoLibreLayer): Record<string, unknown> | null {
+  if (!SOURCE_SUMMARY_LAYER_TYPES.has(layer.type)) return null;
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(layer.source ?? {})) {
+    if (value === undefined) continue;
+    if (SOURCE_SUMMARY_OMITTED_KEYS.has(key)) continue;
+    if (
+      SOURCE_SUMMARY_DATA_KEYS.has(key) &&
+      (typeof value !== "string" || !/^https?:\/\//i.test(value))
+    ) {
+      continue;
+    }
+    summary[key] = value;
+  }
+  return Object.keys(summary).length > 0 ? summary : null;
 }
 
 /**
