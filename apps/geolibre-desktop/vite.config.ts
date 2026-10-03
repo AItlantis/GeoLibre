@@ -1,4 +1,5 @@
 import react from "@vitejs/plugin-react";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
@@ -818,6 +819,38 @@ function selectiveJsMinifyPlugin(): Plugin {
   };
 }
 
+function auditModuleManifestPlugin(): Plugin {
+  return {
+    name: "geolibre-audit-module-manifest",
+    apply: "build",
+    generateBundle(_, bundle) {
+      const chunks = Object.values(bundle).filter((asset) => asset.type === "chunk");
+      const modules = new Set(chunks.flatMap((chunk) => Object.keys(chunk.modules)));
+      const commit =
+        process.env.GITHUB_SHA ??
+        execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: path.resolve(__dirname, "../.."),
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+      this.emitFile({
+        type: "asset",
+        fileName: "geolibre-audit-module-manifest.json",
+        source: JSON.stringify(
+          {
+            schemaVersion: 1,
+            commit,
+            chunks: chunks.map((chunk) => chunk.fileName).sort(),
+            modules: [...modules].sort(),
+          },
+          null,
+          2,
+        ),
+      });
+    },
+  };
+}
+
 function shouldPreserveEarthEngineChunk(fileName: string, code: string): boolean {
   return (
     fileName.includes("earth-engine") ||
@@ -1249,6 +1282,7 @@ export default defineConfig({
     react(),
     wmsProxyPlugin(),
     selectiveJsMinifyPlugin(),
+    ...(process.env.GEOLIBRE_AUDIT_MODULE_MANIFEST ? [auditModuleManifestPlugin()] : []),
     removeJupyterLiteFromTauriDistPlugin(),
     ...pwaPlugin(),
   ],

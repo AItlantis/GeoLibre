@@ -18,6 +18,7 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-22.04
+    needs: testudo-native-build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -29,18 +30,37 @@ jobs:
         with:
           node-version: "22"
 
-      # Reads package-lock.json and queries the registry — no install needed, so
-      # this stays fast. Blocking at `high` catches high/critical advisories
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build current-head runtime artifact with module manifest
+        run: npm run build -w geolibre-desktop
+        env:
+          GEOLIBRE_AUDIT_MODULE_MANIFEST: "1"
+
+      - name: Test dependency-audit policy and artifact verifier
+        run: node --test scripts/audit-check.test.mjs
+
+      - name: Download exact-head Testudo native module manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: geolibre-testudo-audit-manifest-${{ github.sha }}
+          path: ${{ runner.temp }}/geolibre-testudo-audit
+
+      # Queries the lockfile against the registry after building the app from
+      # this exact checkout. Blocking at `high` catches high/critical advisories
       # without reddening CI for the moderate/low noise Dependabot handles via PR.
       # Scoped to production deps: `--omit=dev` drops advisories that only reach
       # local build/dev tooling (e.g. sharp/libvips via wrangler+miniflare, which
       # never ships in a GeoLibre artifact), while still blocking anything that
       # reaches users. Dependabot bumps the dev toolchain separately.
       # Wrapped in scripts/audit-check.mjs because plain `npm audit` cannot accept
-      # a single advisory: see the ALLOWLIST there for the unpatchable, unreachable
-      # findings that would otherwise redden every PR indefinitely.
+      # a single advisory. Allowlisted findings also require a Rollup module-graph
+      # manifest proving their vulnerable package code is absent from this build.
       - name: Audit npm dependencies (high and critical)
         run: npm run audit:ci
+        env:
+          GEOLIBRE_AUDIT_NATIVE_MANIFEST: ${{ runner.temp }}/geolibre-testudo-audit/geolibre-testudo-audit-module-manifest.json
 
   e2e:
     # Only the `core` Playwright project gates a PR: the app boots and renders a
@@ -133,6 +153,65 @@ jobs:
             echo "::error file=CITATION.cff::version ($cff_version) does not match package.json ($pkg_version). Update CITATION.cff version and date-released when bumping the release version."
             exit 1
           fi
+
+  testudo-native-build:
+    name: Testudo native build and provenance
+    runs-on: ubuntu-22.04
+    env:
+      GEOLIBRE_AUDIT_MODULE_MANIFEST: "1"
+      # These are the deployed Testudo origins documented by docs/testudo-embedding.md.
+      # The build needs no credentials, and wildcard origins are rejected by the build script.
+      VITE_GEOLIBRE_EMBED_ORIGINS: https://app.testudo.live,https://www.testudo.live
+      VITE_TESTUDO_BYTE_ORIGINS: https://bytes.testudo.live
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test native build manifest verifier
+        run: node --test scripts/verify-testudo-build.test.mjs
+
+      - name: Build Testudo native artifact
+        run: >-
+          node scripts/build-testudo.mjs
+          --out-dir "$RUNNER_TEMP/geolibre-testudo-native"
+          --audit-manifest "$RUNNER_TEMP/geolibre-testudo-audit-module-manifest.json"
+
+      - name: Verify source, lockfile, and artifact hashes
+        run: >-
+          node scripts/verify-testudo-build.mjs
+          --artifact "$RUNNER_TEMP/geolibre-testudo-native"
+          --revision "$GITHUB_SHA"
+          --embed-origins "$VITE_GEOLIBRE_EMBED_ORIGINS"
+          --byte-origins "$VITE_TESTUDO_BYTE_ORIGINS"
+
+      - name: Retain verified native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: geolibre-testudo-native-${{ github.sha }}
+          path: ${{ runner.temp }}/geolibre-testudo-native/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Retain native runtime module manifest for dependency audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: geolibre-testudo-audit-manifest-${{ github.sha }}
+          path: ${{ runner.temp }}/geolibre-testudo-audit-module-manifest.json
+          if-no-files-found: error
+          retention-days: 7
 
   collab-image:
     name: Collab relay image

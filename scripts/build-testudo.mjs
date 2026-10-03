@@ -2,15 +2,22 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, rmSync } from "node:fs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const app = join(root, "apps/geolibre-desktop");
 const outputArg = process.argv.findIndex(value => value === "--out-dir");
 if (outputArg >= 0 && !process.argv[outputArg + 1]) throw new Error("--out-dir requires a path");
 const output = outputArg >= 0 ? resolve(process.argv[outputArg + 1]) : join(app, "dist-testudo");
+const auditArg = process.argv.findIndex(value => value === "--audit-manifest");
+if (auditArg >= 0 && !process.argv[auditArg + 1]) throw new Error("--audit-manifest requires a path");
+const auditManifestPath = auditArg >= 0 ? resolve(process.argv[auditArg + 1]) : null;
+const outputPrefix = output.endsWith(sep) ? output : output + sep;
+if (auditManifestPath && (auditManifestPath === output || auditManifestPath.startsWith(outputPrefix))) {
+  throw new Error("--audit-manifest must be outside the native artifact directory");
+}
 const require = createRequire(join(app, "package.json"));
 const origins = process.env.VITE_GEOLIBRE_EMBED_ORIGINS;
 const bytes = process.env.VITE_TESTUDO_BYTE_ORIGINS;
@@ -30,22 +37,50 @@ for (const [target, expected] of Object.entries(pinnedParquet)) {
   if (!engine.includes(Buffer.from("v1.5.4"))) throw new Error(`DuckDB ${target} engine does not match pinned Parquet extension`);
 }
 const env = { ...process.env, GEOLIBRE_APP_BASE: "/geolibre-native/", GEOLIBRE_EMBED: "1", VITE_WELCOME_DISABLED: "1" };
+if (auditManifestPath) env.GEOLIBRE_AUDIT_MODULE_MANIFEST = "1";
 const run = (file, args, cwd = root) => {
   const result = spawnSync(process.execPath, [file, ...args], { cwd, env, stdio: "inherit" });
   if (result.status !== 0) throw new Error(`Build command failed: ${file} (${result.status})`);
 };
-const tsc = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
-run(tsc, ["-p", "packages/embed/tsconfig.build.json"]);
-run(tsc, ["-b", "apps/geolibre-desktop"]);
-run(join(dirname(require.resolve("vite/package.json")), "bin/vite.js"), ["build", "--outDir", output, "--emptyOutDir"], app);
-require("esbuild").buildSync({ entryPoints: [join(root, "packages/embed/src/index.ts")], outfile: join(output, "embed-client.js"), bundle: true, format: "esm", platform: "browser", target: "es2022" });
-copyFileSync(join(root, "LICENSE"), join(output, "GEOLIBRE-LICENSE.txt"));
-const hash = value => createHash("sha256").update(value).digest("hex");
 const git = args => {
   const result = spawnSync("git", ["-c", `safe.directory=${root.replaceAll("\\", "/")}`, ...args], { cwd: root, encoding: "utf8" });
   if (result.status !== 0) throw new Error("Cannot record native source provenance");
   return result.stdout;
 };
+const tsc = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
+run(tsc, ["-p", "packages/embed/tsconfig.build.json"]);
+run(tsc, ["-b", "apps/geolibre-desktop"]);
+run(join(dirname(require.resolve("vite/package.json")), "bin/vite.js"), ["build", "--outDir", output, "--emptyOutDir"], app);
+let viewerAuditManifest;
+if (auditManifestPath) {
+  const viewerManifestPath = join(output, "geolibre-audit-module-manifest.json");
+  viewerAuditManifest = JSON.parse(readFileSync(viewerManifestPath, "utf8"));
+  rmSync(viewerManifestPath);
+  if (viewerAuditManifest.commit !== git(["rev-parse", "HEAD"]).trim()) {
+    throw new Error("Native viewer audit manifest does not match the checked-out commit");
+  }
+}
+const embedBuild = require("esbuild").buildSync({ entryPoints: [join(root, "packages/embed/src/index.ts")], outfile: join(output, "embed-client.js"), bundle: true, format: "esm", platform: "browser", target: "es2022", metafile: !!auditManifestPath });
+if (auditManifestPath) {
+  const embedOutput = Object.entries(embedBuild.metafile.outputs).find(([file]) => file.endsWith("embed-client.js"))?.[1];
+  if (!embedOutput || !embedOutput.inputs) throw new Error("Cannot verify the esbuild embed-client module graph");
+  const embedModules = Object.entries(embedOutput.inputs)
+    .filter(([, details]) => details.bytesInOutput > 0)
+    .map(([input]) => resolve(root, input))
+    .sort();
+  if (embedModules.length === 0) throw new Error("The esbuild embed-client module graph is empty");
+  mkdirSync(dirname(auditManifestPath), { recursive: true });
+  writeFileSync(auditManifestPath, JSON.stringify({
+    schemaVersion: 2,
+    commit: viewerAuditManifest.commit,
+    artifacts: {
+      viewer: { chunks: viewerAuditManifest.chunks, modules: viewerAuditManifest.modules },
+      embedClient: { chunks: ["embed-client.js"], modules: embedModules },
+    },
+  }, null, 2) + "\n");
+}
+copyFileSync(join(root, "LICENSE"), join(output, "GEOLIBRE-LICENSE.txt"));
+const hash = value => createHash("sha256").update(value).digest("hex");
 const files = {};
 const walk = path => { for (const entry of readdirSync(path, { withFileTypes: true })) { const full = join(path, entry.name); if (entry.isDirectory()) walk(full); else files[relative(output, full).replaceAll("\\", "/")] = hash(readFileSync(full)); } };
 walk(output);

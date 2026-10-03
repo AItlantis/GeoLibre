@@ -11,11 +11,14 @@
 // vulnerable code must not reach a GeoLibre runtime path, and the reason has to
 // say why on both counts. Anything upgradeable gets upgraded instead.
 import { spawnSync } from "node:child_process";
-
-// Severities that fail the build. Moderate/low are left to Dependabot PRs.
-const BLOCKING = new Set(["high", "critical"]);
-
-const ALLOWLIST = new Map();
+import { verifyArtifactModuleManifest } from "./audit-artifact-proof.mjs";
+import {
+  ALLOWLIST,
+  BLOCKING,
+  collectAdvisories,
+  isAllowlisted,
+  parseAuditReport,
+} from "./audit-policy.mjs";
 
 const audit = spawnSync("npm", ["audit", "--omit=dev", "--json"], {
   encoding: "utf8",
@@ -39,70 +42,59 @@ if (audit.signal) unusable(`npm was killed by ${audit.signal}.`, audit.stderr);
 
 let report;
 try {
-  report = JSON.parse(audit.stdout);
-} catch {
-  unusable("stdout was not JSON.", audit.stdout || audit.stderr);
+  report = parseAuditReport(audit.stdout);
+} catch (error) {
+  unusable(error.message, audit.stdout || audit.stderr);
 }
 
-// A registry outage, an auth failure or an npm internal error still prints valid
-// JSON — but an `{error, message}` envelope with no `vulnerabilities` key rather
-// than a report. Left unchecked, `report.vulnerabilities ?? {}` would read that
-// as zero advisories and pass the gate exactly when the audit did not run.
-if (report === null || typeof report !== "object" || Array.isArray(report)) {
-  unusable("stdout was JSON but not an object.", audit.stdout);
-}
-if (report.error) {
-  // A registry outage fills the top-level `message` and leaves `error.summary`
-  // and `error.detail` empty strings; other npm errors do the reverse. Try all
-  // three so the failure output carries whichever one npm populated.
-  unusable(
-    "npm reported an error.",
-    report.error.detail || report.error.summary || report.message || audit.stderr,
-  );
-}
-// Arrays are typeof "object" too, and an array would yield zero entries below
-// rather than an error — so a malformed report would read as clean.
-if (
-  typeof report.vulnerabilities !== "object" ||
-  report.vulnerabilities === null ||
-  Array.isArray(report.vulnerabilities)
-) {
-  unusable("the report has no `vulnerabilities` section.", audit.stdout);
-}
+const advisories = collectAdvisories(report);
 
-// Flatten the report to one entry per advisory. `via` holds advisory objects for
-// the package that actually carries the flaw, and plain package-name strings for
-// the dependents that only inherit it — so collecting the objects covers every
-// affected package without counting the same advisory once per dependent.
-const advisories = new Map();
-for (const vuln of Object.values(report.vulnerabilities)) {
-  for (const via of vuln.via ?? []) {
-    if (typeof via !== "object") continue;
-    // Fail closed on an advisory we cannot name: fall back to a key built from
-    // whatever npm did give us. It can never match an ALLOWLIST entry (those are
-    // GHSA ids), so a high/critical one still blocks instead of being dropped.
-    const id =
-      /(GHSA-[\w-]+)/.exec(via.url ?? "")?.[1] ??
-      `unidentified advisory (${via.url ?? via.source ?? via.name})`;
-    const entry = advisories.get(id) ?? {
-      title: via.title,
-      severity: via.severity,
-      url: via.url,
-      packages: new Set(),
-    };
-    entry.packages.add(via.name);
-    advisories.set(id, entry);
-  }
-}
-
-const blocking = [...advisories].filter(
-  ([id, a]) => BLOCKING.has(a.severity) && !ALLOWLIST.has(id),
-);
+const blocking = [...advisories].filter(([id, a]) => {
+  if (!BLOCKING.has(a.severity)) return false;
+  return !isAllowlisted(id, a);
+});
 const allowed = [...advisories].filter(([id]) => ALLOWLIST.has(id));
 
 for (const [id, a] of allowed) {
+  const allow = ALLOWLIST.get(id);
+  if (!a.packages.has(allow.packageName)) continue;
   console.log(`allowed  ${a.severity.padEnd(8)} ${id}  ${[...a.packages].join(", ")}`);
-  console.log(`         ${ALLOWLIST.get(id)}`);
+  console.log(`         ${allow.advisoryUrl}; ${allow.patchStatus}`);
+  console.log(`         lockfile: ${allow.packageName}@${allow.version}; ${allow.dependencyPath}`);
+  console.log(`         ${allow.reason}`);
+}
+
+const activeAllowlist = allowed.filter(([id, a]) =>
+  isAllowlisted(id, a),
+);
+if (activeAllowlist.length > 0) {
+  const nativeManifestPath = process.env.GEOLIBRE_AUDIT_NATIVE_MANIFEST;
+  if (!nativeManifestPath) {
+    unusable(
+      "the Testudo native/embedded module manifest was not provided.",
+      "Set GEOLIBRE_AUDIT_NATIVE_MANIFEST to the manifest emitted by scripts/build-testudo.mjs.",
+    );
+  }
+  const checkout = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
+  if (checkout.error || checkout.status !== 0) {
+    unusable("the checked-out commit could not be identified.", checkout.error?.message || checkout.stderr);
+  }
+  const manifests = [
+    ["GeoLibre web runtime", new URL("../apps/geolibre-desktop/dist", import.meta.url)],
+    ["Testudo native/embedded runtime", nativeManifestPath],
+  ];
+  try {
+    for (const [label, manifestPath] of manifests) {
+      const proof = await verifyArtifactModuleManifest(
+        manifestPath,
+        activeAllowlist.map(([id]) => ({ id, ...ALLOWLIST.get(id) })),
+        checkout.stdout.trim(),
+      );
+      console.log(`${label}: ${proof.message}`);
+    }
+  } catch (error) {
+    unusable("an exact-head runtime artifact could not be verified.", error.stack || error.message);
+  }
 }
 
 // Stale entries are a warning, not a failure: the advisory database is a live
