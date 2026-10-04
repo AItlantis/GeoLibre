@@ -296,6 +296,130 @@ describe("fetchWmsIdentifyProperties and queryable (#2887)", () => {
   });
 });
 
+// An HTML answer carries its attributes in a table; read it into fields
+// instead of one run-together `result` (#2888).
+describe("fetchWmsIdentifyProperties with HTML tables", () => {
+  async function identifyHtml(body: string, layers = "roads") {
+    stubFetch(`<html><body>${body}</body></html>`, "text/html");
+    const original = globalThis.DOMParser;
+    globalThis.DOMParser = DOMParser as unknown as typeof globalThis.DOMParser;
+    try {
+      return await fetchWmsIdentifyProperties(
+        wmsLayer({ infoFormat: "text/html", layers }),
+        [12.5973, 42.2979],
+        16,
+        new AbortController().signal,
+      );
+    } finally {
+      globalThis.DOMParser = original;
+    }
+  }
+
+  it("reads name/value rows, skipping a title row (Agenzia delle Entrate cadastre)", async () => {
+    const result = await identifyHtml(`
+      <table class="wmstable"><tbody>
+        <tr><th colspan=7>Strato CP.CadastralParcel 'Particelle'</th></tr>
+        <tr><th scope="col">InspireId localId</th><td>IT.AGE.PLA.D689_000400.751</td></tr>
+        <tr><th scope="col">Label</th><td>751</td></tr>
+        <tr><th scope="col">NationalCadastralReference</th><td> D689_000400.751 </td></tr>
+      </tbody></table>`);
+    assert.deepEqual(result, {
+      properties: {
+        "InspireId localId": "IT.AGE.PLA.D689_000400.751",
+        Label: "751",
+        NationalCadastralReference: "D689_000400.751",
+      },
+    });
+  });
+
+  it("reads a header row naming the cells of the first data row", async () => {
+    const result = await identifyHtml(`
+      <table>
+        <caption>roads</caption>
+        <tr><th>fid</th><th>name</th><th>lanes</th></tr>
+        <tr><td>roads.7</td><td>Via Roma</td><td>2</td></tr>
+        <tr><td>roads.8</td><td>Via Milano</td><td>4</td></tr>
+      </table>`);
+    assert.deepEqual(result, { properties: { fid: "roads.7", name: "Via Roma", lanes: "2" } });
+  });
+
+  it("uses the header right above the data, not a decorative one", async () => {
+    const result = await identifyHtml(`
+      <table>
+        <tr><th>roads</th><th>layer</th></tr>
+        <tr><th>fid</th><th>name</th><th>lanes</th></tr>
+        <tr><td>roads.7</td><td>Via Roma</td><td>2</td></tr>
+      </table>`);
+    assert.deepEqual(result, { properties: { fid: "roads.7", name: "Via Roma", lanes: "2" } });
+  });
+
+  it("ignores the rows of a table nested in a cell", async () => {
+    const result = await identifyHtml(`
+      <table>
+        <tr><th>name</th><td>Via Roma</td></tr>
+        <tr><th>surface</th><td>
+          <table><tr><th>material</th><td>asphalt</td></tr></table>
+        </td></tr>
+      </table>`);
+    assert.equal(result?.properties.name, "Via Roma");
+    // The nested table stays the outer cell's text.
+    assert.match(String(result?.properties.surface), /asphalt/);
+    assert.equal("material" in (result?.properties ?? {}), false);
+  });
+
+  it("merges the tables of a multi-layer answer, suffixing a repeated name", async () => {
+    const result = await identifyHtml(
+      `
+      <table><tr><th colspan=2>Layer 'roads'</th></tr>
+        <tr><th>name</th><td>Via Roma</td></tr></table>
+      <table><tr><th colspan=2>Layer 'parcels'</th></tr>
+        <tr><th>name</th><td>751</td></tr><tr><th>sheet</th><td>4</td></tr></table>`,
+      "roads,parcels",
+    );
+    assert.deepEqual(result, {
+      properties: { name: "Via Roma", "name (2)": "751", sheet: "4" },
+    });
+  });
+
+  it("reads only the first table for one layer, as the first feature", async () => {
+    const result = await identifyHtml(`
+      <table><tr><th>name</th><td>Via Roma</td></tr></table>
+      <table><tr><th>name</th><td>Via Milano</td></tr></table>`);
+    assert.deepEqual(result, { properties: { name: "Via Roma" } });
+  });
+
+  it("keeps fields named like Object members, and suffixes a name repeated in one table", async () => {
+    const result = await identifyHtml(`
+      <table>
+        <tr><th>constructor</th><td>ACME</td></tr>
+        <tr><th>__proto__</th><td>kept</td></tr>
+        <tr><th>note</th><td>first</td></tr>
+        <tr><th>note</th><td>second</td></tr>
+      </table>`);
+    const properties = result?.properties ?? {};
+    assert.deepEqual(Object.keys(properties), ["constructor", "__proto__", "note", "note (2)"]);
+    assert.equal(Object.getOwnPropertyDescriptor(properties, "constructor")?.value, "ACME");
+    assert.equal(Object.getOwnPropertyDescriptor(properties, "__proto__")?.value, "kept");
+    assert.equal(properties["note (2)"], "second");
+  });
+
+  it("reads a one-column header over one cell as text, not as a field", async () => {
+    const result = await identifyHtml(
+      "<table><tr><th>Roads</th></tr><tr><td>no hit</td></tr></table>",
+    );
+    assert.deepEqual(Object.keys(result?.properties ?? {}), ["result"]);
+  });
+
+  it("keeps the text result when no table has either shape", async () => {
+    assert.deepEqual(await identifyHtml("<p>Road  42</p>"), { properties: { result: "Road 42" } });
+    // A header with no data row below it says nothing about a feature.
+    const headerOnly = await identifyHtml(
+      "<table><tr><th>fid</th><th>name</th></tr></table><p>no hit</p>",
+    );
+    assert.deepEqual(Object.keys(headerOnly?.properties ?? {}), ["result"]);
+  });
+});
+
 describe("pixel identify helpers", () => {
   it("flags Time Slider pixel layers and formats their band rows", () => {
     assert.equal(isPixelIdentifyLayer(geojsonLayer({ metadata: { pixelIdentify: true } })), true);

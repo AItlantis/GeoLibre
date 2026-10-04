@@ -387,9 +387,99 @@ function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function textFromHtml(value: string): string {
-  const document = new DOMParser().parseFromString(value, "text/html");
-  return normalizeText(document.body.textContent ?? "");
+function cellText(cell: Element): string {
+  return normalizeText(cell.textContent ?? "");
+}
+
+/**
+ * Sets `name` on `target`, as `name (2)`, `name (3)`... when it is already
+ * taken. Own keys only, and defined rather than assigned, so a field named
+ * `constructor` or `__proto__` keeps its name and its value.
+ */
+function addProperty(target: Record<string, string>, name: string, value: string): void {
+  let key = name;
+  for (let copy = 2; Object.hasOwn(target, key); copy += 1) key = `${name} (${copy})`;
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
+function isRowOf(cells: Element[], tag: "th" | "td"): boolean {
+  return cells.length > 0 && cells.every((cell) => cell.localName === tag);
+}
+
+/**
+ * The attributes in one HTML table: one property per `<th>name</th><td>value</td>`
+ * row or, for a table with a column header, the header naming the cells of the
+ * first data row: the first all-`<td>` row right below an all-`<th>` row of the
+ * same length, at least two cells wide (a lone `<th>` over a lone `<td>` reads
+ * as a title over free text, not as a field). Rows of any other shape, such as
+ * a title spanning the table, are skipped, and so are the rows of a table
+ * nested in a cell. Null when the table has neither shape.
+ */
+function tableProperties(table: Element): Record<string, string> | null {
+  const rows = Array.from(table.querySelectorAll("tr"))
+    .filter((row) => row.closest("table") === table)
+    .map((row) =>
+      Array.from(row.children).filter((cell) => cell.localName === "th" || cell.localName === "td"),
+    );
+
+  const pairs: Record<string, string> = {};
+  for (const cells of rows) {
+    if (cells.length !== 2 || cells[0].localName !== "th" || cells[1].localName !== "td") continue;
+    const name = cellText(cells[0]);
+    if (name) addProperty(pairs, name, cellText(cells[1]));
+  }
+  if (Object.keys(pairs).length > 0) return pairs;
+
+  const valuesIndex = rows.findIndex(
+    (cells, index) =>
+      index > 0 &&
+      cells.length > 1 &&
+      isRowOf(cells, "td") &&
+      rows[index - 1].length === cells.length &&
+      isRowOf(rows[index - 1], "th"),
+  );
+  if (valuesIndex < 0) return null;
+  const header = rows[valuesIndex - 1];
+  const values = rows[valuesIndex];
+  const columns: Record<string, string> = {};
+  header.forEach((cell, index) => {
+    const name = cellText(cell);
+    if (name) addProperty(columns, name, cellText(values[index]));
+  });
+  return Object.keys(columns).length > 0 ? columns : null;
+}
+
+/**
+ * The attributes of an HTML GetFeatureInfo answer read from its tables (#2888),
+ * see tableProperties. A request for several layers can get one table per
+ * layer: the first `layerCount` tables with a shape are merged, a name already
+ * taken getting a ` (2)`, ` (3)` suffix, as within one table. With one layer
+ * only the first is read, as the JSON branch reads the first feature: a server
+ * may give one table per feature. Null when no table has either shape.
+ */
+function propertiesFromHtmlTables(
+  document: Document,
+  layerCount: number,
+): Record<string, string> | null {
+  const merged: Record<string, string> = {};
+  // A table nested in a cell belongs to that cell's value, not to the answer.
+  const tables = Array.from(document.querySelectorAll("table")).filter(
+    (table) => !table.parentElement?.closest("table"),
+  );
+  let read = 0;
+  for (const table of tables) {
+    if (read >= layerCount) break;
+    const properties = tableProperties(table);
+    if (!properties) continue;
+    read += 1;
+    for (const [name, value] of Object.entries(properties)) addProperty(merged, name, value);
+  }
+  return Object.keys(merged).length > 0 ? merged : null;
 }
 
 function isWmsExceptionResponse(value: string): boolean {
@@ -546,12 +636,19 @@ export async function fetchWmsIdentifyProperties(
     }
 
     if (headerlessHtml || contentType.includes("html")) {
-      const resultText = textFromHtml(text);
+      const document = new DOMParser().parseFromString(text, "text/html");
+      const resultText = normalizeText(document.body.textContent ?? "");
       if (!resultText) continue;
       // HTML we did not ask for (often a server error page) is kept as a
       // fallback so the remaining info formats are still tried.
       if (!headerlessHtml || infoFormat.includes("html")) {
-        return { properties: { result: resultText } };
+        const layerCount = Math.max(
+          1,
+          (stringSource(layer.source.layers) ?? "").split(",").filter((name) => name.trim()).length,
+        );
+        return {
+          properties: propertiesFromHtmlTables(document, layerCount) ?? { result: resultText },
+        };
       }
       fallbackText = fallbackText || resultText;
       continue;
