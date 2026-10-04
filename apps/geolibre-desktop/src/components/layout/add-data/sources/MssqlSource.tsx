@@ -307,7 +307,9 @@ export function MssqlSource({ initialMssql }: MssqlSourceProps) {
     );
     if (!activeProfileId || !table) throw new Error(t("addData.mssql.errorConnectFirst"));
     if (!table.primary_key) throw new Error(t("addData.mssql.errorSelectTable"));
-    const result = await withMssqlSession(activeProfileId, (sessionId) =>
+    const profileId = activeProfileId;
+    const requestToken = listRequestRef.current;
+    const result = await withMssqlSession(profileId, (sessionId) =>
       readMssqlTable({
         session_id: sessionId,
         schema_name: table.schema,
@@ -315,33 +317,45 @@ export function MssqlSource({ initialMssql }: MssqlSourceProps) {
         geometry_column: table.geometry_column,
       }),
     );
+    // The connection was changed or cleared while the read ran. Its cleanup was
+    // deferred because a submit was in flight, so finish it here and do not
+    // publish a layer the form no longer refers to.
+    if (listRequestRef.current !== requestToken) {
+      disconnectMssqlProfileSession(profileId);
+      return;
+    }
     const baselineKeys = postgisFeatureKeys(result.geojson);
     const savedProfile = readSavedMssqlConnections().find((item) => item.id === activeProfileId);
     if (!savedProfile) throw new Error(t("addData.mssql.errorReconnectRequired"));
-    const layer = createBaseLayer(
-      source.layerName.trim() || table.table,
-      "geojson",
-      {
-        type: "geojson",
-        service: "mssql",
-        schema: result.schema,
-        table: result.table,
-      },
-      {
-        featureCount: result.feature_count,
-        sourceKind: "mssql-table",
-        mssqlConnectionId: activeProfileId,
-        mssqlConnectionLabel: mssqlConnectionLabel(savedProfile),
-        mssqlSchema: result.schema,
-        mssqlTable: result.table,
-        mssqlPrimaryKey: result.primary_key,
-        mssqlGeometryColumn: result.geometry_column,
-        mssqlColumnType: result.column_type,
-        mssqlSrid: result.srid,
-        mssqlBaselineKeys: baselineKeys,
-      },
-      { geojson: result.geojson },
-    );
+    // `createBaseLayer` uses the features only to pick the initial style; the
+    // layer itself must carry them, as the PostGIS source does.
+    const layer = {
+      ...createBaseLayer(
+        source.layerName.trim() || table.table,
+        "geojson",
+        {
+          type: "geojson",
+          service: "mssql",
+          schema: result.schema,
+          table: result.table,
+        },
+        {
+          featureCount: result.feature_count,
+          sourceKind: "mssql-table",
+          mssqlConnectionId: activeProfileId,
+          mssqlConnectionLabel: mssqlConnectionLabel(savedProfile),
+          mssqlSchema: result.schema,
+          mssqlTable: result.table,
+          mssqlPrimaryKey: result.primary_key,
+          mssqlGeometryColumn: result.geometry_column,
+          mssqlColumnType: result.column_type,
+          mssqlSrid: result.srid,
+          mssqlBaselineKeys: baselineKeys,
+        },
+        { geojson: result.geojson },
+      ),
+      geojson: result.geojson,
+    };
     source.addAndClose(layer, { fit: true });
   });
 

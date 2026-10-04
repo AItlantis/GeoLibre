@@ -317,6 +317,7 @@ export function LayerPanel({
     setRefreshStatuses: refresh.setRefreshStatuses,
     clearRefreshStatusTimer: refresh.clearRefreshStatusTimer,
     scheduleStatusClear: refresh.scheduleStatusClear,
+    markMssqlRefreshRequired: refresh.markMssqlRefreshRequired,
     isPluginActive,
     togglePlugin,
   });

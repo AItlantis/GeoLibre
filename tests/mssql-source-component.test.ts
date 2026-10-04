@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createElement, createRef } from "react";
+import { createElement, createRef, useState } from "react";
 import { setSidecarAuthToken } from "@geolibre/processing";
+import type { GeoLibreLayer } from "@geolibre/core";
 import { fireEvent, mockFetch, render, screen, waitFor } from "./helpers/dom";
 import { resetMssqlSessions } from "../apps/geolibre-desktop/src/lib/mssql-sessions";
 import {
@@ -17,8 +18,8 @@ const [{ MssqlSource }, { AddDataShellProvider }] = await Promise.all([
   import("../apps/geolibre-desktop/src/components/layout/add-data/context"),
 ]);
 
-function renderMssqlSource(initialMssql?: OpenAddDataMssql) {
-  const shell: AddDataShellContextValue = {
+function baseShell(): AddDataShellContextValue {
+  return {
     mapControllerRef: createRef(),
     addLayer: () => {},
     existingLayers: [],
@@ -40,13 +41,36 @@ function renderMssqlSource(initialMssql?: OpenAddDataMssql) {
       stopTransient: () => {},
     },
   };
+}
+
+function renderMssqlSource(initialMssql?: OpenAddDataMssql) {
   return render(
     createElement(
       AddDataShellProvider,
-      { value: shell },
+      { value: baseShell() },
       createElement(MssqlSource, { initialMssql }),
     ),
   );
+}
+
+/** Renders with a live `isSubmitting` flag, as the dialog does, and records added layers. */
+function renderSubmittingMssqlSource(added: GeoLibreLayer[]) {
+  function Shell() {
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    return createElement(
+      AddDataShellProvider,
+      {
+        value: {
+          ...baseShell(),
+          addLayer: (layer: GeoLibreLayer) => added.push(layer),
+          isSubmitting,
+          setIsSubmitting,
+        },
+      },
+      createElement(MssqlSource, {}),
+    );
+  }
+  return render(createElement(Shell));
 }
 
 describe("MssqlSource", () => {
@@ -243,5 +267,135 @@ describe("MssqlSource", () => {
         });
       }
     }
+  });
+
+  /**
+   * Connects through the form and submits the first table while its read is held
+   * open, optionally editing the server before the read returns.
+   */
+  async function importTable(changeServerMidRead: boolean) {
+    const tauriWindow = window as Window & {
+      __TAURI_INTERNALS__?: { invoke: (command: string) => Promise<unknown> };
+    };
+    const previous = tauriWindow.__TAURI_INTERNALS__;
+    Object.defineProperty(tauriWindow, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (command: string) => {
+          assert.equal(command, "start_geolibre_sidecar");
+          return { baseUrl: "http://127.0.0.1:8765", port: 8765, token: "test-token" };
+        },
+      },
+    });
+    resetMssqlSessions();
+    setKeychainMssqlSecrets({});
+    setMssqlKeychainWritable(false);
+    const table = {
+      schema: "dbo",
+      table: "parcels",
+      geometry_column: "geom",
+      column_type: "geometry",
+      srid: 4326,
+      geometry_type: "POINT",
+      primary_key: "id",
+    };
+    let releaseRead: () => void = () => {};
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const feature = {
+      type: "Feature",
+      id: 1,
+      geometry: { type: "Point", coordinates: [0, 0] },
+      properties: { name: "One" },
+    };
+    const requests: string[] = [];
+    mockFetch(async (input, init) => {
+      const url = new URL(String(input));
+      requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
+      if (url.pathname.endsWith("/mssql/status")) {
+        return new Response(
+          JSON.stringify({ available: true, auth_methods: ["sql"], message: "" }),
+          { status: 200 },
+        );
+      }
+      if (url.pathname.endsWith("/mssql/connect")) {
+        return new Response(JSON.stringify({ session_id: "session-1" }), { status: 200 });
+      }
+      if (url.pathname.endsWith("/mssql/tables")) {
+        return new Response(JSON.stringify({ tables: [table] }), { status: 200 });
+      }
+      if (url.pathname.endsWith("/mssql/read")) {
+        await readGate;
+        return new Response(
+          JSON.stringify({
+            ...table,
+            feature_count: 1,
+            geojson: { type: "FeatureCollection", features: [feature] },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.pathname.endsWith("/mssql/disconnect")) {
+        return new Response("{}", { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+
+    const added: GeoLibreLayer[] = [];
+    try {
+      const { container } = renderSubmittingMssqlSource(added);
+      fireEvent.change(screen.getByLabelText("Server"), { target: { value: "db.example" } });
+      fireEvent.change(screen.getByLabelText("Database"), { target: { value: "gis" } });
+      fireEvent.change(screen.getByLabelText("Username"), { target: { value: "user" } });
+      fireEvent.change(screen.getByLabelText("Password"), { target: { value: "password" } });
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+      const submit = () => container.querySelector<HTMLButtonElement>('button[type="submit"]');
+      await waitFor(() => assert.equal(submit()?.disabled, false));
+
+      fireEvent.submit(container.querySelector("form")!);
+      await waitFor(() => assert.ok(requests.some((request) => request.endsWith("/mssql/read"))));
+      if (changeServerMidRead) {
+        fireEvent.change(screen.getByLabelText("Server"), { target: { value: "other.example" } });
+      }
+      releaseRead();
+      await waitFor(() => assert.equal(submit()?.disabled, true));
+      if (changeServerMidRead) {
+        await waitFor(() => {
+          assert.equal(
+            requests.filter((request) => request.endsWith("/mssql/disconnect")).length,
+            1,
+          );
+        });
+      } else {
+        await waitFor(() => assert.equal(added.length, 1));
+      }
+      return { added, requests, feature };
+    } finally {
+      releaseRead();
+      resetMssqlSessions();
+      setSidecarAuthToken(null);
+      setKeychainMssqlSecrets({});
+      setMssqlKeychainWritable(true);
+      if (previous === undefined) {
+        delete tauriWindow.__TAURI_INTERNALS__;
+      } else {
+        Object.defineProperty(tauriWindow, "__TAURI_INTERNALS__", {
+          configurable: true,
+          value: previous,
+        });
+      }
+    }
+  }
+
+  it("adds the read features to the layer with their keys as the save baseline", async () => {
+    const { added, feature } = await importTable(false);
+    assert.deepEqual(added[0].geojson?.features, [feature]);
+    assert.deepEqual(added[0].metadata.mssqlBaselineKeys, [1]);
+  });
+
+  it("discards a table read whose connection changed while it was loading", async () => {
+    const { added } = await importTable(true);
+    assert.deepEqual(added, []);
   });
 });
