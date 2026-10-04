@@ -2951,7 +2951,8 @@
       "view": "Görünüm",
       "help": "Yardım",
       "plugins": "Eklentiler",
-      "settings": "Ayarlar"
+      "settings": "Ayarlar",
+      "tools": "Araçlar"
     },
     "command": {
       "projectNew": "Yeni Proje",
@@ -3419,6 +3420,7 @@
       "showMenuInToolbar": "Menüyü araç çubuğunda göster",
       "dggs": "DGGS",
       "commandPalette": "Komut Paleti",
+      "simplifyInterface": "Arayüzü Sadeleştir...",
       "openProjectFromUrl": "URL'den proje aç",
       "importQgisProjectEllipsis": "QGIS Projesi İçe Aktar…",
       "importArcgisProjectEllipsis": "ArcGIS Pro Projesi İçe Aktar…",

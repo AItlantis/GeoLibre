@@ -2900,7 +2900,8 @@
       "view": "Tampilan",
       "help": "Bantuan",
       "plugins": "Plugin",
-      "settings": "Pengaturan"
+      "settings": "Pengaturan",
+      "tools": "Alat"
     },
     "command": {
       "projectNew": "Proyek Baru",
@@ -3368,6 +3369,7 @@
       "showMenuInToolbar": "Tampilkan menu di bilah alat",
       "dggs": "DGGS",
       "commandPalette": "Palet Perintah",
+      "simplifyInterface": "Sederhanakan Antarmuka...",
       "openProjectFromUrl": "Buka proyek dari URL",
       "importQgisProjectEllipsis": "Impor Proyek QGIS…",
       "importArcgisProjectEllipsis": "Impor Proyek ArcGIS Pro…",

@@ -2951,7 +2951,8 @@
       "view": "Beeld",
       "help": "Help",
       "plugins": "Plug-ins",
-      "settings": "Instellingen"
+      "settings": "Instellingen",
+      "tools": "Gereedschappen"
     },
     "command": {
       "projectNew": "Nieuw project",
@@ -3419,6 +3420,7 @@
       "showMenuInToolbar": "Menu in werkbalk tonen",
       "dggs": "DGGS",
       "commandPalette": "Opdrachtenpalet",
+      "simplifyInterface": "Interface vereenvoudigen...",
       "openProjectFromUrl": "Project openen vanuit URL",
       "importQgisProjectEllipsis": "QGIS-project importeren…",
       "importArcgisProjectEllipsis": "ArcGIS Pro-project importeren…",
