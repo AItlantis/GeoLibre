@@ -115,8 +115,13 @@ const externallyLoadedPluginSources = new Map<string, string>();
 // otherwise not re-entrant-safe: concurrent calls for the same URL capture the
 // same existingId/wasActive snapshot and would double-register. Coalescing them
 // onto one promise makes the function safe even if the UI's busyId guard is
-// bypassed (e.g. the dialog is closed and reopened mid-upgrade).
-const inFlightUrlUpgrades = new Map<string, Promise<GeoLibrePlugin>>();
+// bypassed (e.g. the dialog is closed and reopened mid-upgrade). The
+// expectations ride along: a call may only share a reload that checks the same
+// version and registry hash it was asked to check.
+const inFlightUrlUpgrades = new Map<
+  string,
+  { promise: Promise<GeoLibrePlugin>; expectedVersion?: string; expectedHash?: string }
+>();
 
 // Manifest URLs this session has tried to load under the SHA-256 pin (bundled
 // drop-ins are exempt from pinning and never appear here). Uninstalling a URL
@@ -845,10 +850,12 @@ export function unloadFilesystemPlugin(
  * plugin intact. Active state is preserved: an active plugin is reactivated
  * after the new version registers. Returns the new plugin.
  *
- * Concurrent calls for the same manifest URL are coalesced onto a single
- * in-flight promise, so the function is re-entrant-safe even if a caller's own
- * guard (e.g. the dialog's `busyId`) is bypassed by closing and reopening the
- * dialog mid-upgrade. If the plugin is uninstalled mid-fetch the returned
+ * Concurrent calls for the same manifest URL with the same `expectedVersion`
+ * and `expectedHash` are coalesced onto a single in-flight promise, so the
+ * function is re-entrant-safe even if a caller's own guard (e.g. the dialog's
+ * `busyId`) is bypassed by closing and reopening the dialog mid-upgrade. A call
+ * with different expectations waits for the in-flight reload to settle and then
+ * runs its own, so every caller's hash is checked against its own download. If the plugin is uninstalled mid-fetch the returned
  * plugin is fetched and validated but NOT registered in the manager.
  */
 export function reloadExternalUrlPlugin(
@@ -859,16 +866,34 @@ export function reloadExternalUrlPlugin(
     policy?: DeploymentPolicy | null;
     source?: PluginSource;
     expectedVersion?: string;
+    /** Registry-announced bundle hash; a download that differs is refused. */
+    expectedHash?: string;
   } = {},
 ): Promise<GeoLibrePlugin> {
   const inFlight = inFlightUrlUpgrades.get(manifestUrl);
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    if (
+      inFlight.expectedVersion === options.expectedVersion &&
+      inFlight.expectedHash === options.expectedHash
+    ) {
+      return inFlight.promise;
+    }
+    // The running reload checks other expectations, so its result proves
+    // nothing about this caller's: wait for it to settle, then run (or share)
+    // a reload that checks this call's own version and hash.
+    const retry = () => reloadExternalUrlPlugin(manager, manifestUrl, app, options);
+    return inFlight.promise.then(retry, retry);
+  }
   const promise = reloadExternalUrlPluginUncoalesced(manager, manifestUrl, app, options).finally(
     () => {
       inFlightUrlUpgrades.delete(manifestUrl);
     },
   );
-  inFlightUrlUpgrades.set(manifestUrl, promise);
+  inFlightUrlUpgrades.set(manifestUrl, {
+    promise,
+    expectedVersion: options.expectedVersion,
+    expectedHash: options.expectedHash,
+  });
   return promise;
 }
 
@@ -880,6 +905,8 @@ async function reloadExternalUrlPluginUncoalesced(
     policy?: DeploymentPolicy | null;
     source?: PluginSource;
     expectedVersion?: string;
+    /** Registry-announced bundle hash; a download that differs is refused. */
+    expectedHash?: string;
   },
 ): Promise<GeoLibrePlugin> {
   const policy = options.policy === undefined ? getDeploymentPolicy() : options.policy;
@@ -907,6 +934,7 @@ async function reloadExternalUrlPluginUncoalesced(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   let bundle: ExternalPluginBundle;
+  let bundleHash: string;
   let plugin: GeoLibrePlugin;
   try {
     bundle = await loadPluginUrlBundle(
@@ -923,6 +951,14 @@ async function reloadExternalUrlPluginUncoalesced(
     ) {
       throw new Error(
         `Cannot update plugin: expected version ${options.expectedVersion} but the registry now serves ${bundle.manifest.version}. Refresh the plugin list and try again.`,
+      );
+    }
+    // Hash before importing: code that doesn't match the reviewed bundle the
+    // registry announced must never be evaluated.
+    bundleHash = await computePluginBundleHash(bundle);
+    if (options.expectedHash !== undefined && bundleHash !== options.expectedHash) {
+      throw new Error(
+        `Cannot update plugin: the code downloaded from '${manifestUrl}' does not match the version the registry lists. It may still be publishing; refresh the plugin list and try again in a few minutes.`,
       );
     }
     // The timeout only bounds the fetch/stream above; a dynamic import() of a
@@ -943,10 +979,9 @@ async function reloadExternalUrlPluginUncoalesced(
         `Cannot update plugin: '${plugin.id}' does not match the held-back plugin '${heldBack.pluginId}' or is already registered. Reinstall it manually.`,
       );
     }
-    const newHash = await computePluginBundleHash(bundle);
     manager.register(plugin);
     externallyLoadedPluginSources.set(plugin.id, manifestUrl);
-    pinPluginBundle(manifestUrl, newHash, bundle.manifest.version);
+    pinPluginBundle(manifestUrl, bundleHash, bundle.manifest.version);
     heldBackBundles.delete(manifestUrl);
     if (bundle.styleSource) {
       injectExternalPluginStyle(plugin.id, bundle.styleSource);
@@ -985,7 +1020,7 @@ async function reloadExternalUrlPluginUncoalesced(
   externallyLoadedPluginSources.set(plugin.id, manifestUrl);
   // Explicit user reload: accept this version as the new trusted baseline so the
   // next auto-scan doesn't flag it as changed.
-  pinPluginBundle(manifestUrl, await computePluginBundleHash(bundle), bundle.manifest.version);
+  pinPluginBundle(manifestUrl, bundleHash, bundle.manifest.version);
   if (bundle.styleSource) {
     injectExternalPluginStyle(plugin.id, bundle.styleSource);
   }
