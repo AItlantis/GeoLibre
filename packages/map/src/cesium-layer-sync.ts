@@ -942,6 +942,15 @@ export interface CesiumLayerSyncDeps {
    */
   onTilesetFields?: (layerId: string, fields: string[]) => void;
   /**
+   * Called when {@link CesiumLayerSync.zoomToLayer} actually starts a flight,
+   * which for a layer still loading is later than the request. The engine uses
+   * it to stop its terrain correction pulling the flight back (#2878), and only
+   * once the camera is really leaving its placement.
+   */
+  onFlyTo?: () => void;
+  /** Called when a flight started by `onFlyTo` completes (not when cancelled). */
+  onFlyToComplete?: () => void;
+  /**
    * Reports a layer that failed to load, so the app can show it the way the 2D
    * renderers show theirs (the Diagnostics panel). Without this a failure is
    * invisible: the record stays in the Layers panel and the globe simply draws
@@ -2026,18 +2035,33 @@ export class CesiumLayerSync {
     const handle = entry.handle;
     if (!handle || entry.cancelled || !FLY_TO_KINDS.has(entry.kind)) return false;
     const viewer = this.viewer;
+    // Cesium throws from `flyTo` mid-morph. Drop the fit (reported as handled)
+    // the way the engine's own flights are skipped then.
+    if (viewer.scene.mode === this.Cesium.SceneMode.MORPHING) return true;
     // An I3S scene layer is a `3dtiles` entry, but an I3SDataProvider is not a
     // target `Viewer.flyTo` accepts; it publishes its footprint as a rectangle.
     const extent = (handle as { extent?: Rectangle }).extent;
+    this.deps.onFlyTo?.();
     if (extent) {
-      viewer.camera.flyTo({ destination: extent, duration: ZOOM_TO_LAYER_SECONDS });
+      viewer.camera.flyTo({
+        destination: extent,
+        duration: ZOOM_TO_LAYER_SECONDS,
+        complete: () => this.deps.onFlyToComplete?.(),
+      });
       return true;
     }
     void Promise.resolve(
       viewer.flyTo(handle as ImageryLayer | DataSource | Cesium3DTileset, {
         duration: ZOOM_TO_LAYER_SECONDS,
       }),
-    ).catch(() => {});
+    )
+      // Resolves false when the flight was cancelled. A rejection still ends
+      // the flight the engine was told about, or its terrain correction would
+      // stay off.
+      .then((completed) => {
+        if (completed) this.deps.onFlyToComplete?.();
+      })
+      .catch(() => this.deps.onFlyToComplete?.());
     return true;
   }
 

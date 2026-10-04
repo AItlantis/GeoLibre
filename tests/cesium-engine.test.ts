@@ -166,6 +166,7 @@ function makeViewer(groundHeight = 0) {
   let groundPick = true;
   let ellipsoidPick = true;
   const moveEnd = makeEvent();
+  const moveStart = makeEvent();
   const tileLoadProgressEvent = makeEvent();
   const morphComplete = makeEvent();
   const canvasListeners = new Map<string, Set<(event: unknown) => void>>();
@@ -204,7 +205,8 @@ function makeViewer(groundHeight = 0) {
       },
       frustum: { fovy: Math.PI / 3 },
       moveEnd,
-      moveStart: makeEvent(),
+      moveStart,
+      cancelFlight: () => {},
       // applyMapViewToCamera drives these; the fake records the resulting view.
       lookAt: (target: { x: number; y: number; z: number }, hpr: HprLike) => {
         lookAtCount.n++;
@@ -286,6 +288,7 @@ function makeViewer(groundHeight = 0) {
       ellipsoidPick = ellipsoid;
     },
     moveEnd,
+    moveStart,
     tileLoadProgressEvent,
     morphComplete,
     /** Put the scene in a scene mode, as the scene-mode picker's morph does. */
@@ -619,6 +622,161 @@ describe("CesiumEngine terrain correction", () => {
     fakes.nudge(40);
     fakes.tileLoadProgressEvent.emit(0);
     assert.equal(fakes.placements, placements, "the user's camera is authoritative");
+    engine.destroy();
+  });
+
+  it("never pulls an animated flight back to the last placement (#2878)", () => {
+    // A flight streams terrain all along its path, so the tile queue drains
+    // mid-air at a new height. Re-applying the seed placement there sent a
+    // drop's fly-to-layer (and a Set View) straight back to the seed view.
+    for (const fly of [
+      (engine: CesiumEngine) => engine.flyTo({ center: [-97.5, 37.5], zoom: 4 }),
+      (engine: CesiumEngine) => engine.fitBounds([-125, 25, -70, 50]),
+      (engine: CesiumEngine) => engine.zoomIn(),
+    ]) {
+      const fakes = makeViewer(0);
+      const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+      engine.applyView({ ...VIEW, zoom: 2 });
+      const placements = fakes.placements;
+      fly(engine);
+      assert.equal(fakes.flights.length, 1, "the flight started");
+      fakes.setGroundHeight(-770);
+      fakes.tileLoadProgressEvent.emit(0);
+      assert.equal(fakes.placements, placements, "the flight's camera is authoritative");
+      engine.destroy();
+    }
+  });
+
+  it("corrects a landed flight once terrain under it settles", () => {
+    // A flight converts its zoom against the ground loaded when it started, so
+    // it can land too close; the landed view is corrected like a placement.
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.flyTo({ center: [10, 20], zoom: 6 });
+    fakes.moveEnd.emit();
+    const landed = engine.getLastAppliedView();
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the landed view is corrected");
+    assert.deepEqual(engine.getLastAppliedView(), landed, "re-applied as the landed view");
+    engine.destroy();
+  });
+
+  it("corrects again after a flight that never moved the camera", () => {
+    // Cesium completes a flight with nowhere to go at once and raises no
+    // moveStart/moveEnd (a zoom in at max zoom, a reset north on a north-up
+    // globe), so the flight's own completion has to end it.
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.zoomIn();
+    (fakes.flights[0] as { complete: () => void }).complete();
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the placement is corrected again");
+    engine.destroy();
+  });
+
+  it("corrects again after a flight stopped before it moved", () => {
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.fitBounds([-125, 25, -70, 50]);
+    engine.stopCamera();
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the placement is corrected again");
+    engine.destroy();
+  });
+
+  it("skips a rectangle fit mid-morph", () => {
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    fakes.setSceneMode(0);
+    engine.fitBounds([-125, 25, -70, 50]);
+    fakes.setSceneMode(3);
+    assert.equal(fakes.flights.length, 0, "no flight mid-morph");
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the placement is still corrected");
+    engine.destroy();
+  });
+
+  it("does not start a point fit mid-morph", () => {
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    fakes.setSceneMode(0);
+    engine.fitBounds([10, 20, 10, 20]);
+    fakes.setSceneMode(3);
+    assert.equal(fakes.flights.length, 0, "no flight mid-morph");
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the placement is still corrected");
+    engine.destroy();
+  });
+
+  it("leaves a moving flight's landing to moveEnd", () => {
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.flyTo({ center: [10, 20], zoom: 6 });
+    fakes.moveStart.emit();
+    (fakes.flights[0] as { complete: () => void }).complete();
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements, "still settling: no correction yet");
+    engine.destroy();
+  });
+
+  it("leaves a flight the user took over to the user", () => {
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.flyTo({ center: [10, 20], zoom: 6 });
+    fakes.fireCanvas("wheel");
+    fakes.moveEnd.emit();
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements, "the user's camera is authoritative");
+    engine.destroy();
+  });
+
+  it("keeps correcting while a layer fit waits for a flight that never starts", () => {
+    // A layer with no bounds in the store hands its fit to the layer sync, which
+    // flies only once the layer's Cesium object loads. Until it does, the
+    // camera is still on its placement and terrain must still correct it.
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.fitLayer({ id: "not-loaded-yet", type: "3d-tiles", source: {}, metadata: {} } as never);
+    assert.equal(fakes.flights.length, 0, "nothing to fly to yet");
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the placement is still corrected");
+    engine.destroy();
+  });
+
+  it("corrects again once a new placement replaces the flight", () => {
+    const fakes = makeViewer(0);
+    const engine = new CesiumEngine(makeCesium(), fakes.viewer);
+    engine.applyView(VIEW);
+    engine.fitBounds([-125, 25, -70, 50]);
+    engine.applyView({ ...VIEW, center: [10, 20] });
+    const placements = fakes.placements;
+    fakes.setGroundHeight(1200);
+    fakes.tileLoadProgressEvent.emit(0);
+    assert.equal(fakes.placements, placements + 1, "the new placement is corrected");
     engine.destroy();
   });
 
