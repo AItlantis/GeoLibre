@@ -147,11 +147,12 @@ public server, so they only open from the menu, after their one-time notice.
 A plugin from the [plugin registry](#manage-plugins) opens from a link by its
 full registry id, for example `?plugin=openrndt-geolibre`. If it is already
 installed it activates like a built-in one. If not, GeoLibre may prompt to
-trust a compatible registry entry, then installs and activates it only when
+trust a compatible registry entry (showing its name, version, author,
+description, and homepage), then installs and activates it only when
 the current deployment plugin policy permits loading. Trust confirmation does
 not bypass policy; a denied plugin will not load or activate. In read-only
-`layout=viewer`, the registry-ID prompt is skipped and registry plugins are
-never installed. This is distinct from project manifest URL trust, which is
+`layout=viewer`, an installed registry plugin still opens, but the prompt is
+skipped and uninstalled ones are never installed. This is distinct from project manifest URL trust, which is
 suppressed by `sideload: false`. Permitted registry entries remain eligible
 with sideload disabled. See [Plugin policy](../deployment-policy.md#plugin-precedence).
 
