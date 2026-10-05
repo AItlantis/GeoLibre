@@ -1529,3 +1529,78 @@ control that trips it fails to mount rather than taking plugin activation down
 with it. A plugin whose control needs those methods should keep the default
 `engines: ["maplibre"]` and, if the globe matters, add a Cesium branch through
 `app.getCesiumScene()`.
+
+## Shared playback, scenarios, view modes, and filters
+
+Plugins that provide playback, scenario selection, view modes, or network
+filters can register those capabilities through `app.registerSharedFeatures`.
+The host exposes the same live capabilities to every plugin through
+`app.sharedFeatures`. The registry stores provider adapters; the owning plugin
+continues to own its actual state, so consumers do not create a second playback
+or scenario store.
+
+Registration is scoped to plugin activation. Keep the returned disposer and
+release it during deactivation. The plugin manager also removes all
+registrations owned by a plugin when activation fails, the plugin is disabled,
+or it is unregistered.
+
+```typescript
+import type { GeoLibrePlugin } from "@geolibre/plugins";
+
+let disposeFeatures: (() => void) | undefined;
+
+export const playbackPlugin: GeoLibrePlugin = {
+  id: "playback-controller",
+  name: "Playback controller",
+  version: "1.0.0",
+  activate(app) {
+    disposeFeatures = app.registerSharedFeatures?.({
+      playback: {
+        getState: () => playbackStore.getState(),
+        setPlaying: playing => playbackStore.setPlaying(playing),
+        restart: () => playbackStore.restart(),
+        seek: tick => playbackStore.seek(tick),
+        setSpeed: speed => playbackStore.setSpeed(speed),
+      },
+      scenario: {
+        getState: () => scenarioStore.getState(),
+        select: (scenarioId, replicationId) => scenarioStore.select(scenarioId, replicationId),
+      },
+    });
+  },
+  deactivate() {
+    disposeFeatures?.();
+    disposeFeatures = undefined;
+  },
+};
+```
+
+Playback providers expose a snapshot with `available`, `playing`, `tick`,
+`maxTick`, `speed`, `dt`, and `loop`. Scenario providers expose the available
+scenario IDs and labels, with optional replications and the selected IDs. A
+provider should call `app.sharedFeatures.notifyChanged()` when its own UI or
+engine changes state outside a registry command.
+
+Consumers read a point-in-time copy with `getSnapshot`, subscribe to updates,
+and issue typed commands. A command resolves with the provider's resulting
+state:
+
+```typescript
+const unsubscribe = app.sharedFeatures?.subscribe(snapshot => {
+  console.log(snapshot.playback?.tick, snapshot.scenario?.selectedScenario);
+});
+const state = await app.sharedFeatures?.seekPlayback(12);
+await app.sharedFeatures?.setPlaybackSpeed(2);
+await app.sharedFeatures?.selectScenario("weekday", "replication-1");
+await app.sharedFeatures?.setViewMode("animation");
+await app.sharedFeatures?.setNetworkFilters({ interval: 4, vehicle_type: "bus" });
+unsubscribe?.();
+```
+
+View-mode snapshots list supported modes and the selected mode. Network-filter
+snapshots contain the provider's current filter map; a provider may define its
+own recognized keys. Measured progress providers expose bounded stage and byte
+counts, omitting unknown totals rather than inventing them. A capability has
+one active provider at a time. Plugins
+may provide different capabilities independently, but registration fails if
+another active plugin already owns any capability in the same contribution.

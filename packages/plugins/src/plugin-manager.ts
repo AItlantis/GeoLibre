@@ -1,4 +1,5 @@
 import { isPluginEngineSupported } from "./types";
+import { sharedFeatureRegistry } from "./shared-features";
 import {
   getAssistantToolOwnerScope,
   unregisterAssistantToolsByOwner,
@@ -134,6 +135,7 @@ export class PluginManager {
       this.active.delete(id);
     }
     unregisterAssistantToolsByOwner(id);
+    sharedFeatureRegistry.removeOwner(id);
     this.plugins.delete(id);
     this.deferredActive.delete(id);
     this.defaultActive.delete(id);
@@ -263,6 +265,7 @@ export class PluginManager {
       activated = plugin.activate(scopedApp);
     } catch (error) {
       unregisterAssistantToolsByOwner(id);
+      sharedFeatureRegistry.removeOwner(id);
       restoreDisplaced();
       throw error;
     } finally {
@@ -270,6 +273,7 @@ export class PluginManager {
     }
     if (activated === false) {
       unregisterAssistantToolsByOwner(id);
+      sharedFeatureRegistry.removeOwner(id);
       restoreDisplaced();
       return false;
     }
@@ -356,6 +360,7 @@ export class PluginManager {
       }
     }
     unregisterAssistantToolsByOwner(id);
+    sharedFeatureRegistry.removeOwner(id);
     this.notify();
     return true;
   }
@@ -374,6 +379,7 @@ export class PluginManager {
       plugin.deactivate(this.scopeAppToPlugin(app, id));
     } finally {
       unregisterAssistantToolsByOwner(id);
+      sharedFeatureRegistry.removeOwner(id);
       this.active.delete(id);
       this.nextActivationGeneration(id);
       this.activationResults.delete(id);
@@ -744,6 +750,7 @@ function scopeAppToPlugin(
   const { onControlAdded, onRightPanelOpened, assistantTools = false, canAddControl } = options;
   const register = app.registerToolbarMenu;
   const registerRightPanel = app.registerRightPanel;
+  const registerSharedFeaturesForPlugin = (app as GeoLibreAppAPI & { registerSharedFeaturesForPlugin?: (owner: string, contribution: import("./shared-features").SharedFeatureContribution, options?: import("./shared-features").SharedFeatureRegistrationOptions) => () => void }).registerSharedFeaturesForPlugin;
   const activatePlugin = app.activatePlugin;
   const deactivatePlugin = app.deactivatePlugin;
   const hasAssistantRegistration = Boolean(
@@ -757,11 +764,15 @@ function scopeAppToPlugin(
     !onRightPanelOpened &&
     !activatePlugin &&
     !deactivatePlugin &&
-    !app.credentials
+    !app.credentials &&
+    !registerSharedFeaturesForPlugin
   )
     return app;
 
   const scoped: GeoLibreAppAPI = { ...app };
+  if (registerSharedFeaturesForPlugin) {
+    scoped.registerSharedFeatures = (contribution, registrationOptions) => registerSharedFeaturesForPlugin(pluginId, contribution, registrationOptions);
+  }
   if (!assistantTools) {
     // Registration is activation-only, so a non-activation scope does not carry
     // it at all rather than handing back the host's unscoped implementation.

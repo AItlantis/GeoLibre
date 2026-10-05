@@ -195,6 +195,7 @@ export interface MapEngine {
   addControl(control: maplibregl.IControl, position?: maplibregl.ControlPosition): boolean;
   removeControl(control: maplibregl.IControl): void;
   setBuiltInControlVisible(control: BuiltInMapControl, visible: boolean): boolean;
+  getBuiltInControlVisible?(control: BuiltInMapControl): boolean;
   getBuiltInControlPosition(control: BuiltInMapControl): maplibregl.ControlPosition;
   setBuiltInControlPosition(
     control: BuiltInMapControl,

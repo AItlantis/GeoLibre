@@ -4,3 +4,6 @@
 *
 !.gitignore
 !README.md
+# First-party Testudo integration, built with the host and covered by its tests.
+!testudo-bridge/
+!testudo-bridge/**
