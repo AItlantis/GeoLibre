@@ -45,6 +45,8 @@ The plugin posts `ready` before receiving a host command. State-change events ar
 
 The plugin validates that `artifactEndpoint` is same-origin with the embedding Testudo page and is scoped to `versionId`. It fetches the root manifest, the native GeoLibre package manifest, and every animation chunk listed by the root manifest through that descriptor endpoint. Chunk paths are checked before use. The native package supplies scenario metadata; the root manifest supplies the measured tick and chunk progress data.
 
+The plugin requests the exact `nativeManifestPath` first. For the known legacy `geolibre/package.json` path only, a descriptor `404` retries `geolibre-package.json` through the same version-scoped endpoint and authorization. Authorization failures, network errors, and other status codes do not trigger the fallback. Both paths remain bound to the same package version.
+
 Authentication follows Testudo's artifact contract:
 
 - Signed-in: the descriptor GET carries `Authorization: Bearer <token>`. The returned signed byte URL is fetched without the Bearer header; its signature authorizes the byte request.
@@ -77,11 +79,11 @@ Every payload also includes the plugin `challenge` shown in `ready`.
 | `testudoRestartPlayback` | none | Stops and returns to tick zero. |
 | `testudoGetProgressState` | none | Measured package chunk and byte progress. |
 | `testudoGetScenarioState` | none | Loaded package scenarios, selected scenario, and replication. |
-| `testudoSelectScenario` | `{scenarioId,replicationId?}` | Selects a scenario declared by the native package manifest. |
+| `testudoSelectScenario` | `{scenarioId,replicationId?}` | Selects a scenario declared by the native package manifest; the selected ID is included as `viewer_context.active_scenario_id` on the next GeoAI request. |
 | `testudoGetGeoAiStatus` | none | Testudo credential configuration; `providerReady` is `null` until the gateway request. |
 | `testudoGetOllayaScenarioStatus` | none | Reports that Testudo's gateway evaluates typed scenario matching per request. |
 | `testudoOpenGeoAiChat` | `{open:boolean}` | Opens or closes the GeoAI panel. |
-| `testudoRequestInvestigation` | `{question}` | Returns `{accepted:true,requestId}` and later emits an investigation event. |
+| `testudoRequestInvestigation` | `{question,activeScenarioId?}` | Sends the question with the exact package/version binding and available map bounds. When GeoLibre has a selected scenario, the host must send the same ID as `activeScenarioId`; stale or missing IDs are rejected. The matching ID is forwarded as `viewer_context.active_scenario_id`. Returns `{accepted:true,requestId}` and later emits an investigation event. |
 
 Playback uses provider arbitration through GeoLibre's shared-feature API. An available package playback provider has priority over route animation; if package playback is unavailable, route animation remains the active fallback. Provider teardown removes only its own registration and restores the remaining provider. Scenario, map-control, view-mode, network-filter, progress, and playback state all use the same shared-feature registry.
 

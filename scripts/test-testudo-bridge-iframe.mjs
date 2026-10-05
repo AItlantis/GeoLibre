@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { chromium } from "playwright";
 
@@ -12,7 +15,12 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    // The exact-path-first compatibility check intentionally receives this 404 before retrying the root manifest.
+    if (message.location().url.includes("/artifact/geolibre/package.json")) return;
+    errors.push(message.text());
+  });
   await page.route("**/geolibre-runtime-config.js", (route) => route.fulfill({
     contentType: "text/javascript",
     body: `window.__GEOLIBRE_DEPLOYMENT_ENV__ = { VITE_GEOLIBRE_EMBED_ORIGINS: ${JSON.stringify(new URL(baseUrl).origin)}, VITE_TESTUDO_BYTE_ORIGINS: "https://bytes.testudo.live" };`,
@@ -56,13 +64,17 @@ try {
   await page.route("**/api/public/demo/geoai-chat", answerChat);
   await page.route("**/api/v1/ai/chat", answerChat);
   const compressedChunk = gzipSync(Buffer.from(JSON.stringify({ events: { "1": [{ event: "spawn", id: 40, state: { WorldX: -0.12, WorldY: 51.5 } }] } })));
-  const packageDocuments = {
+  const retainedArtifactDir = process.env.TESTUDO_LONDON_ARTIFACT_DIR;
+  let nativeManifestPath = "geolibre-package.json";
+  let chunkPath = "chunks/0.json.gz";
+  let integrityVerified = false;
+  let packageDocuments = {
     "manifest.json": {
       schema: "testudo-package",
       metadata: { dt: 1, n_ticks: 12 },
       chunks: [{ index: 0, path: "chunks/0.json.gz", start_tick: 0, end_tick: 12, compressed_size_bytes: compressedChunk.byteLength }],
     },
-    "geolibre/package.json": {
+    "geolibre-package.json": {
       schemaVersion: "geolibre.package.v1",
       capabilities: { animation: { state: "available" }, results: { state: "available" }, paths: { state: "available" } },
       scenarios: [
@@ -72,7 +84,43 @@ try {
     },
     "chunks/0.json.gz": compressedChunk,
   };
-  const descriptorId = { "manifest.json": "manifest", "geolibre/package.json": "native", "chunks/0.json.gz": "chunk" };
+  let artifactBytes = new Map([
+    ["manifest.json", Buffer.from(JSON.stringify(packageDocuments["manifest.json"]))],
+    [nativeManifestPath, Buffer.from(JSON.stringify(packageDocuments["geolibre-package.json"]))],
+    [chunkPath, compressedChunk],
+  ]);
+  if (retainedArtifactDir) {
+    const artifactRoot = resolve(retainedArtifactDir);
+    const sumsText = (await readFile(join(artifactRoot, "SHA256SUMS.json"), "utf8")).replace(/^\uFEFF/, "");
+    const sums = new Map(JSON.parse(sumsText).map((entry) => [entry.path, entry]));
+    const readVerified = async (path) => {
+      const bytes = await readFile(join(artifactRoot, path));
+      const entry = sums.get(path);
+      assert.ok(entry, `SHA256SUMS.json must list ${path}`);
+      assert.equal(bytes.byteLength, entry.bytes, `${path} size must match SHA256SUMS.json`);
+      assert.equal(createHash("sha256").update(bytes).digest("hex").toUpperCase(), entry.sha256.toUpperCase(), `${path} checksum must match SHA256SUMS.json`);
+      return bytes;
+    };
+    const manifestBytes = await readVerified("manifest.json");
+    nativeManifestPath = "geolibre-package.json";
+    const nativeBytes = await readVerified(nativeManifestPath);
+    packageDocuments = {
+      "manifest.json": JSON.parse(manifestBytes.toString("utf8")),
+      "geolibre-package.json": JSON.parse(nativeBytes.toString("utf8")),
+    };
+    assert.equal(packageDocuments["geolibre-package.json"].schemaVersion, "geolibre.package.v1");
+    assert.ok(packageDocuments["geolibre-package.json"].scenarios?.length > 0);
+    assert.ok(packageDocuments["manifest.json"].chunks?.length > 0);
+    chunkPath = packageDocuments["manifest.json"].chunks[0].path;
+    const chunkBytes = await readVerified(chunkPath);
+    artifactBytes = new Map([["manifest.json", manifestBytes], [nativeManifestPath, nativeBytes], [chunkPath, chunkBytes]]);
+    integrityVerified = true;
+  }
+  const packageScenarioIds = packageDocuments["geolibre-package.json"].scenarios.map((scenario) => scenario.scid);
+  const selectedScenarioId = packageScenarioIds[1] ?? packageScenarioIds[0];
+  const staleScenarioId = packageScenarioIds.find((scenarioId) => scenarioId !== selectedScenarioId);
+  const expectedMaxTick = packageDocuments["manifest.json"].metadata.n_ticks;
+  const descriptorId = { "manifest.json": "manifest", [nativeManifestPath]: "native", [chunkPath]: "chunk" };
   await page.route("**/api/v1/view/*/artifact/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -101,7 +149,7 @@ try {
     const url = new URL(request.url());
     byteRequests.push({ path: url.pathname, search: url.search, authorization: request.headers().authorization, origin });
     const id = url.pathname.split("/").at(-1);
-    const body = id === "chunk" ? packageDocuments["chunks/0.json.gz"] : JSON.stringify(packageDocuments[id === "native" ? "geolibre/package.json" : "manifest.json"]);
+    const body = artifactBytes.get(id === "chunk" ? chunkPath : id === "native" ? nativeManifestPath : "manifest.json");
     byteCorsResponses.push({ origin, allowOrigin: origin });
     await route.fulfill({ status: 200, contentType: id === "chunk" ? "application/gzip" : "application/json", headers: {
       "Access-Control-Allow-Origin": origin,
@@ -240,7 +288,7 @@ try {
   assert.equal(guestLoadResult.ok, true, JSON.stringify(guestLoadResult));
   const loadedPlayback = await send("testudoGetPlaybackState");
   assert.equal(loadedPlayback.result.available, true);
-  assert.equal(loadedPlayback.result.maxTick, 12);
+  assert.equal(loadedPlayback.result.maxTick, expectedMaxTick);
   assert.equal((await send("testudoSetPlaybackPlaying", { playing: true })).result.playing, true);
   assert.equal((await send("testudoSetPlaybackSpeed", { speed: 2 })).result.speed, 2);
   assert.equal((await send("testudoSeekPlayback", { tick: 6 })).result.tick, 6);
@@ -249,7 +297,7 @@ try {
   assert.equal(loadedProgress.result.available, true);
   assert.equal(loadedProgress.result.value, 1);
   assert.equal((await send("testudoGetState")).result.capabilities.measuredProgress, true);
-  assert.deepEqual(descriptorRequests.map((request) => request.path), ["manifest.json", "geolibre/package.json", "chunks/0.json.gz"]);
+  assert.deepEqual(descriptorRequests.map((request) => request.path), ["manifest.json", "geolibre/package.json", "geolibre-package.json", chunkPath]);
   assert.equal(descriptorRequests.every((request) => request.authorization === `Testudo-Embed ${guestTokenForPackage}`), true);
   assert.deepEqual(byteRequests.map((request) => request.path), ["/artifact-bytes/manifest", "/artifact-bytes/native", "/artifact-bytes/chunk"]);
   assert.equal(byteRequests.every((request) => request.authorization === `Testudo-Embed ${guestTokenForPackage}` && request.search === ""), true);
@@ -263,26 +311,35 @@ try {
     manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
     artifactEndpoint: "/api/v1/view/32787055-7258-45f0-8593-f8c53e1cc788/artifact/",
   }, transport: { bearerToken: "signed-browser-token-123456" } })).ok, true);
-  assert.deepEqual(descriptorRequests.slice(3).map((request) => request.path), ["manifest.json", "geolibre/package.json", "chunks/0.json.gz"]);
-  assert.equal(descriptorRequests.slice(3).every((request) => request.authorization === "Bearer signed-browser-token-123456"), true);
+  assert.deepEqual(descriptorRequests.slice(4).map((request) => request.path), ["manifest.json", "geolibre/package.json", "geolibre-package.json", chunkPath]);
+  assert.equal(descriptorRequests.slice(4).every((request) => request.authorization === "Bearer signed-browser-token-123456"), true);
   assert.equal(byteRequests.slice(3).every((request) => request.authorization === undefined && request.search === "?token=signed"), true);
   assert.equal(await page.evaluate(() => window.bridge.playbackUpdates.some((update) => update.available === true)), true);
   assert.equal(await page.evaluate(() => window.bridge.progressUpdates.some((update) => update.stage === "ready")), true);
-  assert.equal(await page.evaluate(() => window.bridge.scenarioUpdates.some((update) => update.selectedScenario === 2)), false);
-  assert.equal((await send("testudoSelectScenario", { scenarioId: 2 })).result.selectedScenario, 2);
-  assert.equal(await page.evaluate(() => window.bridge.scenarioUpdates.some((update) => update.selectedScenario === 2)), true);
+  assert.equal(await page.evaluate((id) => window.bridge.scenarioUpdates.some((update) => update.selectedScenario === id), selectedScenarioId), false);
+  assert.equal((await send("testudoSelectScenario", { scenarioId: selectedScenarioId })).result.selectedScenario, selectedScenarioId);
+  assert.equal(await page.evaluate((id) => window.bridge.scenarioUpdates.some((update) => update.selectedScenario === id), selectedScenarioId), true);
+  const missingScenarioRequest = await send("testudoRequestInvestigation", { question: "Compare scenario" });
+  assert.equal(missingScenarioRequest.ok, false);
+  assert.match(missingScenarioRequest.error, /scenario context is missing or stale/i);
+  const staleScenarioRequest = await send("testudoRequestInvestigation", { question: "Compare scenario", activeScenarioId: staleScenarioId });
+  assert.equal(staleScenarioRequest.ok, false);
+  assert.match(staleScenarioRequest.error, /scenario context is missing or stale/i);
   assert.equal((await send("testudoOpenGeoAiChat", { open: true })).result.open, true);
-  assert.equal((await send("testudoRequestInvestigation", { question: "Signed-in package question" })).result.accepted, true);
+  assert.equal((await send("testudoRequestInvestigation", { question: "Signed-in package question", activeScenarioId: selectedScenarioId })).result.accepted, true);
   await page.waitForFunction(() => window.bridge.updates.filter((update) => update.status === "complete").length >= 3, null, { timeout: 15_000 });
   assert.equal(chatRequests[2].url, "/api/v1/ai/chat");
   assert.equal(chatRequests[2].authorization, "Bearer signed-browser-token-123456");
   assert.equal(chatRequests[2].body.package_id, "London/testudo-package-2026-09-24-website-demo-v1");
   assert.equal(chatRequests[2].body.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
   assert.equal(chatRequests[2].body.viewer_context.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
+  assert.equal(chatRequests[2].body.viewer_context.active_scenario_id, selectedScenarioId);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({
     ok: true,
     source: "built dist iframe",
+    authenticArtifactIntegrityVerified: integrityVerified,
+    scenarioId: selectedScenarioId,
     camera: camera.result,
     control: control.result,
     playbackAvailable: loadedPlayback.result.available,

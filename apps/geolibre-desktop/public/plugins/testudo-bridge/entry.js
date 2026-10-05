@@ -311,12 +311,13 @@ function createPackagePlaybackProvider(onChange) {
       }
       return decoded;
     };
-    const readArtifact = async (logicalPath) => {
+    const readArtifact = async (logicalPath, { allowNotFound = false } = {}) => {
       const relative = canonicalPath(logicalPath).split("/").map(encodeURIComponent).join("/");
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const descriptorResponse = await fetch(new URL(relative, endpoint), {
           headers: { Authorization: authorization }, cache: "no-store", credentials: "omit", redirect: "error",
         });
+        if (descriptorResponse.status === 404 && allowNotFound) return null;
         if (!descriptorResponse.ok) throw new Error(`Package permission or artifact lookup failed (${descriptorResponse.status}).`);
         const descriptor = await descriptorResponse.json();
         const byteUrl = new URL(descriptor.url ?? descriptor.signed_url ?? "");
@@ -345,7 +346,11 @@ function createPackagePlaybackProvider(onChange) {
     const rootResult = await readArtifact(bootstrap.manifestPath);
     if (generation !== loadGeneration) return playbackState();
     const legacy = JSON.parse(new TextDecoder().decode(rootResult.bytes));
-    const packageResult = await readArtifact(bootstrap.nativeManifestPath);
+    let packageResult = await readArtifact(bootstrap.nativeManifestPath, { allowNotFound: true });
+    if (!packageResult && bootstrap.nativeManifestPath === "geolibre/package.json") {
+      packageResult = await readArtifact("geolibre-package.json");
+    }
+    if (!packageResult) throw new Error("The GeoLibre package manifest is missing from the Testudo artifact.");
     const packageManifest = JSON.parse(new TextDecoder().decode(packageResult.bytes));
     const declared = Array.isArray(legacy.chunks) ? legacy.chunks : [];
     const chunks = declared.map((chunk) => {
@@ -517,7 +522,7 @@ export const plugin = {
       },
       map: getMapControlState(app),
     });
-    const submitChat = async (question, requestId) => {
+    const submitChat = async (question, requestId, activeScenarioId = app.sharedFeatures?.getSnapshot?.().scenario?.selectedScenario) => {
       if ((!guestCredential || guestCredential.expiresAt <= Date.now()) && !principalCredential) throw new Error("A Testudo signed-in or guest capability is required for GeoAI chat.");
       const timeout = new AbortController();
       const timeoutId = window.setTimeout(() => timeout.abort(new DOMException("GeoAI request timed out.", "TimeoutError")), 90_000);
@@ -528,6 +533,9 @@ export const plugin = {
           map: { available: Boolean(app.getMap?.()) },
           ...(packageBinding?.packageId ? { package_id: packageBinding.packageId } : {}),
           ...(packageBinding?.packageVersionId ? { package_version_id: packageBinding.packageVersionId } : {}),
+          ...(typeof activeScenarioId === "string" && activeScenarioId.length > 0 && activeScenarioId.length <= 128 || Number.isSafeInteger(activeScenarioId)
+            ? { active_scenario_id: activeScenarioId }
+            : {}),
           ...(bounds && bounds.length === 4 && bounds.every(Number.isFinite) ? { camera_bounds: bounds } : {}),
         };
         const previous = chatTurns.slice(-10).filter((turn) => turn.role === "user" || turn.role === "assistant");
@@ -646,10 +654,16 @@ export const plugin = {
         if (request.type === "testudoRequestInvestigation") {
           const question = request.payload?.question;
           if (typeof question !== "string" || !question.trim() || question.length > 4000) throw new Error("Question must contain 1 to 4000 characters.");
+          const selectedScenarioId = sharedSnapshot().scenario?.selectedScenario;
+          const requestedScenarioId = request.payload?.activeScenarioId;
+          if ((selectedScenarioId !== undefined && requestedScenarioId !== selectedScenarioId) ||
+              (requestedScenarioId !== undefined && selectedScenarioId === undefined)) {
+            throw new Error("Active scenario context is missing or stale.");
+          }
           if ((!guestCredential || guestCredential.expiresAt <= Date.now()) && !principalCredential) throw new Error("A Testudo signed-in or guest capability is required for GeoAI chat.");
           const requestId = request.requestId;
           ack(true, { requestId, accepted: true });
-          void submitChat(question, requestId).catch(() => undefined);
+          void submitChat(question, requestId, selectedScenarioId).catch(() => undefined);
           return;
         }
         if (request.type === "testudoGetState") return ack(true, state());

@@ -45,7 +45,7 @@ test("Testudo package command loads native package metadata and manifest-listed 
       metadata: { dt: 0.8, n_ticks: 12, trajectory_encoding: "events_v1" },
       chunks: [{ index: 0, path: "chunks/0.json.gz", start_tick: 0, end_tick: 12, compressed_size_bytes: chunkBytes.byteLength }],
     }],
-    ["geolibre/package.json", {
+    ["geolibre-package.json", {
       schemaVersion: "geolibre.package.v1",
       capabilities: { animation: { state: "available" } },
       scenarios: [
@@ -55,6 +55,7 @@ test("Testudo package command loads native package metadata and manifest-listed 
     }],
   ]);
   const requests: string[] = [];
+  let nestedManifestStatus: number | undefined;
   globalThis.fetch = (async (input: any, init?: any) => {
     const url = String(input);
     requests.push(url);
@@ -65,14 +66,16 @@ test("Testudo package command loads native package metadata and manifest-listed 
       const path = url.slice("https://testudo.test/api/v1/view/fixture-v1/artifact/".length);
       const descriptorUrls: Record<string, string> = {
         "manifest.json": "https://bytes.testudo.live/artifact-bytes/manifest",
-        "geolibre/package.json": "https://bytes.testudo.live/artifact-bytes/native",
+        "geolibre-package.json": "https://bytes.testudo.live/artifact-bytes/native",
         "chunks/0.json.gz": "https://bytes.testudo.live/artifact-bytes/chunk",
       };
+      if (path === "geolibre/package.json" && nestedManifestStatus) return new Response("not found", { status: nestedManifestStatus });
+      if (!descriptorUrls[path]) return new Response("not found", { status: 404 });
       return Response.json({ url: descriptorUrls[path], expires_at: Math.floor(Date.now() / 1000) + 60 });
     }
     if (url.startsWith("https://bytes.testudo.live/")) assert.equal(new Headers(init?.headers).get("Authorization"), null);
     if (url === "https://bytes.testudo.live/artifact-bytes/manifest") return new Response(JSON.stringify(assets.get("manifest.json")), { status: 200 });
-    if (url === "https://bytes.testudo.live/artifact-bytes/native") return new Response(JSON.stringify(assets.get("geolibre/package.json")), { status: 200 });
+    if (url === "https://bytes.testudo.live/artifact-bytes/native") return new Response(JSON.stringify(assets.get("geolibre-package.json")), { status: 200 });
     if (url === "https://bytes.testudo.live/artifact-bytes/chunk") return new Response(chunkBytes, { status: 200 });
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
@@ -109,6 +112,7 @@ test("Testudo package command loads native package metadata and manifest-listed 
       "https://testudo.test/api/v1/view/fixture-v1/artifact/manifest.json",
       "https://bytes.testudo.live/artifact-bytes/manifest",
       "https://testudo.test/api/v1/view/fixture-v1/artifact/geolibre/package.json",
+      "https://testudo.test/api/v1/view/fixture-v1/artifact/geolibre-package.json",
       "https://bytes.testudo.live/artifact-bytes/native",
       "https://testudo.test/api/v1/view/fixture-v1/artifact/chunks/0.json.gz",
       "https://bytes.testudo.live/artifact-bytes/chunk",
@@ -142,6 +146,20 @@ test("Testudo package command loads native package metadata and manifest-listed 
     assert.equal(outbound.some((message) => message.type === "testudoProgressChanged" && message.payload.stage === "ready"), true);
     assert.equal(outbound.some((message) => message.type === "testudoPlaybackChanged" && message.payload.available === true), true);
     assert.equal(outbound.some((message) => message.type === "testudoScenarioChanged" && message.payload.selectedScenario === 2), true);
+
+    nestedManifestStatus = 403;
+    const requestStart = requests.length;
+    const deniedLegacyFallback = await send("testudoLoadPackage", {
+      bootstrap: { packageId: "london-demo", versionId: "fixture-v1", manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json", artifactEndpoint: "/api/v1/view/fixture-v1/artifact/" },
+      transport: { bearerToken: "signed-test-token-123456" },
+    });
+    assert.equal(deniedLegacyFallback.payload.ok, false);
+    assert.match(deniedLegacyFallback.payload.error, /lookup failed \(403\)/);
+    assert.deepEqual(requests.slice(requestStart), [
+      "https://testudo.test/api/v1/view/fixture-v1/artifact/manifest.json",
+      "https://bytes.testudo.live/artifact-bytes/manifest",
+      "https://testudo.test/api/v1/view/fixture-v1/artifact/geolibre/package.json",
+    ]);
   } finally {
     plugin.deactivate({} as any);
     globalThis.fetch = savedFetch;
