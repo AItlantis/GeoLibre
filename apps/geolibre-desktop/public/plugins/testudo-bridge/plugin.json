@@ -1,0 +1,9 @@
+{
+  "id": "testudo-bridge",
+  "name": "Testudo iframe bridge",
+  "version": "0.1.0",
+  "entry": "entry.js",
+  "description": "Challenge-scoped Testudo iframe bridge for map controls, package capabilities, and Testudo-hosted GeoAI chat.",
+  "engines": ["maplibre"],
+  "activeByDefault": true
+}

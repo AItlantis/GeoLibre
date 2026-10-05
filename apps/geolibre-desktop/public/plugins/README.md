@@ -37,8 +37,8 @@ Discovery happens at **build time**, so a dev server or production build must be
 
 ## Private plugins
 
-The bundles are **git-ignored** (see `.gitignore`) so private plugin code stays
-out of this repo's history. Copy the plugin folder in at build/deploy time (for
-example, in CI before `npm run build`, or with a plugin repo's own install
-script). The discovery code is generic and committed; only the plugin payload
-is excluded.
+Third-party/private bundles are **git-ignored** (see `.gitignore`) so private
+plugin code stays out of this repo's history. Copy those plugin folders in at
+build/deploy time (for example, in CI before `npm run build`, or with a plugin
+repo's own install script). First-party integrations such as `testudo-bridge`
+are committed and tested with the host.
