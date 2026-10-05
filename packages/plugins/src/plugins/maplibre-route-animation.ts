@@ -2,6 +2,7 @@ import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
 import type { Feature, LineString, Point } from "geojson";
 import type { Layer } from "@deck.gl/core";
 import type { GeoLibreAppAPI, GeoLibreDeckGL, GeoLibrePlugin } from "../types";
+import type { PlaybackProvider } from "../shared-features";
 import { getStyleMap } from "./style-map";
 import { colorToRgba } from "./deck-style-utils";
 import { ensureSharedDeckOverlay, setSharedDeckLayers } from "./shared-deck-overlay";
@@ -841,6 +842,50 @@ export function subscribeRouteAnimation(listener: () => void): () => void {
   return () => stateListeners.delete(listener);
 }
 
+/** Adapt the native route animation controls to the plugin shared-feature API. */
+export function createRouteAnimationPlaybackProvider(): PlaybackProvider {
+  const read = () => ({
+    available: engine !== null && routeCoords.length >= 2,
+    playing: settings.playing,
+    tick: Math.round(settings.progress * 1000),
+    maxTick: 1000,
+    // Route animation is configured in meters per second. The shared API uses
+    // a unitless playback factor relative to its 60 m/s default.
+    speed: settings.speedMps / 60,
+    dt: 0.001,
+    loop: settings.loop,
+  });
+  return {
+    getState: read,
+    subscribe: listener => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let lastNotified = 0;
+      const notify = () => {
+        const elapsed = Date.now() - lastNotified;
+        if (elapsed >= 250) {
+          lastNotified = Date.now();
+          listener();
+        } else if (timer === null) {
+          timer = setTimeout(() => {
+            timer = null;
+            lastNotified = Date.now();
+            listener();
+          }, 250 - elapsed);
+        }
+      };
+      const unsubscribe = subscribeRouteAnimation(notify);
+      return () => {
+        unsubscribe();
+        if (timer !== null) clearTimeout(timer);
+      };
+    },
+    setPlaying: playing => { setRouteAnimationSettings({ playing }); },
+    restart: () => { setRouteAnimationSettings({ playing: false, progress: 0 }); },
+    seek: tick => { setRouteAnimationProgress(tick / 1000); },
+    setSpeed: speed => { setRouteAnimationSettings({ speedMps: speed * 60 }); },
+  };
+}
+
 /**
  * Apply a partial settings change: normalize, push to the engine, and notify
  * subscribers. Returns true when something actually changed.
@@ -1308,7 +1353,12 @@ export const maplibreRouteAnimationPlugin: GeoLibrePlugin = {
   // Mapbox map; the video export captures whichever canvas hosts the map.
   engines: ["maplibre", "mapbox"],
   activeByDefault: false,
-  activate: (app: GeoLibreAppAPI) => openRouteAnimationPanel(app),
+  activate: (app: GeoLibreAppAPI) => {
+    openRouteAnimationPanel(app);
+    // The route animation plugin owns the live playback controls, so it is the
+    // provider registered for Testudo and other plugin clients while active.
+    app.registerSharedFeatures?.({ playback: createRouteAnimationPlaybackProvider() });
+  },
   deactivate: (app: GeoLibreAppAPI) => closeRouteAnimationPanel(app),
   // Persist the panel-open flag plus settings so a saved project reopens on the
   // same layer. Nothing is stored while closed and at defaults. `playing` is

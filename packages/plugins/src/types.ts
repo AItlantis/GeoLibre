@@ -18,7 +18,7 @@ import type { Feature, FeatureCollection, Geometry } from "geojson";
 import type { IControl, Map as MapLibreMap } from "maplibre-gl";
 import type { OvertureTheme } from "maplibre-gl-overture-maps";
 import type { TemporalLayerAdapter } from "./plugins/temporal-layers";
-import type { SharedFeatureApi, SharedFeatureContribution } from "./shared-features";
+import type { SharedFeatureApi, SharedFeatureContribution, SharedFeatureRegistrationOptions } from "./shared-features";
 import type { GeoLibreToolbarLabel } from "./toolbar-menu-label";
 
 export type GeoLibreMapControlPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -449,7 +449,7 @@ export interface GeoLibreAppAPI {
   /** Live shared controls; providers own their state and register through the lifecycle-scoped method below. */
   sharedFeatures?: SharedFeatureApi;
   /** Register live feature adapters for this plugin. PluginManager binds ownership and the returned disposer removes them. */
-  registerSharedFeatures?: (contribution: SharedFeatureContribution) => () => void;
+  registerSharedFeatures?: (contribution: SharedFeatureContribution, options?: SharedFeatureRegistrationOptions) => () => void;
   /** Register an SDK Tool. The host scopes ownership to the calling plugin.
    * Returns a disposer; the host also removes tools on plugin deactivation.
    */

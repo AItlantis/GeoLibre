@@ -55,14 +55,73 @@ test("shared feature commands read and mutate provider-owned playback and scenar
   assert.deepEqual(registry.getSnapshot(), {});
 });
 
-test("shared feature registry rejects duplicate live providers and enforces playback bounds", async () => {
+test("map controls, view modes, and filters share stable provider command seams", async () => {
   const registry = new SharedFeatureRegistry();
-  const playback = { getState: () => ({ available: true, playing: false, tick: 0, maxTick: 2, speed: 1, dt: 1, loop: true }) };
-  registry.register("first", { playback });
-  assert.throws(() => registry.register("second", { playback }), /already provided/);
+  let controlVisible = false;
+  let viewMode = "animation";
+  let filters: Record<string, string | number | boolean | null> = {};
+  const release = registry.register("map-plugin", {
+    mapControls: {
+      getState: () => ({ available: true, renderer: "maplibre", controls: { navigation: controlVisible } }),
+      setControl: (_control, visible) => { controlVisible = visible; },
+    },
+    viewMode: {
+      getState: () => ({ available: true, modes: ["animation", "flow"], selectedMode: viewMode }),
+      setMode: mode => { viewMode = mode; },
+    },
+    networkFilters: {
+      getState: () => ({ available: true, filters }),
+      setFilters: value => { filters = value; },
+    },
+  });
+
+  assert.equal((await registry.setMapControl("navigation", true)).controls.navigation, true);
+  assert.equal((await registry.setViewMode("flow")).selectedMode, "flow");
+  assert.deepEqual((await registry.setNetworkFilters({ scenario: 2 })).filters, { scenario: 2 });
+  await assert.rejects(registry.setMapControl("bad control", true), /invalid/i);
+
+  release();
+  assert.deepEqual(registry.getSnapshot(), {});
+});
+
+test("shared feature arbitration prefers available higher-priority providers and restores fallback after cleanup", async () => {
+  const registry = new SharedFeatureRegistry();
+  let packageAvailable = false;
+  const routePlayback = { getState: () => ({ available: true, playing: false, tick: 2, maxTick: 2, speed: 1, dt: 1, loop: true }) };
+  const packagePlayback = {
+    getState: () => ({ available: packageAvailable, playing: false, tick: 0, maxTick: 8, speed: 1, dt: 0.8, loop: true }),
+    subscribe: (listener: () => void) => { packageChanged = listener; return () => { packageChanged = undefined; }; },
+  };
+  let packageChanged: (() => void) | undefined;
+  const releaseRoute = registry.register("route-animation", { playback: routePlayback });
+  const releasePackage = registry.register("testudo-package", { playback: packagePlayback }, { priority: 100 });
+  assert.equal(registry.getSnapshot().playback?.tick, 2);
+  packageAvailable = true;
+  packageChanged?.();
+  assert.equal(registry.getSnapshot().playback?.tick, 0);
   await assert.rejects(registry.seekPlayback(-1), /non-negative/);
   await assert.rejects(registry.setPlaybackSpeed(21), /between 0.25 and 20/);
-  registry.removeOwner("first");
+  releasePackage();
+  assert.equal(registry.getSnapshot().playback?.tick, 2);
+  releaseRoute();
+  assert.equal(registry.getSnapshot().playback, undefined);
+});
+
+test("provider activation order cannot hide the route fallback or let one disposer remove another", () => {
+  const registry = new SharedFeatureRegistry();
+  let packageAvailable = false;
+  const releasePackage = registry.register("testudo-package", {
+    playback: { getState: () => ({ available: packageAvailable, playing: false, tick: 0, maxTick: 8, speed: 1, dt: 1, loop: true }) },
+  }, { priority: 100 });
+  const releaseRoute = registry.register("route-animation", {
+    playback: { getState: () => ({ available: true, playing: false, tick: 7, maxTick: 1000, speed: 1, dt: 0.001, loop: true }) },
+  });
+  assert.equal(registry.getSnapshot().playback?.tick, 7);
+  packageAvailable = true;
+  assert.equal(registry.getSnapshot().playback?.tick, 0);
+  releaseRoute();
+  assert.equal(registry.getSnapshot().playback?.tick, 0);
+  releasePackage();
   assert.equal(registry.getSnapshot().playback, undefined);
 });
 
@@ -83,5 +142,30 @@ test("different plugins can contribute separate capabilities and clean up by own
   releasePlayback(); // A stale disposer must not remove another owner's capability.
   assert.equal(registry.getSnapshot().scenario?.selectedScenario, "base");
   registry.removeOwner("scenario-plugin");
+  assert.deepEqual(registry.getSnapshot(), {});
+});
+
+test("observable playback providers publish state changes and unsubscribe with their owner", () => {
+  const registry = new SharedFeatureRegistry();
+  let playing = false;
+  let changed: (() => void) | undefined;
+  let providerUnsubscribed = false;
+  const release = registry.register("observable-playback", {
+    playback: {
+      getState: () => ({ available: true, playing, tick: 0, maxTick: 1, speed: 1, dt: 1, loop: false }),
+      subscribe: listener => { changed = listener; return () => { providerUnsubscribed = true; }; },
+    },
+  });
+  const states: boolean[] = [];
+  registry.subscribe(snapshot => states.push(snapshot.playback?.playing ?? false));
+
+  playing = true;
+  changed?.();
+  assert.deepEqual(states, [true]);
+  release();
+  assert.equal(providerUnsubscribed, true);
+  playing = false;
+  changed?.();
+  assert.deepEqual(states, [true, false, false]); // Registry removal emits the final empty snapshot.
   assert.deepEqual(registry.getSnapshot(), {});
 });

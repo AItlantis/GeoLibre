@@ -1061,11 +1061,11 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
   const api = {
     sharedFeatures: sharedFeatureRegistry,
     getEmbedAllowedOrigins: () => readEmbedOrigins().filter((origin) => origin !== "*"),
-    registerSharedFeatures: (_contribution: import("@geolibre/plugins").SharedFeatureContribution) => {
+    registerSharedFeatures: (_contribution: import("@geolibre/plugins").SharedFeatureContribution, _options?: import("@geolibre/plugins").SharedFeatureRegistrationOptions) => {
       throw new Error("Shared feature providers must register through a PluginManager activation scope.");
     },
-    registerSharedFeaturesForPlugin: (owner: string, contribution: import("@geolibre/plugins").SharedFeatureContribution) =>
-      sharedFeatureRegistry.register(owner, contribution),
+    registerSharedFeaturesForPlugin: (owner: string, contribution: import("@geolibre/plugins").SharedFeatureContribution, options?: import("@geolibre/plugins").SharedFeatureRegistrationOptions) =>
+      sharedFeatureRegistry.register(owner, contribution, options),
     setBasemap: (url: string) => {
       const state = useAppStore.getState();
       if (state.primaryRenderer === "mapbox") {

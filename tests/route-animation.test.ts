@@ -11,6 +11,7 @@ import {
   ROUTE_FOLLOW_ZOOM_MIN,
   ROUTE_VIDEO_MIME_CANDIDATES,
   advanceRouteProgress,
+  createRouteAnimationPlaybackProvider,
   getRouteAnimationDurationSeconds,
   getRouteAnimationSettings,
   isRouteAnimationPanelVisible,
@@ -362,6 +363,27 @@ describe("sliceRouteAtDistance", () => {
 });
 
 describe("route-animation store", () => {
+  it("adapts the live route controls to shared playback commands", () => {
+    resetStore();
+    const playback = createRouteAnimationPlaybackProvider();
+    setRouteAnimationSettings({ speedMps: 120, loop: true });
+    setRouteAnimationProgress(0.25);
+
+    assert.deepEqual(playback.getState(), {
+      available: false, playing: false, tick: 250, maxTick: 1000,
+      speed: 2, dt: 0.001, loop: true,
+    });
+    playback.setPlaying?.(true);
+    assert.equal(playback.getState().playing, true);
+    playback.seek?.(500);
+    assert.equal(playback.getState().tick, 500);
+    playback.setSpeed?.(2.5);
+    assert.equal(getRouteAnimationSettings().speedMps, 150);
+    playback.restart?.();
+    assert.equal(playback.getState().tick, 0);
+    assert.equal(playback.getState().playing, false);
+  });
+
   it("toggles play and scrubs progress", () => {
     resetStore();
     assert.equal(getRouteAnimationSettings().playing, false);

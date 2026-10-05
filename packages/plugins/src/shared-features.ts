@@ -29,6 +29,12 @@ export interface NetworkFilterSnapshot {
   filters: Record<string, string | number | boolean | null>;
 }
 
+export interface MapControlSnapshot {
+  available: boolean;
+  renderer: string;
+  controls: Record<string, boolean>;
+}
+
 export interface MeasuredProgressSnapshot {
   available: boolean;
   stage?: string;
@@ -41,6 +47,7 @@ export interface MeasuredProgressSnapshot {
 
 export interface PlaybackProvider {
   getState(): PlaybackSnapshot;
+  subscribe?(listener: () => void): () => void;
   setPlaying?(playing: boolean): void | Promise<void>;
   restart?(): void | Promise<void>;
   seek?(tick: number): void | Promise<void>;
@@ -62,6 +69,11 @@ export interface NetworkFilterProvider {
   setFilters?(filters: Record<string, string | number | boolean | null>): void | Promise<void>;
 }
 
+export interface MapControlProvider {
+  getState(): MapControlSnapshot;
+  setControl?(control: string, visible: boolean): void | Promise<void>;
+}
+
 export interface MeasuredProgressProvider {
   getState(): MeasuredProgressSnapshot;
 }
@@ -71,6 +83,7 @@ export interface SharedFeatureContribution {
   scenario?: ScenarioProvider;
   viewMode?: ViewModeProvider;
   networkFilters?: NetworkFilterProvider;
+  mapControls?: MapControlProvider;
   progress?: MeasuredProgressProvider;
 }
 
@@ -79,6 +92,7 @@ export interface SharedFeatureSnapshot {
   scenario?: ScenarioSnapshot;
   viewMode?: ViewModeSnapshot;
   networkFilters?: NetworkFilterSnapshot;
+  mapControls?: MapControlSnapshot;
   progress?: MeasuredProgressSnapshot;
 }
 
@@ -95,56 +109,92 @@ export interface SharedFeatureApi {
   selectScenario(scenarioId: ScenarioId, replicationId?: string | number): Promise<ScenarioSnapshot>;
   setViewMode(mode: string): Promise<ViewModeSnapshot>;
   setNetworkFilters(filters: Record<string, string | number | boolean | null>): Promise<NetworkFilterSnapshot>;
+  setMapControl(control: string, visible: boolean): Promise<MapControlSnapshot>;
 }
 
 type FeatureKey = keyof SharedFeatureContribution;
+type ProviderEntry = { owner: string; provider: NonNullable<SharedFeatureContribution[FeatureKey]>; priority: number; order: number };
+
+export interface SharedFeatureRegistrationOptions { priority?: number }
 
 /** Host side of SharedFeatureApi; PluginManager binds registrations to the active plugin owner. */
 export class SharedFeatureRegistry implements SharedFeatureApi {
-  private providers = new Map<FeatureKey, { owner: string; provider: SharedFeatureContribution[FeatureKey] }>();
+  private providers = new Map<FeatureKey, ProviderEntry[]>();
+  private providerSubscriptions = new Map<ProviderEntry, () => void>();
   private listeners = new Set<(snapshot: SharedFeatureSnapshot) => void>();
+  private registrationOrder = 0;
 
-  register(owner: string, contribution: SharedFeatureContribution): () => void {
+  register(owner: string, contribution: SharedFeatureContribution, options: SharedFeatureRegistrationOptions = {}): () => void {
     if (!owner) throw new Error("Shared feature providers require an owning plugin id.");
+    const priority = options.priority ?? 0;
+    if (!Number.isFinite(priority)) throw new Error("Shared feature provider priority must be finite.");
     const keys = (Object.keys(contribution) as FeatureKey[]).filter(key => contribution[key] !== undefined);
     if (keys.length === 0) throw new Error("A shared feature contribution must provide at least one capability.");
-    const conflict = keys.find(key => this.providers.has(key));
-    if (conflict) throw new Error(`Shared feature '${conflict}' is already provided by '${this.providers.get(conflict)!.owner}'.`);
-    for (const key of keys) this.providers.set(key, { owner, provider: contribution[key] });
+    const entries: Array<{ key: FeatureKey; entry: ProviderEntry }> = [];
+    for (const key of keys) {
+      const provider = contribution[key];
+      const entry: ProviderEntry = { owner, provider: provider as ProviderEntry["provider"], priority, order: ++this.registrationOrder };
+      const stack = this.providers.get(key) ?? [];
+      stack.push(entry);
+      this.providers.set(key, stack);
+      entries.push({ key, entry });
+      const observable = provider as { subscribe?: (listener: () => void) => () => void } | undefined;
+      if (observable?.subscribe) {
+        this.providerSubscriptions.set(entry, observable.subscribe(() => this.notify()));
+      }
+    }
     this.notify();
     let active = true;
     return () => {
       if (!active) return;
       active = false;
-      for (const key of keys) if (this.providers.get(key)?.owner === owner) this.providers.delete(key);
+      for (const { key, entry } of entries) {
+        this.providerSubscriptions.get(entry)?.();
+        this.providerSubscriptions.delete(entry);
+        const remaining = (this.providers.get(key) ?? []).filter(candidate => candidate !== entry);
+        if (remaining.length) this.providers.set(key, remaining);
+        else this.providers.delete(key);
+      }
       this.notify();
     };
   }
 
   removeOwner(owner: string): void {
     let changed = false;
-    for (const [key, entry] of this.providers) {
-      if (entry.owner === owner) { this.providers.delete(key); changed = true; }
+    for (const [key, stack] of this.providers) {
+      const removed = stack.filter(entry => entry.owner === owner);
+      if (!removed.length) continue;
+      changed = true;
+      for (const entry of removed) {
+        this.providerSubscriptions.get(entry)?.();
+        this.providerSubscriptions.delete(entry);
+      }
+      const remaining = stack.filter(entry => entry.owner !== owner);
+      if (remaining.length) this.providers.set(key, remaining);
+      else this.providers.delete(key);
     }
     if (changed) this.notify();
   }
 
   getSnapshot(): SharedFeatureSnapshot {
-    const playbackProvider = this.providers.get("playback")?.provider as PlaybackProvider | undefined;
-    const scenarioProvider = this.providers.get("scenario")?.provider as ScenarioProvider | undefined;
-    const viewModeProvider = this.providers.get("viewMode")?.provider as ViewModeProvider | undefined;
-    const networkFilterProvider = this.providers.get("networkFilters")?.provider as NetworkFilterProvider | undefined;
-    const progressProvider = this.providers.get("progress")?.provider as MeasuredProgressProvider | undefined;
+    const playbackProvider = this.getProvider("playback") as PlaybackProvider | undefined;
+    const scenarioProvider = this.getProvider("scenario") as ScenarioProvider | undefined;
+    const viewModeProvider = this.getProvider("viewMode") as ViewModeProvider | undefined;
+    const networkFilterProvider = this.getProvider("networkFilters") as NetworkFilterProvider | undefined;
+    const mapControlProvider = this.getProvider("mapControls") as MapControlProvider | undefined;
+    const progressProvider = this.getProvider("progress") as MeasuredProgressProvider | undefined;
     const playback = playbackProvider?.getState();
     const scenario = scenarioProvider?.getState();
     const viewMode = viewModeProvider?.getState();
     const networkFilters = networkFilterProvider?.getState();
+    const mapControls = mapControlProvider?.getState();
     const progress = progressProvider?.getState();
     return {
       ...(playback ? { playback: structuredClone(playback) } : {}),
       ...(scenario ? { scenario: structuredClone(scenario) } : {}),
       ...(viewMode ? { viewMode: structuredClone(viewMode) } : {}),
       ...(networkFilters ? { networkFilters: structuredClone(networkFilters) } : {}),
+      ...(mapControls ? { mapControls: structuredClone(mapControls) } : {}),
       ...(progress ? { progress: compactProgress(progress) } : {}),
     };
   }
@@ -208,10 +258,28 @@ export class SharedFeatureRegistry implements SharedFeatureApi {
     return this.require("networkFilters").getState();
   }
 
+  async setMapControl(control: string, visible: boolean): Promise<MapControlSnapshot> {
+    if (!/^[a-z0-9-]{1,64}$/i.test(control) || typeof visible !== "boolean") throw new Error("Map control command is invalid.");
+    const provider = this.require("mapControls");
+    if (!provider.setControl) throw new Error("The active map-control provider does not support visibility changes.");
+    await provider.setControl(control, visible);
+    this.notify();
+    return this.require("mapControls").getState();
+  }
+
   private require<K extends FeatureKey>(key: K): NonNullable<SharedFeatureContribution[K]> {
-    const provider = this.providers.get(key)?.provider;
+    const provider = this.getProvider(key);
     if (!provider) throw new Error(`No plugin currently provides the shared '${key}' capability.`);
     return provider as NonNullable<SharedFeatureContribution[K]>;
+  }
+  private getProvider<K extends FeatureKey>(key: K): SharedFeatureContribution[K] {
+    const stack = this.providers.get(key) ?? [];
+    const ordered = [...stack].sort((a, b) => b.priority - a.priority || b.order - a.order);
+    const available = ordered.find(entry => {
+      const state = (entry.provider as { getState?: () => { available?: unknown } }).getState?.();
+      return state?.available === true;
+    });
+    return (available ?? ordered[0])?.provider as SharedFeatureContribution[K];
   }
   private notify(): void {
     const snapshot = this.getSnapshot();

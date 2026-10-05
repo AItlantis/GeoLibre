@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { gzipSync } from "node:zlib";
 import { chromium } from "playwright";
 
 const baseUrl = process.env.TESTUDO_IFRAME_BASE_URL ?? "http://127.0.0.1:4173";
@@ -14,9 +15,13 @@ try {
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.route("**/geolibre-runtime-config.js", (route) => route.fulfill({
     contentType: "text/javascript",
-    body: `window.__GEOLIBRE_DEPLOYMENT_ENV__ = { VITE_GEOLIBRE_EMBED_ORIGINS: ${JSON.stringify(new URL(baseUrl).origin)} };`,
+    body: `window.__GEOLIBRE_DEPLOYMENT_ENV__ = { VITE_GEOLIBRE_EMBED_ORIGINS: ${JSON.stringify(new URL(baseUrl).origin)}, VITE_TESTUDO_BYTE_ORIGINS: "https://bytes.testudo.live" };`,
   }));
   const chatRequests = [];
+  const descriptorRequests = [];
+  const byteRequests = [];
+  const bytePreflights = [];
+  const byteCorsResponses = [];
   const answerChat = async (route) => {
     chatRequests.push({
       url: new URL(route.request().url()).pathname,
@@ -50,19 +55,86 @@ try {
   };
   await page.route("**/api/public/demo/geoai-chat", answerChat);
   await page.route("**/api/v1/ai/chat", answerChat);
+  const compressedChunk = gzipSync(Buffer.from(JSON.stringify({ events: { "1": [{ event: "spawn", id: 40, state: { WorldX: -0.12, WorldY: 51.5 } }] } })));
+  const packageDocuments = {
+    "manifest.json": {
+      schema: "testudo-package",
+      metadata: { dt: 1, n_ticks: 12 },
+      chunks: [{ index: 0, path: "chunks/0.json.gz", start_tick: 0, end_tick: 12, compressed_size_bytes: compressedChunk.byteLength }],
+    },
+    "geolibre/package.json": {
+      schemaVersion: "geolibre.package.v1",
+      capabilities: { animation: { state: "available" }, results: { state: "available" }, paths: { state: "available" } },
+      scenarios: [
+        { scid: 1, name: "Baseline", replications: [{ did: 11 }] },
+        { scid: 2, name: "Roadworks North", replications: [{ did: 22 }] },
+      ],
+    },
+    "chunks/0.json.gz": compressedChunk,
+  };
+  const descriptorId = { "manifest.json": "manifest", "geolibre/package.json": "native", "chunks/0.json.gz": "chunk" };
+  await page.route("**/api/v1/view/*/artifact/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = decodeURIComponent(url.pathname.split("/artifact/")[1]);
+    descriptorRequests.push({ path, authorization: request.headers().authorization, origin: request.headers().origin });
+    const id = descriptorId[path];
+    if (!id) return route.fulfill({ status: 404, body: "missing" });
+    const signed = !request.headers().authorization?.startsWith("Testudo-Embed ");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ url: `https://bytes.testudo.live/artifact-bytes/${id}${signed ? "?token=signed" : ""}`, expires_at: Math.floor(Date.now() / 1000) + 60 }),
+    });
+  });
+  await page.route("https://bytes.testudo.live/artifact-bytes/**", async (route) => {
+    const request = route.request();
+    const origin = request.headers().origin;
+    if (request.method() === "OPTIONS") {
+      bytePreflights.push({ origin, requestHeaders: request.headers()["access-control-request-headers"] });
+      return route.fulfill({ status: 204, headers: {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "authorization",
+        "Access-Control-Max-Age": "600",
+      } });
+    }
+    const url = new URL(request.url());
+    byteRequests.push({ path: url.pathname, search: url.search, authorization: request.headers().authorization, origin });
+    const id = url.pathname.split("/").at(-1);
+    const body = id === "chunk" ? packageDocuments["chunks/0.json.gz"] : JSON.stringify(packageDocuments[id === "native" ? "geolibre/package.json" : "manifest.json"]);
+    byteCorsResponses.push({ origin, allowOrigin: origin });
+    await route.fulfill({ status: 200, contentType: id === "chunk" ? "application/gzip" : "application/json", headers: {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Expose-Headers": "Content-Length",
+      "Content-Length": String(Buffer.byteLength(body)),
+      "Cache-Control": "private, no-store",
+    }, body });
+  });
   await page.addInitScript((origin) => {
-    window.__GEOLIBRE_DEPLOYMENT_ENV__ = { VITE_GEOLIBRE_EMBED_ORIGINS: origin };
+    window.__GEOLIBRE_DEPLOYMENT_ENV__ = { VITE_GEOLIBRE_EMBED_ORIGINS: origin, VITE_TESTUDO_BYTE_ORIGINS: "https://bytes.testudo.live" };
   }, new URL(baseUrl).origin);
   await page.route("**/testudo-harness", (route) => route.fulfill({
     contentType: "text/html",
     body: `<!doctype html><meta charset="utf-8"><title>Testudo plugin iframe smoke</title>
       <iframe id="viewer" src="/"></iframe>
       <script>
-        window.bridge = { challenge: null, pending: new Map(), nextId: 1, updates: [] };
+        window.bridge = { pluginChallenge: null, coreChallenge: null, pending: new Map(), corePending: new Map(), nextId: 1, updates: [], playbackUpdates: [], progressUpdates: [], scenarioUpdates: [] };
         window.addEventListener("message", event => {
-          if (event.source !== document.querySelector("#viewer").contentWindow || event.data?.source !== "geolibre") return;
-          if (event.data.type === "ready") { window.bridge.challenge = event.data.payload.challenge; return; }
+          if (event.source !== document.querySelector("#viewer").contentWindow) return;
+          if (event.data?.source === "geolibre") {
+            if (event.data.type === "ready") { window.bridge.coreChallenge = event.data.payload.challenge; return; }
+            if (event.data.type === "ack") {
+              const waiter = window.bridge.corePending.get(event.data.payload.requestId);
+              if (waiter) { window.bridge.corePending.delete(event.data.payload.requestId); waiter(event.data.payload); }
+            }
+            return;
+          }
+          if (event.data?.source !== "geolibre-testudo-plugin") return;
+          if (event.data.type === "ready") { window.bridge.pluginChallenge = event.data.payload.challenge; return; }
           if (event.data.type === "testudoGeoAiInvestigationUpdate") { window.bridge.updates.push(event.data.payload); return; }
+          if (event.data.type === "testudoPlaybackChanged") { window.bridge.playbackUpdates.push(event.data.payload); return; }
+          if (event.data.type === "testudoProgressChanged") { window.bridge.progressUpdates.push(event.data.payload); return; }
+          if (event.data.type === "testudoScenarioChanged") { window.bridge.scenarioUpdates.push(event.data.payload); return; }
           if (event.data.type === "ack") {
             const waiter = window.bridge.pending.get(event.data.payload.requestId);
             if (waiter) { window.bridge.pending.delete(event.data.payload.requestId); waiter(event.data.payload); }
@@ -72,19 +144,38 @@ try {
           const requestId = String(window.bridge.nextId++);
           const timer = setTimeout(() => reject(new Error("Bridge acknowledgement timed out: " + type)), 10000);
           window.bridge.pending.set(requestId, result => { clearTimeout(timer); resolve(result); });
+          if (requestId === "1") {
+            const frame = document.querySelector("#viewer").contentWindow;
+            window.dispatchEvent(new MessageEvent("message", {
+              data: { v: 2, source: "geolibre", type: "ack", payload: { requestId, ok: true, result: { core: true } } },
+              origin: location.origin, source: frame,
+            }));
+          }
           document.querySelector("#viewer").contentWindow.postMessage({
-            v: 2, source: "testudo", type, requestId,
-            payload: { ...payload, challenge: window.bridge.challenge },
+            v: 2, source: "testudo-geolibre-plugin", type, requestId,
+            payload: { ...payload, challenge: window.bridge.pluginChallenge },
           }, location.origin);
         });
       </script>`,
   }));
   await page.goto(`${baseUrl}/testudo-harness`);
-  await page.waitForFunction(() => window.bridge.challenge !== null, null, { timeout: 90_000 });
+  await page.waitForFunction(() => window.bridge.pluginChallenge !== null, null, { timeout: 90_000 });
+  await page.evaluate(() => {
+    const frame = document.querySelector("#viewer").contentWindow;
+    window.bridge.corePending.set("1", (message) => { window.bridge.coreAck = message; });
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { v: 2, source: "geolibre", type: "ready", payload: { version: "embed-v1", challenge: "c".repeat(32) } },
+      origin: location.origin, source: frame,
+    }));
+  });
+  assert.equal(await page.evaluate(() => window.bridge.coreChallenge), "c".repeat(32));
+  assert.match(await page.evaluate(() => window.bridge.pluginChallenge), /^[a-f0-9]{32}$/);
+  assert.notEqual(await page.evaluate(() => window.bridge.pluginChallenge), "c".repeat(32));
   const send = (type, payload) => page.evaluate(([command, data]) => window.sendBridge(command, data), [type, payload]);
 
   const camera = await send("testudoSetCamera", { center: [12.5, 41.9], zoom: 7, bearing: 15, pitch: 20 });
   assert.equal(camera.ok, true, JSON.stringify(camera));
+  assert.equal((await page.evaluate(() => window.bridge.coreAck)).result.core, true);
   assert.deepEqual(camera.result.center, [12.5, 41.9]);
   assert.equal(camera.result.zoom, 7);
   assert.equal(camera.result.bearing, 15);
@@ -104,7 +195,7 @@ try {
   const guestToken = "g".repeat(48);
   assert.equal((await send("testudoSetGuestCapability", {
     protocol: 1, guestEmbedToken: guestToken, expiresAt: Date.now() + 60_000,
-    packageId: "guest-package", packageVersionId: "guest-version",
+    packageId: "London/testudo-package-2026-09-24-website-demo-v1", packageVersionId: "32787055-7258-45f0-8593-f8c53e1cc788",
   })).ok, true);
   const geoAiStatus = await send("testudoGetGeoAiStatus");
   assert.equal(geoAiStatus.result.configured, true);
@@ -130,31 +221,72 @@ try {
   assert.equal(chatRequests[0].authorization, `Testudo-Embed ${guestToken}`);
   assert.equal(chatRequests[0].body.prompt, "Question from the Testudo chat panel");
   assert.equal("guestEmbedToken" in chatRequests[0].body, false);
-  assert.equal(chatRequests[0].body.viewer_context.package_version_id, "guest-version");
+  assert.equal(chatRequests[0].body.viewer_context.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
   assert.equal(chatRequests[1].body.prompt, "What changed on this route?");
   assert.equal(investigation.summary.ollaya.status, "matched");
   assert.equal("private_trace" in investigation.summary.ollaya, false);
 
-  assert.equal((await send("testudoLoadPackage", {
-    bootstrap: { packageId: "signed-package", versionId: "signed-version" },
-    transport: { bearerToken: "signed-browser-token-123456" },
+  const guestTokenForPackage = "h".repeat(48);
+  assert.equal((await send("testudoSetGuestCapability", {
+    protocol: 1, guestEmbedToken: guestTokenForPackage, expiresAt: Date.now() + 60_000,
+    packageId: "London/testudo-package-2026-09-24-website-demo-v1", packageVersionId: "32787055-7258-45f0-8593-f8c53e1cc788",
   })).ok, true);
+  const guestLoadResult = await send("testudoLoadPackage", { bootstrap: {
+    packageId: "London/testudo-package-2026-09-24-website-demo-v1",
+    versionId: "32787055-7258-45f0-8593-f8c53e1cc788",
+    manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
+    artifactEndpoint: "/api/v1/view/32787055-7258-45f0-8593-f8c53e1cc788/artifact/",
+  } });
+  assert.equal(guestLoadResult.ok, true, JSON.stringify(guestLoadResult));
+  const loadedPlayback = await send("testudoGetPlaybackState");
+  assert.equal(loadedPlayback.result.available, true);
+  assert.equal(loadedPlayback.result.maxTick, 12);
+  assert.equal((await send("testudoSetPlaybackPlaying", { playing: true })).result.playing, true);
+  assert.equal((await send("testudoSetPlaybackSpeed", { speed: 2 })).result.speed, 2);
+  assert.equal((await send("testudoSeekPlayback", { tick: 6 })).result.tick, 6);
+  assert.equal((await send("testudoRestartPlayback")).result.tick, 0);
+  const loadedProgress = await send("testudoGetProgressState");
+  assert.equal(loadedProgress.result.available, true);
+  assert.equal(loadedProgress.result.value, 1);
+  assert.equal((await send("testudoGetState")).result.capabilities.measuredProgress, true);
+  assert.deepEqual(descriptorRequests.map((request) => request.path), ["manifest.json", "geolibre/package.json", "chunks/0.json.gz"]);
+  assert.equal(descriptorRequests.every((request) => request.authorization === `Testudo-Embed ${guestTokenForPackage}`), true);
+  assert.deepEqual(byteRequests.map((request) => request.path), ["/artifact-bytes/manifest", "/artifact-bytes/native", "/artifact-bytes/chunk"]);
+  assert.equal(byteRequests.every((request) => request.authorization === `Testudo-Embed ${guestTokenForPackage}` && request.search === ""), true);
+  assert.equal(byteRequests.every((request) => request.origin === new URL(baseUrl).origin), true);
+  assert.equal(bytePreflights.every((request) => request.origin === new URL(baseUrl).origin && /authorization/i.test(request.requestHeaders)), true);
+  assert.equal(byteCorsResponses.length, 3);
+  assert.equal(byteCorsResponses.every((response) => response.allowOrigin === new URL(baseUrl).origin), true);
+  assert.equal((await send("testudoLoadPackage", { bootstrap: {
+    packageId: "London/testudo-package-2026-09-24-website-demo-v1",
+    versionId: "32787055-7258-45f0-8593-f8c53e1cc788",
+    manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
+    artifactEndpoint: "/api/v1/view/32787055-7258-45f0-8593-f8c53e1cc788/artifact/",
+  }, transport: { bearerToken: "signed-browser-token-123456" } })).ok, true);
+  assert.deepEqual(descriptorRequests.slice(3).map((request) => request.path), ["manifest.json", "geolibre/package.json", "chunks/0.json.gz"]);
+  assert.equal(descriptorRequests.slice(3).every((request) => request.authorization === "Bearer signed-browser-token-123456"), true);
+  assert.equal(byteRequests.slice(3).every((request) => request.authorization === undefined && request.search === "?token=signed"), true);
+  assert.equal(await page.evaluate(() => window.bridge.playbackUpdates.some((update) => update.available === true)), true);
+  assert.equal(await page.evaluate(() => window.bridge.progressUpdates.some((update) => update.stage === "ready")), true);
+  assert.equal(await page.evaluate(() => window.bridge.scenarioUpdates.some((update) => update.selectedScenario === 2)), false);
+  assert.equal((await send("testudoSelectScenario", { scenarioId: 2 })).result.selectedScenario, 2);
+  assert.equal(await page.evaluate(() => window.bridge.scenarioUpdates.some((update) => update.selectedScenario === 2)), true);
   assert.equal((await send("testudoOpenGeoAiChat", { open: true })).result.open, true);
   assert.equal((await send("testudoRequestInvestigation", { question: "Signed-in package question" })).result.accepted, true);
   await page.waitForFunction(() => window.bridge.updates.filter((update) => update.status === "complete").length >= 3, null, { timeout: 15_000 });
   assert.equal(chatRequests[2].url, "/api/v1/ai/chat");
   assert.equal(chatRequests[2].authorization, "Bearer signed-browser-token-123456");
-  assert.equal(chatRequests[2].body.package_id, "signed-package");
-  assert.equal(chatRequests[2].body.package_version_id, "signed-version");
-  assert.equal(chatRequests[2].body.viewer_context.package_version_id, "signed-version");
+  assert.equal(chatRequests[2].body.package_id, "London/testudo-package-2026-09-24-website-demo-v1");
+  assert.equal(chatRequests[2].body.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
+  assert.equal(chatRequests[2].body.viewer_context.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({
     ok: true,
     source: "built dist iframe",
     camera: camera.result,
     control: control.result,
-    playbackAvailable: false,
-    measuredProgressAvailable: false,
+    playbackAvailable: loadedPlayback.result.available,
+    measuredProgressAvailable: loadedProgress.result.available,
     geoAiStatus: geoAiStatus.result,
     chatPanelOpened: opened.result.open,
     chatRequestPaths: chatRequests.map((request) => request.url),

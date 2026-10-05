@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- these test doubles intentionally model dynamic browser/plugin host objects. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import plugin from "../apps/geolibre-desktop/public/plugins/testudo-bridge/entry.js";
@@ -6,11 +7,12 @@ import { SharedFeatureRegistry } from "../packages/plugins/src/shared-features";
 test("Testudo plugin round-trips camera and map control state and negotiates missing package capabilities", async () => {
   const handlers = new Map<string, (event: any) => void>();
   const outbound: any[] = [];
-  const parent = { postMessage: (message: unknown) => outbound.push(message) };
+  const parent = { location: { origin: "https://testudo.example", href: "https://testudo.example/viewer" }, postMessage: (message: unknown) => outbound.push(message) };
   const savedWindow = (globalThis as any).window;
   const savedFetch = globalThis.fetch;
   const fakeWindow = {
     parent,
+    __GEOLIBRE_DEPLOYMENT_ENV__: { VITE_TESTUDO_BYTE_ORIGINS: "https://bytes.testudo.live" },
     addEventListener: (type: string, listener: (event: any) => void) => handlers.set(type, listener),
     removeEventListener: (type: string) => handlers.delete(type),
     setInterval: () => 1,
@@ -46,6 +48,7 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     plugin.activate(app);
     const ready = outbound.find((message) => message.type === "ready");
     assert.ok(ready);
+    assert.equal(ready.source, "geolibre-testudo-plugin");
     let challenge = ready.payload.challenge;
     assert.match(challenge, /^[a-f0-9]{32}$/);
     let listener = handlers.get("message")!;
@@ -54,12 +57,13 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
       await listener({
         source: parent,
         origin: "https://testudo.example",
-        data: { v: 2, source: "testudo", type, requestId, payload: { ...payload, challenge } },
+          data: { v: 2, source: "testudo-geolibre-plugin", type, requestId, payload: { ...payload, challenge } },
       });
       return outbound.filter((message) => message.type === "ack").at(-1);
     };
 
     const moved = await send("testudoSetCamera", { center: [12.5, 41.9], zoom: 7, bearing: 15, pitch: 20 });
+    assert.equal(outbound.filter((message) => message.type === "ack").at(-1).source, "geolibre-testudo-plugin");
     assert.equal(moved.payload.ok, true);
     assert.deepEqual(moved.payload.result, { available: true, center: [12.5, 41.9], zoom: 7, bearing: 15, pitch: 20 });
     const cameraState = await send("testudoGetCameraState");
@@ -88,7 +92,21 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
 
     const posted: any[] = [];
     globalThis.fetch = (async (input: any, init?: any) => {
-      posted.push({ url: String(input), init });
+      const url = String(input);
+      if (url.startsWith("https://testudo.example/api/v1/view/version-7/artifact/")) {
+        assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer signed-test-token-1234567890");
+        const path = url.slice("https://testudo.example/api/v1/view/version-7/artifact/".length);
+        const urls: Record<string, string> = {
+          "manifest.json": "https://bytes.testudo.live/artifact-bytes/manifest",
+          "geolibre/package.json": "https://bytes.testudo.live/artifact-bytes/native",
+          "chunks/0.json": "https://bytes.testudo.live/artifact-bytes/chunk",
+        };
+        return Response.json({ url: urls[path], expires_at: Math.floor(Date.now() / 1000) + 60 });
+      }
+      if (url === "https://bytes.testudo.live/artifact-bytes/manifest") return new Response(JSON.stringify({ metadata: { dt: 1, n_ticks: 4 }, chunks: [{ index: 0, path: "chunks/0.json", end_tick: 4 }] }));
+      if (url === "https://bytes.testudo.live/artifact-bytes/native") return new Response(JSON.stringify({ schemaVersion: "geolibre.package.v1", capabilities: { animation: { state: "available" } }, scenarios: [] }));
+      if (url === "https://bytes.testudo.live/artifact-bytes/chunk") return new Response(JSON.stringify({ events: {} }));
+      posted.push({ url, init });
       return new Response(JSON.stringify({
         reply: "Traffic is worsening on the tested corridor.",
         ai_available: true,
@@ -144,11 +162,11 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     assert.doesNotMatch(posted[0].url, /localhost:11434/);
 
     const loaded = await send("testudoLoadPackage", {
-      bootstrap: { packageId: "pkg-1", versionId: "version-7" },
+      bootstrap: { packageId: "pkg-1", versionId: "version-7", manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json", artifactEndpoint: "/api/v1/view/version-7/artifact/" },
       transport: { bearerToken: "signed-test-token-1234567890" },
     });
     assert.equal(loaded.payload.ok, true);
-    assert.deepEqual(loaded.payload.result, { configured: true, packageId: "pkg-1", packageVersionId: "version-7" });
+    assert.deepEqual(loaded.payload.result, { configured: true, packageId: "pkg-1", packageVersionId: "version-7", playbackAvailable: true });
     assert.equal((await send("testudoOpenGeoAiChat", { open: true })).payload.result.open, true);
     assert.equal(openFloatingPanelId, "testudo-geoai-chat");
     assert.equal((await send("testudoOpenGeoAiChat", { open: false })).payload.result.open, false);

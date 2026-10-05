@@ -8,7 +8,8 @@ const PLAYBACK_COMMANDS = new Set([
 ]);
 const SUPPORTED_COMMANDS = new Set([
   "testudoGetState", "testudoGetCameraState", "testudoSetCamera",
-  "testudoGetMapControlState", "testudoSetBuiltInMapControl",
+  "testudoGetMapControlState", "testudoSetBuiltInMapControl", "testudoGetViewModeState", "testudoSetViewMode",
+  "testudoGetNetworkFilterState", "testudoSetNetworkFilters",
   "testudoGetPlaybackState", "testudoGetProgressState", "testudoGetScenarioState", "testudoSelectScenario", "testudoSetGuestCapability",
   "testudoGetGeoAiStatus", "testudoGetOllayaScenarioStatus", "testudoRequestInvestigation", "testudoLoadPackage", "testudoOpenGeoAiChat", ...PLAYBACK_COMMANDS,
 ]);
@@ -163,6 +164,277 @@ function compactInvestigationSummary(reply, raw, ollaya) {
   return summary;
 }
 
+// Small package-backed clock/provider for the Testudo iframe. It deliberately
+// consumes only the package's manifest and manifest-listed animation chunks;
+// GeoLibre's renderer and package model remain owned by their plugins.
+function createPackagePlaybackProvider(onChange) {
+  let playing = false;
+  let tick = 0;
+  let speed = 1;
+  let loop = true;
+  let dt = 1;
+  let maxTick = 0;
+  let scenarios = [];
+  let selectedScenario;
+  let selectedReplication;
+  let playbackEvents = [];
+  let vehicleStates = new Map();
+  let nextEventIndex = 0;
+  let renderedThroughTick = -1;
+  let map = null;
+  let mapStyleListener = null;
+  let vehicleSource = null;
+  let status = { available: false, stage: "idle", loaded: 0, total: 0, value: 0 };
+  let lastFrame = 0;
+  let frame = null;
+  let loadGeneration = 0;
+  const listeners = new Set();
+  const changed = () => { onChange?.(); for (const listener of listeners) listener(); };
+  const stopFrame = () => { if (frame !== null) window.clearInterval(frame); frame = null; lastFrame = 0; };
+  const playbackState = () => ({ available: status.available, playing, tick, maxTick, speed, dt, loop });
+  const progressState = () => ({
+    available: status.stage !== "idle",
+    stage: status.stage,
+    loadedBytes: status.loadedBytes,
+    totalBytes: status.totalBytes,
+    loaded: status.loaded,
+    total: status.total,
+    value: status.value,
+  });
+  const scenarioState = () => ({ available: scenarios.length > 0, scenarios, selectedScenario, selectedReplication });
+  const ensureVehicleLayer = () => {
+    if (!map || !map.isStyleLoaded?.()) return false;
+    if (!map.getSource("testudo-package-playback-vehicles")) {
+      map.addSource("testudo-package-playback-vehicles", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    }
+    if (!map.getLayer("testudo-package-playback-vehicles")) {
+      map.addLayer({
+        id: "testudo-package-playback-vehicles",
+        type: "circle",
+        source: "testudo-package-playback-vehicles",
+        paint: { "circle-radius": 3, "circle-color": "#ef4444", "circle-stroke-color": "#ffffff", "circle-stroke-width": 0.5 },
+      });
+    }
+    vehicleSource = map.getSource("testudo-package-playback-vehicles");
+    if (mapStyleListener) { map.off?.("styledata", mapStyleListener); mapStyleListener = null; }
+    return Boolean(vehicleSource);
+  };
+  const renderAt = (position) => {
+    if (!playbackEvents.length) return;
+    ensureVehicleLayer();
+    if (!vehicleSource) return;
+    const targetTick = Math.floor(position);
+    if (targetTick < renderedThroughTick) { vehicleStates = new Map(); nextEventIndex = 0; }
+    while (nextEventIndex < playbackEvents.length && playbackEvents[nextEventIndex].tick <= targetTick) {
+      const item = playbackEvents[nextEventIndex++];
+      const event = item.event;
+      const id = String(event.id);
+      if (event.event === "despawn") { vehicleStates.delete(id); continue; }
+      const previous = vehicleStates.get(id) ?? {};
+      const values = event.state && typeof event.state === "object" ? event.state : event.fields;
+      if (event.event === "spawn" || event.event === "state") vehicleStates.set(id, { ...values });
+      else if (event.event === "update") vehicleStates.set(id, { ...previous, ...values });
+    }
+    if (targetTick === renderedThroughTick) return;
+    renderedThroughTick = targetTick;
+    const features = [];
+    for (const [id, vehicle] of vehicleStates) {
+      const position = vehicle.front_position ?? vehicle;
+      const longitude = Number(position.x ?? vehicle.WorldX);
+      const latitude = Number(position.y ?? vehicle.WorldY);
+      if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || Math.abs(longitude) > 180 || Math.abs(latitude) > 90) continue;
+      features.push({ type: "Feature", geometry: { type: "Point", coordinates: [longitude, latitude] }, properties: { id, type: vehicle.type_name ?? vehicle.VehTypeName ?? "vehicle" } });
+    }
+    vehicleSource.setData({ type: "FeatureCollection", features });
+  };
+  const decodeChunk = async (bytes, url) => {
+    let data = bytes;
+    if (url.toLowerCase().endsWith(".gz")) {
+      if (typeof DecompressionStream !== "function") throw new Error("This browser cannot decompress the package's gzip animation chunks.");
+      data = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+    }
+    const chunk = JSON.parse(new TextDecoder().decode(data));
+    const events = chunk?.events;
+    if (!events || typeof events !== "object" || Array.isArray(events)) return;
+    for (const [rawTick, rows] of Object.entries(events)) {
+      const eventTick = Number(rawTick);
+      if (!Number.isFinite(eventTick) || !Array.isArray(rows)) continue;
+      for (const event of rows) if (event && typeof event === "object" && event.id !== undefined) playbackEvents.push({ tick: eventTick, event });
+    }
+    playbackEvents.sort((a, b) => a.tick - b.tick);
+  };
+  const advance = () => {
+    const now = Date.now();
+    const elapsed = lastFrame ? (now - lastFrame) / 1000 : 0;
+    lastFrame = now;
+    tick += elapsed * speed / dt;
+    if (tick >= maxTick) {
+      if (loop && maxTick > 0) tick %= maxTick;
+      else { tick = maxTick; playing = false; stopFrame(); }
+    }
+    renderAt(tick);
+    changed();
+  };
+  const setPlaying = async (value) => {
+    if (!status.available) throw new Error("No package animation chunks are loaded.");
+    playing = value;
+    if (playing && frame === null) { lastFrame = Date.now(); frame = window.setInterval(advance, 33); }
+    else if (!playing) stopFrame();
+    changed();
+    return playbackState();
+  };
+  const seek = async (value) => { tick = Math.max(0, Math.min(maxTick, value)); renderAt(tick); changed(); return playbackState(); };
+  const setSpeed = async (value) => { speed = value; changed(); return playbackState(); };
+  const restart = async () => { tick = 0; playing = false; stopFrame(); renderAt(tick); changed(); return playbackState(); };
+  const select = async (id, replicationId) => {
+    const scenario = scenarios.find((item) => String(item.id) === String(id));
+    if (!scenario) throw new Error(`Scenario '${id}' is not declared by this package.`);
+    selectedScenario = scenario.id;
+    selectedReplication = replicationId ?? scenario.replications?.[0]?.id;
+    changed();
+    return scenarioState();
+  };
+  const load = async (bootstrap, authorization, packageOrigin) => {
+    const endpoint = new URL(bootstrap.artifactEndpoint, packageOrigin);
+    const expectedPath = `/api/v1/view/${encodeURIComponent(bootstrap.versionId)}/artifact/`;
+    if (endpoint.origin !== packageOrigin || endpoint.pathname !== expectedPath || endpoint.search || endpoint.hash) {
+      throw new Error("Testudo package artifact endpoint does not match the active version and parent origin.");
+    }
+    const configuredByteOrigins = (window.__GEOLIBRE_DEPLOYMENT_ENV__?.VITE_TESTUDO_BYTE_ORIGINS ?? "")
+      .split(/[\s,]+/).filter(Boolean).map((value) => new URL(value).origin);
+    const byteOrigins = configuredByteOrigins.length ? configuredByteOrigins : ["https://bytes.testudo.live"];
+    const canonicalPath = (value) => {
+      let decoded = value;
+      for (let i = 0; i < 4; i += 1) { const next = decodeURIComponent(decoded); if (next === decoded) break; decoded = next; }
+      if (typeof decoded !== "string" || !decoded || /[\\?#:\x00-\x1f]/.test(decoded) || decoded.startsWith("/") || decoded.split("/").some((part) => !part || part === "." || part === "..")) {
+        throw new Error("Invalid package artifact path.");
+      }
+      return decoded;
+    };
+    const readArtifact = async (logicalPath) => {
+      const relative = canonicalPath(logicalPath).split("/").map(encodeURIComponent).join("/");
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const descriptorResponse = await fetch(new URL(relative, endpoint), {
+          headers: { Authorization: authorization }, cache: "no-store", credentials: "omit", redirect: "error",
+        });
+        if (!descriptorResponse.ok) throw new Error(`Package permission or artifact lookup failed (${descriptorResponse.status}).`);
+        const descriptor = await descriptorResponse.json();
+        const byteUrl = new URL(descriptor.url ?? descriptor.signed_url ?? "");
+        if (!byteOrigins.includes(byteUrl.origin) || byteUrl.username || byteUrl.password ||
+            (byteUrl.protocol !== "https:" && !(byteUrl.protocol === "http:" && ["localhost", "127.0.0.1"].includes(byteUrl.hostname))) ||
+            (authorization.startsWith("Testudo-Embed ") && (byteUrl.search || byteUrl.hash))) {
+          throw new Error("Untrusted package byte origin or guest URL.");
+        }
+        if (!Number.isFinite(descriptor.expires_at)) throw new Error("Invalid signed artifact expiry.");
+        if (descriptor.expires_at * 1000 <= Date.now() && attempt === 0) continue;
+        const byteResponse = await fetch(byteUrl, {
+          cache: "no-store", credentials: "omit", redirect: "error",
+          ...(authorization.startsWith("Testudo-Embed ") ? { headers: { Authorization: authorization } } : {}),
+        });
+        if ([401, 403].includes(byteResponse.status) && attempt === 0) continue;
+        if (!byteResponse.ok) throw new Error(`Package artifact read failed (${byteResponse.status}).`);
+        return { bytes: await byteResponse.arrayBuffer(), contentLength: Number(byteResponse.headers.get("content-length")) || 0 };
+      }
+      throw new Error("Package artifact signature expired.");
+    };
+    const generation = ++loadGeneration;
+    stopFrame(); playing = false; tick = 0; playbackEvents = []; vehicleStates = new Map(); nextEventIndex = 0; renderedThroughTick = -1;
+    maxTick = 0; dt = 1; scenarios = []; selectedScenario = undefined; selectedReplication = undefined;
+    status = { available: false, stage: "manifest", loaded: 0, total: 0, value: 0 };
+    changed();
+    const rootResult = await readArtifact(bootstrap.manifestPath);
+    if (generation !== loadGeneration) return playbackState();
+    const legacy = JSON.parse(new TextDecoder().decode(rootResult.bytes));
+    const packageResult = await readArtifact(bootstrap.nativeManifestPath);
+    const packageManifest = JSON.parse(new TextDecoder().decode(packageResult.bytes));
+    const declared = Array.isArray(legacy.chunks) ? legacy.chunks : [];
+    const chunks = declared.map((chunk) => {
+      if (!chunk || typeof chunk.path !== "string" || !chunk.path.trim() || chunk.path.split(/[\\/]/).includes("..")) {
+        throw new Error("The playback manifest contains an invalid chunk path.");
+      }
+      return { ...chunk, path: canonicalPath(chunk.path), size: Number(chunk.compressed_size_bytes ?? chunk.size_bytes) || 0 };
+    });
+    if (chunks.length === 0) throw new Error("The package manifest does not list animation chunks.");
+    if (packageManifest.capabilities?.animation?.state === "unavailable") {
+      throw new Error(packageManifest.capabilities.animation.reason || "Package animation is unavailable.");
+    }
+    const metadata = legacy.metadata ?? {};
+    dt = Number.isFinite(metadata.dt) && metadata.dt > 0 ? metadata.dt : 1;
+    maxTick = Number.isFinite(metadata.n_ticks) && metadata.n_ticks >= 0
+      ? metadata.n_ticks
+      : Math.max(...chunks.map((chunk) => Number(chunk.end_tick) || 0));
+    const packageScenarios = Array.isArray(packageManifest.scenarios) ? packageManifest.scenarios : [];
+    scenarios = packageScenarios.map((scenario) => ({
+      id: scenario.scid,
+      label: scenario.name ?? `Scenario ${scenario.scid}`,
+      replications: (scenario.replications ?? []).map((replication) => ({ id: replication.did, label: replication.didname ?? String(replication.did) })),
+    })).filter((scenario) => typeof scenario.id === "string" || Number.isSafeInteger(scenario.id));
+    if (scenarios.length) {
+      selectedScenario = scenarios[0].id;
+      selectedReplication = scenarios[0].replications?.[0]?.id;
+    }
+    const declaredBytes = chunks.reduce((sum, chunk) => sum + chunk.size, 0);
+    const manifestBytes = rootResult.bytes.byteLength + packageResult.bytes.byteLength;
+    status = {
+      available: false, stage: "animation-chunks", loaded: 0, total: chunks.length, value: 0,
+      loadedBytes: manifestBytes, totalBytes: declaredBytes || undefined,
+    };
+    changed();
+    let loadedBytes = manifestBytes;
+    for (const chunk of chunks) {
+      const chunkResult = await readArtifact(chunk.path);
+      const body = chunkResult.bytes;
+      if (generation !== loadGeneration) return playbackState();
+      await decodeChunk(body, chunk.path);
+      if (generation !== loadGeneration) return playbackState();
+      loadedBytes += body.byteLength;
+      status = {
+        ...status,
+        loaded: status.loaded + 1,
+        loadedBytes,
+        totalBytes: declaredBytes ? manifestBytes + declaredBytes : undefined,
+        value: (status.loaded + 1) / chunks.length,
+      };
+      changed();
+    }
+    if (generation === loadGeneration) {
+      status = { ...status, available: true, stage: "ready", value: 1 };
+      renderAt(tick);
+      changed();
+    }
+    return playbackState();
+  };
+  const provider = {
+    getState: playbackState, subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    setPlaying, restart, seek, setSpeed,
+  };
+  const subscribe = (listener) => { listeners.add(listener); return () => listeners.delete(listener); };
+  return {
+    playback: provider,
+    scenario: { getState: scenarioState, subscribe, select },
+    progress: { getState: progressState, subscribe },
+    load,
+    setMap: (nextMap) => {
+      map = nextMap ?? null;
+      vehicleSource = null;
+      renderedThroughTick = -1;
+      if (!map) return;
+      if (!ensureVehicleLayer()) {
+        mapStyleListener = () => { renderedThroughTick = -1; ensureVehicleLayer(); renderAt(tick); };
+        map.on?.("styledata", mapStyleListener);
+      } else renderAt(tick);
+    },
+    dispose: () => {
+      ++loadGeneration; stopFrame(); listeners.clear();
+      if (mapStyleListener) map?.off?.("styledata", mapStyleListener);
+      mapStyleListener = null;
+      if (map?.getLayer?.("testudo-package-playback-vehicles")) map.removeLayer("testudo-package-playback-vehicles");
+      if (map?.getSource?.("testudo-package-playback-vehicles")) map.removeSource("testudo-package-playback-vehicles");
+      map = null; vehicleSource = null;
+    },
+  };
+}
+
 export const plugin = {
   id: "testudo-bridge",
   name: "Testudo iframe bridge",
@@ -184,15 +456,37 @@ export const plugin = {
     let unregisterChatPanel = null;
     let chatPanelElements = null;
     let unsubscribeFeatures = null;
+    const releaseSharedFeatures = [];
     let disposed = false;
+    const packagePlayback = createPackagePlaybackProvider(() => {
+      app.sharedFeatures?.notifyChanged?.();
+    });
+    packagePlayback.setMap(app.getMap?.());
+    if (app.registerSharedFeatures) {
+      const mapControls = {
+        getState: () => ({ available: Boolean(app.getBuiltInMapControlVisible), ...getMapControlState(app) }),
+        setControl: (control, visible) => {
+          if (!CONTROL_IDS.has(control) || typeof visible !== "boolean") throw new Error("Invalid built-in map control command.");
+          if (!app.setBuiltInMapControlVisible?.(control, visible)) throw new Error(`Map control '${control}' is unavailable.`);
+        },
+      };
+      try {
+        releaseSharedFeatures.push(app.registerSharedFeatures({
+          playback: packagePlayback.playback,
+          scenario: packagePlayback.scenario,
+          progress: packagePlayback.progress,
+          mapControls,
+        }, { priority: 100 }));
+      } catch (error) { console.warn("Testudo bridge shared-feature registration skipped:", error); }
+    }
     const send = (type, payload, target = parentOrigin) => {
       if (!disposed && target && allowedOrigins.includes(target)) {
-        parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
+        parent.postMessage({ v: 2, source: "geolibre-testudo-plugin", type, payload }, target);
       }
     };
     const ready = () => {
       if (!disposed) parent.postMessage({
-        v: 2, source: "geolibre", type: "ready",
+        v: 2, source: "geolibre-testudo-plugin", type: "ready",
         payload: { version: "testudo-v1", challenge },
       }, "*");
     };
@@ -203,9 +497,11 @@ export const plugin = {
         ? { ...playback, loading: false }
         : { available: false, loading: false, playing: false, tick: 0, maxTick: 0, speed: 1, dt: 0, loop: false };
     };
-    const progressState = () => sharedSnapshot().progress?.available === true
-      ? sharedSnapshot().progress
-      : { available: false, reason: "No active plugin provides measured package loading progress." };
+    const progressState = () => {
+      return sharedSnapshot().progress?.available === true
+        ? sharedSnapshot().progress
+        : { available: false, reason: "No active plugin provides measured package loading progress." };
+    };
     const state = () => ({
       status: "ready",
       selectedPlugin: null,
@@ -266,7 +562,7 @@ export const plugin = {
     const onMessage = async (event) => {
       const request = event.data;
       if (event.source !== parent || !allowedOrigins.includes(event.origin) ||
-          request?.v !== 2 || request.source !== "testudo" ||
+          request?.v !== 2 || request.source !== "testudo-geolibre-plugin" ||
           typeof request.requestId !== "string" || request.requestId.length < 1 || request.requestId.length > 200 ||
           !SUPPORTED_COMMANDS.has(request.type) || request.payload?.challenge !== challenge) return;
       parentOrigin = event.origin;
@@ -287,7 +583,12 @@ export const plugin = {
               !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 10 * 60_000) {
             throw new Error("Invalid or expired Testudo guest capability.");
           }
-          guestCredential = { token, expiresAt };
+          guestCredential = {
+            token,
+            expiresAt,
+            packageId: credential.packageId,
+            packageVersionId: credential.packageVersionId,
+          };
           principalCredential = null;
           packageBinding = { packageId: credential.packageId, packageVersionId: credential.packageVersionId };
           chatTurns = [];
@@ -295,16 +596,26 @@ export const plugin = {
         }
         if (request.type === "testudoLoadPackage") {
           const { bootstrap, transport } = request.payload ?? {};
-          if (typeof transport?.bearerToken !== "string" || !/^[A-Za-z0-9._~-]{16,8192}$/.test(transport.bearerToken) ||
-              typeof bootstrap?.packageId !== "string" || bootstrap.packageId.length > 128 ||
-              typeof bootstrap?.versionId !== "string" || bootstrap.versionId.length > 128) {
-            throw new Error("Signed-in GeoAI requires package-bound Testudo viewer credentials.");
+          if (typeof bootstrap?.packageId !== "string" || bootstrap.packageId.length < 1 || bootstrap.packageId.length > 128 ||
+              typeof bootstrap?.versionId !== "string" || bootstrap.versionId.length < 1 || bootstrap.versionId.length > 128 ||
+              bootstrap.manifestPath !== "manifest.json" || bootstrap.nativeManifestPath !== "geolibre/package.json" ||
+              typeof bootstrap.artifactEndpoint !== "string") {
+            throw new Error("Invalid Testudo package artifact bootstrap.");
           }
-          principalCredential = { bearerToken: transport.bearerToken };
+          const bearerToken = transport?.bearerToken;
+          const hasBearer = typeof bearerToken === "string" && /^[A-Za-z0-9._~-]{16,8192}$/.test(bearerToken);
+          const hasGuest = Boolean(!hasBearer && guestCredential && guestCredential.expiresAt > Date.now());
+          if (hasBearer === hasGuest || hasGuest &&
+              (guestCredential.packageId !== bootstrap.packageId || guestCredential.packageVersionId !== bootstrap.versionId)) {
+            throw new Error("Provide exactly one valid package-bound Testudo Bearer or guest capability.");
+          }
+          const authorization = hasGuest ? `Testudo-Embed ${guestCredential.token}` : `Bearer ${bearerToken}`;
+          principalCredential = hasBearer ? { bearerToken } : null;
+          if (hasBearer) guestCredential = null;
           packageBinding = { packageId: bootstrap.packageId, packageVersionId: bootstrap.versionId };
-          guestCredential = null;
           chatTurns = [];
-          return ack(true, { configured: true, packageId: packageBinding.packageId, packageVersionId: packageBinding.packageVersionId });
+          await packagePlayback.load(bootstrap, authorization, parentOrigin);
+          return ack(true, { configured: true, packageId: packageBinding.packageId, packageVersionId: packageBinding.packageVersionId, playbackAvailable: packagePlayback.playback.getState().available });
         }
         if (request.type === "testudoOpenGeoAiChat") {
           if (typeof request.payload?.open !== "boolean") throw new Error("GeoAI panel open state must be boolean.");
@@ -356,16 +667,34 @@ export const plugin = {
           map.jumpTo(options);
           return ack(true, getCamera(app));
         }
-        if (request.type === "testudoGetMapControlState") return ack(true, getMapControlState(app));
+        if (request.type === "testudoGetMapControlState") return ack(true, sharedSnapshot().mapControls ?? getMapControlState(app));
         if (request.type === "testudoSetBuiltInMapControl") {
           const { control, visible } = request.payload;
           if (!CONTROL_IDS.has(control) || typeof visible !== "boolean") throw new Error("Invalid built-in map control command.");
-          if (!app.setBuiltInMapControlVisible(control, visible)) throw new Error(`Map control '${control}' is unavailable.`);
+          if (app.sharedFeatures?.setMapControl) await app.sharedFeatures.setMapControl(control, visible);
+          else if (!app.setBuiltInMapControlVisible(control, visible)) throw new Error(`Map control '${control}' is unavailable.`);
           return ack(true, { control, visible: app.getBuiltInMapControlVisible?.(control) ?? visible });
+        }
+        if (request.type === "testudoGetViewModeState") return ack(true, sharedSnapshot().viewMode ?? { available: false, modes: [] });
+        if (request.type === "testudoSetViewMode") {
+          const { mode } = request.payload;
+          if (typeof mode !== "string" || mode.length < 1 || mode.length > 64) throw new Error("View mode must be a string of at most 64 characters.");
+          if (!app.sharedFeatures?.setViewMode) throw new Error("No active plugin provides view-mode selection.");
+          return ack(true, await app.sharedFeatures.setViewMode(mode));
+        }
+        if (request.type === "testudoGetNetworkFilterState") return ack(true, sharedSnapshot().networkFilters ?? { available: false, filters: {} });
+        if (request.type === "testudoSetNetworkFilters") {
+          const filters = request.payload?.filters;
+          if (!filters || typeof filters !== "object" || Array.isArray(filters) || Object.keys(filters).length > 64) throw new Error("Network filters must be an object with at most 64 entries.");
+          for (const [key, value] of Object.entries(filters)) {
+            if (!/^[a-z0-9_.-]{1,64}$/i.test(key) || !(value === null || typeof value === "string" && value.length <= 128 || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))) throw new Error("Network filter entries must use safe keys and scalar values.");
+          }
+          if (!app.sharedFeatures?.setNetworkFilters) throw new Error("No active plugin provides network filtering.");
+          return ack(true, await app.sharedFeatures.setNetworkFilters(filters));
         }
         if (request.type === "testudoGetPlaybackState") return ack(true, playbackState());
         if (request.type === "testudoGetProgressState") return ack(true, progressState());
-        if (request.type === "testudoGetScenarioState") return ack(true, sharedSnapshot().scenario ?? { available: false, scenarios: [] });
+      if (request.type === "testudoGetScenarioState") return ack(true, sharedSnapshot().scenario ?? { available: false, scenarios: [] });
         if (request.type === "testudoSelectScenario") {
           const { scenarioId, replicationId } = request.payload;
           if (!(typeof scenarioId === "string" && scenarioId.length > 0 && scenarioId.length <= 128 || typeof scenarioId === "number" && Number.isSafeInteger(scenarioId))) throw new Error("Scenario selection requires a valid scenario ID.");
@@ -392,6 +721,9 @@ export const plugin = {
       if (snapshot.progress) send("testudoProgressChanged", snapshot.progress);
       if (snapshot.playback) send("testudoPlaybackChanged", snapshot.playback);
       if (snapshot.scenario) send("testudoScenarioChanged", snapshot.scenario);
+      if (snapshot.mapControls) send("testudoMapControlChanged", snapshot.mapControls);
+      if (snapshot.viewMode) send("testudoViewModeChanged", snapshot.viewMode);
+      if (snapshot.networkFilters) send("testudoNetworkFiltersChanged", snapshot.networkFilters);
       }) ?? null;
     if (app.registerFloatingPanel && app.openFloatingPanel) {
       unregisterChatPanel = app.registerFloatingPanel({
@@ -432,12 +764,14 @@ export const plugin = {
       window.removeEventListener("message", onMessage);
       unsubscribeFeatures?.();
       unsubscribeFeatures = null;
+      for (const release of releaseSharedFeatures.splice(0)) release?.();
       unregisterChatPanel?.();
       unregisterChatPanel = null;
       guestCredential = null;
       principalCredential = null;
       packageBinding = null;
       chatTurns = [];
+      packagePlayback.dispose();
       cleanupActivePlugin = null;
     };
   },
