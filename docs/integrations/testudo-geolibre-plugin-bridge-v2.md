@@ -50,7 +50,7 @@ The plugin requests the exact `nativeManifestPath` first. For the known legacy `
 Authentication follows Testudo's artifact contract:
 
 - Signed-in: the descriptor GET carries `Authorization: Bearer <token>`. The returned signed byte URL is fetched without the Bearer header; its signature authorizes the byte request.
-- Guest: first send `testudoSetGuestCapability` with `{protocol:1,guestEmbedToken,expiresAt,packageId,packageVersionId}`. The capability is package/version-bound and expires within ten minutes. Descriptor and returned byte requests both carry `Authorization: Testudo-Embed <token>`; the guest byte URL must not contain a query string or fragment.
+- Guest: first send `testudoSetGuestCapability` with `{protocol:1,guestEmbedToken,expiresAt,packageId,packageVersionId}`. The capability is package/version-bound and accepts up to 605 seconds to cover epoch-second rounding and Testudo's five-second skew allowance. Descriptor and returned byte requests both carry `Authorization: Testudo-Embed <token>`; the guest byte URL must not contain a query string or fragment.
 - Credentials are sent in headers, never appended to descriptor URLs. Fetches use omitted browser credentials, no-store caching, and error-on-redirect.
 
 Returned byte URLs must use the configured Testudo byte origin (`VITE_TESTUDO_BYTE_ORIGINS`; default `https://bytes.testudo.live`) over HTTPS, except localhost development. The byte service must allow the embedding viewer origin and expose `Content-Length` for measured byte progress.

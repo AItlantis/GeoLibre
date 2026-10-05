@@ -14,6 +14,8 @@ const SUPPORTED_COMMANDS = new Set([
   "testudoGetGeoAiStatus", "testudoGetOllayaScenarioStatus", "testudoRequestInvestigation", "testudoLoadPackage", "testudoOpenGeoAiChat", ...PLAYBACK_COMMANDS,
 ]);
 const CHAT_PANEL_ID = "testudo-geoai-chat";
+// Testudo rounds epoch-second expiries; accept the gateway's five-second skew window.
+const GUEST_CAPABILITY_MAX_TTL_MS = 605_000;
 let cleanupActivePlugin = null;
 
 function finiteIn(value, min, max) {
@@ -589,7 +591,7 @@ export const plugin = {
               typeof token !== "string" || !/^[A-Za-z0-9._~-]{32,4096}$/.test(token) ||
               typeof credential.packageId !== "string" || credential.packageId.length < 1 || credential.packageId.length > 128 ||
               typeof credential.packageVersionId !== "string" || credential.packageVersionId.length < 1 || credential.packageVersionId.length > 128 ||
-              !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 10 * 60_000) {
+              !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + GUEST_CAPABILITY_MAX_TTL_MS) {
             throw new Error("Invalid or expired Testudo guest capability.");
           }
           guestCredential = {

@@ -261,7 +261,7 @@ try {
   assert.match(unavailablePlayback.error, /no active plugin provides package-backed playback/);
   const guestToken = "g".repeat(48);
   assert.equal((await send("testudoSetGuestCapability", {
-    protocol: 1, guestEmbedToken: guestToken, expiresAt: Date.now() + 60_000,
+    protocol: 1, guestEmbedToken: guestToken, expiresAt: Date.now() + 601_832,
     packageId: "London/testudo-package-2026-09-24-website-demo-v1", packageVersionId: "32787055-7258-45f0-8593-f8c53e1cc788",
   })).ok, true);
   const geoAiStatus = await send("testudoGetGeoAiStatus");
@@ -296,7 +296,7 @@ try {
 
   const guestTokenForPackage = "h".repeat(48);
   assert.equal((await send("testudoSetGuestCapability", {
-    protocol: 1, guestEmbedToken: guestTokenForPackage, expiresAt: Date.now() + 60_000,
+    protocol: 1, guestEmbedToken: guestTokenForPackage, expiresAt: Date.now() + 601_832,
     packageId: "London/testudo-package-2026-09-24-website-demo-v1", packageVersionId: "32787055-7258-45f0-8593-f8c53e1cc788",
   })).ok, true);
   const guestLoadResult = await send("testudoLoadPackage", { bootstrap: {

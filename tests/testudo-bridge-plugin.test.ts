@@ -136,6 +136,26 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
         ollaya: { status: "matched", intent: "scenario_comparison", matched: true, internal_trace: "discard" },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
+    const savedDateNow = Date.now;
+    const fixedNow = savedDateNow();
+    try {
+      Date.now = () => fixedNow;
+      for (const ttl of [600_000, 605_000]) {
+        const boundary = await send("testudoSetGuestCapability", {
+          protocol: 1, guestEmbedToken: "b".repeat(48), expiresAt: fixedNow + ttl,
+          packageId: "guest-pkg", packageVersionId: "guest-version",
+        });
+        assert.equal(boundary.payload.ok, true, `TTL ${ttl} ms should be accepted`);
+      }
+      const beyondBoundary = await send("testudoSetGuestCapability", {
+        protocol: 1, guestEmbedToken: "b".repeat(48), expiresAt: fixedNow + 605_001,
+        packageId: "guest-pkg", packageVersionId: "guest-version",
+      });
+      assert.equal(beyondBoundary.payload.ok, false);
+      assert.match(beyondBoundary.payload.error, /invalid or expired/i);
+    } finally {
+      Date.now = savedDateNow;
+    }
     const expiry = Date.now() + 60_000;
     const capability = await send("testudoSetGuestCapability", {
       protocol: 1, guestEmbedToken: "a".repeat(48), expiresAt: expiry, packageId: "guest-pkg", packageVersionId: "guest-version",
