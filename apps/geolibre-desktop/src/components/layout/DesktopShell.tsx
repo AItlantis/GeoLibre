@@ -159,6 +159,7 @@ import { useMapFullscreenAttribute } from "../../hooks/desktop-shell/useMapFulls
 import { useNativeProjectOpenListener } from "../../hooks/desktop-shell/useNativeProjectOpenListener";
 import { usePanelResize } from "../../hooks/desktop-shell/usePanelResize";
 import { usePluginStateRestore } from "../../hooks/desktop-shell/usePluginStateRestore";
+import { useStartupPanels } from "../../hooks/desktop-shell/useStartupPanels";
 import { fetchPluginRegistry } from "../../lib/plugin-registry";
 import { usePluginDeepLink } from "../../hooks/desktop-shell/usePluginDeepLink";
 import { useRasterFileHandlers } from "../../hooks/desktop-shell/useRasterFileHandlers";
@@ -446,6 +447,12 @@ export function DesktopShell({
       !hasProjectUrl ||
       projectUrlLoadState?.status === "loaded" ||
       projectUrlLoadState?.status === "error",
+  });
+  useStartupPanels({
+    mapControllerRef,
+    viewer: layoutOptions.viewer,
+    externalPluginsReady,
+    mapReadyGeneration,
   });
 
   const handleMapControllerReady = useCallback(() => {
