@@ -7,11 +7,16 @@ import { SharedFeatureRegistry } from "../packages/plugins/src/shared-features";
 test("Testudo plugin round-trips camera and map control state and negotiates missing package capabilities", async () => {
   const handlers = new Map<string, (event: any) => void>();
   const outbound: any[] = [];
-  const parent = { location: { origin: "https://testudo.example", href: "https://testudo.example/viewer" }, postMessage: (message: unknown) => outbound.push(message) };
+  const outboundTargets: string[] = [];
+  const parent = {
+    location: { origin: "https://www.testudo.live", href: "https://www.testudo.live/viewer" },
+    postMessage: (message: unknown, target?: string) => { outbound.push(message); outboundTargets.push(target ?? ""); },
+  };
   const savedWindow = (globalThis as any).window;
   const savedFetch = globalThis.fetch;
   const fakeWindow = {
     parent,
+    location: { origin: "https://app.testudo.live" },
     __GEOLIBRE_DEPLOYMENT_ENV__: { VITE_TESTUDO_BYTE_ORIGINS: "https://bytes.testudo.live" },
     addEventListener: (type: string, listener: (event: any) => void) => handlers.set(type, listener),
     removeEventListener: (type: string) => handlers.delete(type),
@@ -37,7 +42,7 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
   const app: any = {
     sharedFeatures,
     registerSharedFeatures: (contribution: any, options: any) => sharedFeatures.register("testudo-bridge", contribution, options),
-    getEmbedAllowedOrigins: () => ["https://testudo.example"],
+    getEmbedAllowedOrigins: () => ["https://www.testudo.live"],
     getMapRenderer: () => "maplibre",
     getMap: () => map,
     getBuiltInMapControlVisible: (id: string) => Boolean(controls[id]),
@@ -59,13 +64,14 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
       const requestId = `${outbound.length}`;
       await listener({
         source: parent,
-        origin: "https://testudo.example",
+        origin: "https://www.testudo.live",
           data: { v: 2, source: "testudo-geolibre-plugin", type, requestId, payload: { ...payload, challenge } },
       });
       return outbound.filter((message) => message.type === "ack").at(-1);
     };
 
     const moved = await send("testudoSetCamera", { center: [12.5, 41.9], zoom: 7, bearing: 15, pitch: 20 });
+    assert.equal(outboundTargets[outbound.indexOf(outbound.filter((message) => message.type === "ack").at(-1))], "https://www.testudo.live");
     assert.equal(outbound.filter((message) => message.type === "ack").at(-1).source, "geolibre-testudo-plugin");
     assert.equal(moved.payload.ok, true);
     assert.deepEqual(moved.payload.result, { available: true, center: [12.5, 41.9], zoom: 7, bearing: 15, pitch: 20 });
@@ -96,9 +102,9 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     const posted: any[] = [];
     globalThis.fetch = (async (input: any, init?: any) => {
       const url = String(input);
-      if (url.startsWith("https://testudo.example/api/v1/view/version-7/artifact/")) {
+      if (url.startsWith("https://app.testudo.live/api/v1/view/version-7/artifact/")) {
         assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer signed-test-token-1234567890");
-        const path = url.slice("https://testudo.example/api/v1/view/version-7/artifact/".length);
+        const path = url.slice("https://app.testudo.live/api/v1/view/version-7/artifact/".length);
         const urls: Record<string, string> = {
           "manifest.json": "https://bytes.testudo.live/artifact-bytes/manifest",
           "geolibre/package.json": "https://bytes.testudo.live/artifact-bytes/native",
@@ -156,7 +162,7 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     assert.equal("internal_trace" in update.payload.summary.ollaya, false);
     assert.equal("raw_table" in update.payload.summary.subpath_impact.paths[0].journey_times[0], false);
     assert.equal("raw" in update.payload.summary.od_evidence, false);
-    assert.equal(posted[0].url, "https://testudo.example/api/public/demo/geoai-chat");
+    assert.equal(posted[0].url, "https://app.testudo.live/api/public/demo/geoai-chat");
     assert.equal(posted[0].init.headers.Authorization, `Testudo-Embed ${"a".repeat(48)}`);
     assert.equal(posted[0].init.credentials, "omit");
     const guestBody = JSON.parse(posted[0].init.body);
@@ -185,7 +191,7 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     assert.equal(openFloatingPanelId, null);
     assert.equal((await send("testudoRequestInvestigation", { question: "Compare this package", activeScenarioId: 22 })).payload.result.accepted, true);
     for (let attempt = 0; attempt < 20 && posted.length < 2; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(posted[1].url, "https://testudo.example/api/v1/ai/chat");
+    assert.equal(posted[1].url, "https://app.testudo.live/api/v1/ai/chat");
     assert.equal(posted[1].init.headers.Authorization, "Bearer signed-test-token-1234567890");
     const signedBody = JSON.parse(posted[1].init.body);
     assert.equal(signedBody.package_id, "pkg-1");

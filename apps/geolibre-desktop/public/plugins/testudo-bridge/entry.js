@@ -294,11 +294,11 @@ function createPackagePlaybackProvider(onChange) {
     changed();
     return scenarioState();
   };
-  const load = async (bootstrap, authorization, packageOrigin) => {
-    const endpoint = new URL(bootstrap.artifactEndpoint, packageOrigin);
+  const load = async (bootstrap, authorization, apiOrigin) => {
+    const endpoint = new URL(bootstrap.artifactEndpoint, apiOrigin);
     const expectedPath = `/api/v1/view/${encodeURIComponent(bootstrap.versionId)}/artifact/`;
-    if (endpoint.origin !== packageOrigin || endpoint.pathname !== expectedPath || endpoint.search || endpoint.hash) {
-      throw new Error("Testudo package artifact endpoint does not match the active version and parent origin.");
+    if (endpoint.origin !== apiOrigin || endpoint.pathname !== expectedPath || endpoint.search || endpoint.hash) {
+      throw new Error("Testudo package artifact endpoint does not match the active version and iframe API origin.");
     }
     const configuredByteOrigins = (window.__GEOLIBRE_DEPLOYMENT_ENV__?.VITE_TESTUDO_BYTE_ORIGINS ?? "")
       .split(/[\s,]+/).filter(Boolean).map((value) => new URL(value).origin);
@@ -454,6 +454,7 @@ export const plugin = {
     const challenge = Array.from(crypto.getRandomValues(new Uint8Array(16)),
       (value) => value.toString(16).padStart(2, "0")).join("");
     let parentOrigin = null;
+    const apiOrigin = window.location.origin;
     let guestCredential = null;
     let principalCredential = null;
     let packageBinding = null;
@@ -540,7 +541,7 @@ export const plugin = {
         };
         const previous = chatTurns.slice(-10).filter((turn) => turn.role === "user" || turn.role === "assistant");
         const signedIn = Boolean(principalCredential);
-        const response = await fetch(new URL(signedIn ? "/api/v1/ai/chat" : "/api/public/demo/geoai-chat", parentOrigin), {
+        const response = await fetch(new URL(signedIn ? "/api/v1/ai/chat" : "/api/public/demo/geoai-chat", apiOrigin), {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: signedIn ? `Bearer ${principalCredential.bearerToken}` : `Testudo-Embed ${guestCredential.token}` },
           body: JSON.stringify({ prompt: question.trim().slice(0, 4000), messages: previous, viewer_context: viewerContext, ...(signedIn ? { package_id: packageBinding.packageId, package_version_id: packageBinding.packageVersionId } : {}) }),
@@ -622,7 +623,7 @@ export const plugin = {
           if (hasBearer) guestCredential = null;
           packageBinding = { packageId: bootstrap.packageId, packageVersionId: bootstrap.versionId };
           chatTurns = [];
-          await packagePlayback.load(bootstrap, authorization, parentOrigin);
+          await packagePlayback.load(bootstrap, authorization, apiOrigin);
           return ack(true, { configured: true, packageId: packageBinding.packageId, packageVersionId: packageBinding.packageVersionId, playbackAvailable: packagePlayback.playback.getState().available });
         }
         if (request.type === "testudoOpenGeoAiChat") {

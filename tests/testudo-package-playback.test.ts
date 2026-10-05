@@ -26,6 +26,7 @@ test("Testudo package command loads native package metadata and manifest-listed 
   };
   const fakeWindow = {
     parent,
+    location: { origin: "https://app.testudo.test" },
     __GEOLIBRE_DEPLOYMENT_ENV__: { VITE_TESTUDO_BYTE_ORIGINS: "https://bytes.testudo.live" },
     addEventListener: (type: string, listener: (event: any) => void) => handlers.set(type, listener),
     removeEventListener: (type: string) => handlers.delete(type),
@@ -61,9 +62,9 @@ test("Testudo package command loads native package metadata and manifest-listed 
     requests.push(url);
     assert.equal(init?.credentials, "omit");
     assert.equal(init?.redirect, "error");
-    if (url.startsWith("https://testudo.test/api/v1/view/fixture-v1/artifact/")) {
+    if (url.startsWith("https://app.testudo.test/api/v1/view/fixture-v1/artifact/")) {
       assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer signed-test-token-123456");
-      const path = url.slice("https://testudo.test/api/v1/view/fixture-v1/artifact/".length);
+      const path = url.slice("https://app.testudo.test/api/v1/view/fixture-v1/artifact/".length);
       const descriptorUrls: Record<string, string> = {
         "manifest.json": "https://bytes.testudo.live/artifact-bytes/manifest",
         "geolibre-package.json": "https://bytes.testudo.live/artifact-bytes/native",
@@ -109,12 +110,12 @@ test("Testudo package command loads native package metadata and manifest-listed 
     });
     assert.equal(loaded.payload.ok, true, loaded.payload.error);
     assert.deepEqual(requests, [
-      "https://testudo.test/api/v1/view/fixture-v1/artifact/manifest.json",
+      "https://app.testudo.test/api/v1/view/fixture-v1/artifact/manifest.json",
       "https://bytes.testudo.live/artifact-bytes/manifest",
-      "https://testudo.test/api/v1/view/fixture-v1/artifact/geolibre/package.json",
-      "https://testudo.test/api/v1/view/fixture-v1/artifact/geolibre-package.json",
+      "https://app.testudo.test/api/v1/view/fixture-v1/artifact/geolibre/package.json",
+      "https://app.testudo.test/api/v1/view/fixture-v1/artifact/geolibre-package.json",
       "https://bytes.testudo.live/artifact-bytes/native",
-      "https://testudo.test/api/v1/view/fixture-v1/artifact/chunks/0.json.gz",
+      "https://app.testudo.test/api/v1/view/fixture-v1/artifact/chunks/0.json.gz",
       "https://bytes.testudo.live/artifact-bytes/chunk",
     ]);
     const state = await send("testudoGetState");
@@ -156,9 +157,9 @@ test("Testudo package command loads native package metadata and manifest-listed 
     assert.equal(deniedLegacyFallback.payload.ok, false);
     assert.match(deniedLegacyFallback.payload.error, /lookup failed \(403\)/);
     assert.deepEqual(requests.slice(requestStart), [
-      "https://testudo.test/api/v1/view/fixture-v1/artifact/manifest.json",
+      "https://app.testudo.test/api/v1/view/fixture-v1/artifact/manifest.json",
       "https://bytes.testudo.live/artifact-bytes/manifest",
-      "https://testudo.test/api/v1/view/fixture-v1/artifact/geolibre/package.json",
+      "https://app.testudo.test/api/v1/view/fixture-v1/artifact/geolibre/package.json",
     ]);
   } finally {
     plugin.deactivate({} as any);

@@ -43,7 +43,7 @@ The plugin posts `ready` before receiving a host command. State-change events ar
 }
 ```
 
-The plugin validates that `artifactEndpoint` is same-origin with the embedding Testudo page and is scoped to `versionId`. It fetches the root manifest, the native GeoLibre package manifest, and every animation chunk listed by the root manifest through that descriptor endpoint. Chunk paths are checked before use. The native package supplies scenario metadata; the root manifest supplies the measured tick and chunk progress data.
+The plugin resolves `artifactEndpoint` against the GeoLibre iframe's `window.location.origin`, validates it is same-origin with that API origin, and checks that it is scoped to `versionId`. The parent website origin is used only for the validated `postMessage` channel; it is not used for Testudo API requests. The plugin fetches the root manifest, the native GeoLibre package manifest, and every animation chunk listed by the root manifest through the descriptor endpoint. Chunk paths are checked before use. The native package supplies scenario metadata; the root manifest supplies the measured tick and chunk progress data.
 
 The plugin requests the exact `nativeManifestPath` first. For the known legacy `geolibre/package.json` path only, a descriptor `404` retries `geolibre-package.json` through the same version-scoped endpoint and authorization. Authorization failures, network errors, and other status codes do not trigger the fallback. Both paths remain bound to the same package version.
 

@@ -6,14 +6,32 @@ import { gzipSync } from "node:zlib";
 import { chromium } from "playwright";
 
 const baseUrl = process.env.TESTUDO_IFRAME_BASE_URL ?? "http://127.0.0.1:4173";
+const iframeUrl = process.env.TESTUDO_IFRAME_APP_URL ?? baseUrl;
+const previewUrl = process.env.TESTUDO_IFRAME_PREVIEW_URL ?? `http://127.0.0.1:${new URL(baseUrl).port || "80"}`;
+const browserArgs = ["--disable-gpu", "--use-gl=swiftshader", "--no-sandbox"];
+if (process.env.TESTUDO_IFRAME_APP_URL) {
+  browserArgs.push("--host-resolver-rules=MAP www.testudo.test 127.0.0.1,MAP app.testudo.test 127.0.0.1");
+}
 const browser = await chromium.launch({
   headless: true,
-  args: ["--disable-gpu", "--use-gl=swiftshader", "--no-sandbox"],
+  args: browserArgs,
 });
 
 try {
   const page = await browser.newPage();
   const errors = [];
+  if (new URL(iframeUrl).origin !== new URL(baseUrl).origin) {
+    const iframeOrigin = new URL(iframeUrl).origin;
+    await page.route(`${iframeOrigin}/**`, async (route) => {
+      const requested = new URL(route.request().url());
+      const local = new URL(`${requested.pathname}${requested.search}`, previewUrl).toString();
+      try { await route.fulfill({ response: await route.fetch({ url: local }) }); }
+      catch (error) {
+        errors.push(`iframe proxy failed for ${requested.pathname}: ${error instanceof Error ? error.message : String(error)}`);
+        if (!page.isClosed()) await route.abort().catch(() => undefined);
+      }
+    });
+  }
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
     if (message.type() !== "error") return;
@@ -32,6 +50,7 @@ try {
   const byteCorsResponses = [];
   const answerChat = async (route) => {
     chatRequests.push({
+      origin: new URL(route.request().url()).origin,
       url: new URL(route.request().url()).pathname,
       method: route.request().method(),
       authorization: route.request().headers().authorization,
@@ -164,7 +183,7 @@ try {
   await page.route("**/testudo-harness", (route) => route.fulfill({
     contentType: "text/html",
     body: `<!doctype html><meta charset="utf-8"><title>Testudo plugin iframe smoke</title>
-      <iframe id="viewer" src="/"></iframe>
+      <iframe id="viewer" src="${iframeUrl}/"></iframe>
       <script>
         window.bridge = { pluginChallenge: null, coreChallenge: null, pending: new Map(), corePending: new Map(), nextId: 1, updates: [], playbackUpdates: [], progressUpdates: [], scenarioUpdates: [] };
         window.addEventListener("message", event => {
@@ -196,13 +215,13 @@ try {
             const frame = document.querySelector("#viewer").contentWindow;
             window.dispatchEvent(new MessageEvent("message", {
               data: { v: 2, source: "geolibre", type: "ack", payload: { requestId, ok: true, result: { core: true } } },
-              origin: location.origin, source: frame,
+              origin: new URL(document.querySelector("#viewer").src).origin, source: frame,
             }));
           }
           document.querySelector("#viewer").contentWindow.postMessage({
             v: 2, source: "testudo-geolibre-plugin", type, requestId,
             payload: { ...payload, challenge: window.bridge.pluginChallenge },
-          }, location.origin);
+          }, new URL(document.querySelector("#viewer").src).origin);
         });
       </script>`,
   }));
@@ -213,7 +232,7 @@ try {
     window.bridge.corePending.set("1", (message) => { window.bridge.coreAck = message; });
     window.dispatchEvent(new MessageEvent("message", {
       data: { v: 2, source: "geolibre", type: "ready", payload: { version: "embed-v1", challenge: "c".repeat(32) } },
-      origin: location.origin, source: frame,
+      origin: new URL(document.querySelector("#viewer").src).origin, source: frame,
     }));
   });
   assert.equal(await page.evaluate(() => window.bridge.coreChallenge), "c".repeat(32));
@@ -265,6 +284,7 @@ try {
   assert.equal(investigation.summary.subpath_impact.baseline_comparison_coverage, 1);
   assert.equal("raw_table" in investigation.summary.subpath_impact.paths[0].journey_times[0], false);
   assert.equal(chatRequests[0].method, "POST");
+  assert.equal(chatRequests[0].origin, new URL(iframeUrl).origin);
   assert.equal(chatRequests[0].url, "/api/public/demo/geoai-chat");
   assert.equal(chatRequests[0].authorization, `Testudo-Embed ${guestToken}`);
   assert.equal(chatRequests[0].body.prompt, "Question from the Testudo chat panel");
@@ -301,10 +321,10 @@ try {
   assert.equal(descriptorRequests.every((request) => request.authorization === `Testudo-Embed ${guestTokenForPackage}`), true);
   assert.deepEqual(byteRequests.map((request) => request.path), ["/artifact-bytes/manifest", "/artifact-bytes/native", "/artifact-bytes/chunk"]);
   assert.equal(byteRequests.every((request) => request.authorization === `Testudo-Embed ${guestTokenForPackage}` && request.search === ""), true);
-  assert.equal(byteRequests.every((request) => request.origin === new URL(baseUrl).origin), true);
-  assert.equal(bytePreflights.every((request) => request.origin === new URL(baseUrl).origin && /authorization/i.test(request.requestHeaders)), true);
+  assert.equal(byteRequests.every((request) => request.origin === new URL(iframeUrl).origin), true);
+  assert.equal(bytePreflights.every((request) => request.origin === new URL(iframeUrl).origin && /authorization/i.test(request.requestHeaders)), true);
   assert.equal(byteCorsResponses.length, 3);
-  assert.equal(byteCorsResponses.every((response) => response.allowOrigin === new URL(baseUrl).origin), true);
+  assert.equal(byteCorsResponses.every((response) => response.allowOrigin === new URL(iframeUrl).origin), true);
   assert.equal((await send("testudoLoadPackage", { bootstrap: {
     packageId: "London/testudo-package-2026-09-24-website-demo-v1",
     versionId: "32787055-7258-45f0-8593-f8c53e1cc788",
@@ -329,6 +349,7 @@ try {
   assert.equal((await send("testudoRequestInvestigation", { question: "Signed-in package question", activeScenarioId: selectedScenarioId })).result.accepted, true);
   await page.waitForFunction(() => window.bridge.updates.filter((update) => update.status === "complete").length >= 3, null, { timeout: 15_000 });
   assert.equal(chatRequests[2].url, "/api/v1/ai/chat");
+  assert.equal(chatRequests[2].origin, new URL(iframeUrl).origin);
   assert.equal(chatRequests[2].authorization, "Bearer signed-browser-token-123456");
   assert.equal(chatRequests[2].body.package_id, "London/testudo-package-2026-09-24-website-demo-v1");
   assert.equal(chatRequests[2].body.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
@@ -340,6 +361,8 @@ try {
     source: "built dist iframe",
     authenticArtifactIntegrityVerified: integrityVerified,
     scenarioId: selectedScenarioId,
+    parentOrigin: new URL(baseUrl).origin,
+    iframeApiOrigin: new URL(iframeUrl).origin,
     camera: camera.result,
     control: control.result,
     playbackAvailable: loadedPlayback.result.available,
