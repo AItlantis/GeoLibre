@@ -21,6 +21,7 @@ import {
   SKETCHES_SOURCE_KIND,
   applySyncedEditorTracking,
   canEditLayerGeometry,
+  findGeometryEditFeature,
   geometryEditMetadata,
   captureEditedGeometries,
   captureEditedProperties,
@@ -1211,6 +1212,23 @@ export async function startLayerGeometryEdit(
 
   applySketchesMapDisplay();
   notifyGeometryEdit();
+  return true;
+}
+
+/**
+ * Select one feature of the active geometry-edit session in the editor, so the
+ * session opened from an Identify result starts on the feature the user picked
+ * (#2932). Select mode stays off: in it the editor would open its attribute
+ * panel, and a geometry session discards attribute changes on save.
+ *
+ * @param featureId The feature's id in the attribute table's scheme.
+ * @returns True when the feature was found and selected.
+ */
+export function selectGeometryEditFeature(featureId: string): boolean {
+  if (!pluginActive || !geoEditorControl || !editTargetLayerId) return false;
+  const match = findGeometryEditFeature(geoEditorControl.getAllFeatureCollection(), featureId);
+  if (!match) return false;
+  geoEditorControl.selectFeatures([match]);
   return true;
 }
 
