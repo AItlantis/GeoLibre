@@ -186,8 +186,8 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     assert.equal(posted[0].init.headers.Authorization, `Testudo-Embed ${"a".repeat(48)}`);
     assert.equal(posted[0].init.credentials, "omit");
     const guestBody = JSON.parse(posted[0].init.body);
-    assert.equal(guestBody.viewer_context.package_id, "guest-pkg");
-    assert.equal(guestBody.viewer_context.package_version_id, "guest-version");
+    assert.equal("package_id" in guestBody.viewer_context, false);
+    assert.equal("package_version_id" in guestBody.viewer_context, false);
     assert.equal("active_scenario_id" in guestBody.viewer_context, false);
     assert.doesNotMatch(posted[0].url, /localhost:11434/);
 
@@ -216,7 +216,8 @@ test("Testudo plugin round-trips camera and map control state and negotiates mis
     const signedBody = JSON.parse(posted[1].init.body);
     assert.equal(signedBody.package_id, "pkg-1");
     assert.equal(signedBody.package_version_id, "version-7");
-    assert.equal(signedBody.viewer_context.package_version_id, "version-7");
+    assert.equal("package_id" in signedBody.viewer_context, false);
+    assert.equal("package_version_id" in signedBody.viewer_context, false);
     assert.equal(signedBody.viewer_context.active_scenario_id, 22);
     assert.equal("bearerToken" in signedBody, false);
 

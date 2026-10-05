@@ -74,7 +74,6 @@ try {
               delta: 4, percentage_delta: 50, comparable: true, raw_table: "private raw table",
             }] }],
           },
-          od_evidence: { status: "available", metric: "journey_time", capabilities: { od_journey_time: true } },
         },
         ollaya: { status: "matched", intent: "scenario_comparison", matched: true, private_trace: "must not cross" },
       }),
@@ -289,7 +288,10 @@ try {
   assert.equal(chatRequests[0].authorization, `Testudo-Embed ${guestToken}`);
   assert.equal(chatRequests[0].body.prompt, "Question from the Testudo chat panel");
   assert.equal("guestEmbedToken" in chatRequests[0].body, false);
-  assert.equal(chatRequests[0].body.viewer_context.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
+  assert.equal("package_id" in chatRequests[0].body.viewer_context, false);
+  assert.equal("package_version_id" in chatRequests[0].body.viewer_context, false);
+  assert.equal("package_id" in chatRequests[0].body, false);
+  assert.equal("package_version_id" in chatRequests[0].body, false);
   assert.equal(chatRequests[1].body.prompt, "What changed on this route?");
   assert.equal(investigation.summary.ollaya.status, "matched");
   assert.equal("private_trace" in investigation.summary.ollaya, false);
@@ -353,7 +355,8 @@ try {
   assert.equal(chatRequests[2].authorization, "Bearer signed-browser-token-123456");
   assert.equal(chatRequests[2].body.package_id, "London/testudo-package-2026-09-24-website-demo-v1");
   assert.equal(chatRequests[2].body.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
-  assert.equal(chatRequests[2].body.viewer_context.package_version_id, "32787055-7258-45f0-8593-f8c53e1cc788");
+  assert.equal("package_id" in chatRequests[2].body.viewer_context, false);
+  assert.equal("package_version_id" in chatRequests[2].body.viewer_context, false);
   assert.equal(chatRequests[2].body.viewer_context.active_scenario_id, selectedScenarioId);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({

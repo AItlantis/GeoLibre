@@ -534,8 +534,6 @@ export const plugin = {
         const viewerContext = {
           surface: "geolibre",
           map: { available: Boolean(app.getMap?.()) },
-          ...(packageBinding?.packageId ? { package_id: packageBinding.packageId } : {}),
-          ...(packageBinding?.packageVersionId ? { package_version_id: packageBinding.packageVersionId } : {}),
           ...(typeof activeScenarioId === "string" && activeScenarioId.length > 0 && activeScenarioId.length <= 128 || Number.isSafeInteger(activeScenarioId)
             ? { active_scenario_id: activeScenarioId }
             : {}),
