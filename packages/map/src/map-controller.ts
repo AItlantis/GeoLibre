@@ -963,6 +963,10 @@ export class MapController implements MapEngine {
     return true;
   }
 
+  getBuiltInControlVisible(control: BuiltInMapControl): boolean {
+    return this.controlVisibility[control];
+  }
+
   getBuiltInControlPosition(control: BuiltInMapControl): maplibregl.ControlPosition {
     return this.controlPositions[control];
   }

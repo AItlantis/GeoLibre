@@ -12,6 +12,7 @@ export {
   type AssistantToolEntry,
 } from "./assistant-tool-registry";
 export * from "./types";
+export * from "./shared-features";
 export { PluginManager } from "./plugin-manager";
 export {
   registerRightPanel,

@@ -9,6 +9,7 @@ import {
 } from "@geolibre/core";
 import { buildProjectEgressSnapshot } from "../lib/build-project-snapshot";
 import { nativeWmsTileUrl } from "../lib/native-wms-url";
+import { readEmbedOrigins } from "../lib/embed-api";
 import {
   addRasterToMap,
   readRasterWindow,
@@ -105,6 +106,7 @@ import {
   pointCloudAnnotationPlugin,
   maplibreUsgsNldiPlugin,
   PluginManager,
+  sharedFeatureRegistry,
   registerRightPanel,
   unregisterRightPanel,
   openRightPanel,
@@ -1057,6 +1059,13 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
   // itself (e.g. addCogLayer -> addRasterToMap) can pass `api`. Only read
   // when those methods are called, which is always after assignment.
   const api = {
+    sharedFeatures: sharedFeatureRegistry,
+    getEmbedAllowedOrigins: () => readEmbedOrigins().filter((origin) => origin !== "*"),
+    registerSharedFeatures: (_contribution: import("@geolibre/plugins").SharedFeatureContribution) => {
+      throw new Error("Shared feature providers must register through a PluginManager activation scope.");
+    },
+    registerSharedFeaturesForPlugin: (owner: string, contribution: import("@geolibre/plugins").SharedFeatureContribution) =>
+      sharedFeatureRegistry.register(owner, contribution),
     setBasemap: (url: string) => {
       const state = useAppStore.getState();
       if (state.primaryRenderer === "mapbox") {
@@ -1509,6 +1518,9 @@ export function createAppAPI(mapControllerRef?: RefObject<MapEngine | null>) {
       control: Parameters<MapEngine["setBuiltInControlVisible"]>[0],
       visible: boolean,
     ) => mapControllerRef?.current?.setBuiltInControlVisible(control, visible) ?? false,
+    getBuiltInMapControlVisible: (
+      control: Parameters<MapEngine["setBuiltInControlVisible"]>[0],
+    ) => mapControllerRef?.current?.getBuiltInControlVisible?.(control) ?? false,
     setTerrainEnabled: (enabled: boolean) =>
       mapControllerRef?.current?.setTerrainEnabled(enabled) ?? false,
     isTerrainEnabled: () => mapControllerRef?.current?.isTerrainEnabled() ?? false,

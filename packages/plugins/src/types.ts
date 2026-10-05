@@ -18,6 +18,7 @@ import type { Feature, FeatureCollection, Geometry } from "geojson";
 import type { IControl, Map as MapLibreMap } from "maplibre-gl";
 import type { OvertureTheme } from "maplibre-gl-overture-maps";
 import type { TemporalLayerAdapter } from "./plugins/temporal-layers";
+import type { SharedFeatureApi, SharedFeatureContribution } from "./shared-features";
 import type { GeoLibreToolbarLabel } from "./toolbar-menu-label";
 
 export type GeoLibreMapControlPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -445,6 +446,10 @@ export interface GeoLibrePluginCredentials {
 }
 
 export interface GeoLibreAppAPI {
+  /** Live shared controls; providers own their state and register through the lifecycle-scoped method below. */
+  sharedFeatures?: SharedFeatureApi;
+  /** Register live feature adapters for this plugin. PluginManager binds ownership and the returned disposer removes them. */
+  registerSharedFeatures?: (contribution: SharedFeatureContribution) => () => void;
   /** Register an SDK Tool. The host scopes ownership to the calling plugin.
    * Returns a disposer; the host also removes tools on plugin deactivation.
    */
@@ -728,6 +733,8 @@ export interface GeoLibreAppAPI {
   getMap?: () => MapLibreMap | null;
   /** Active primary renderer, including while its canvas is being replaced. */
   getMapRenderer?: () => MapRendererKind;
+  /** Configured origins trusted to send commands to a framed GeoLibre app. */
+  getEmbedAllowedOrigins?: () => string[];
   /** Native ArcGIS view; null while another engine is active. */
   getArcgisView?: () => ReturnType<import("@geolibre/map").ArcgisEngine["getView"]>;
   /**
@@ -848,6 +855,7 @@ export interface GeoLibreAppAPI {
   addMapControl: (control: IControl, position?: GeoLibreMapControlPosition) => boolean;
   removeMapControl: (control: IControl) => void;
   setBuiltInMapControlVisible: (control: GeoLibreBuiltInMapControl, visible: boolean) => boolean;
+  getBuiltInMapControlVisible?: (control: GeoLibreBuiltInMapControl) => boolean;
   getBuiltInMapControlPosition: (control: GeoLibreBuiltInMapControl) => GeoLibreMapControlPosition;
   setBuiltInMapControlPosition: (
     control: GeoLibreBuiltInMapControl,
