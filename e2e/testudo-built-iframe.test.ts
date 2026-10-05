@@ -27,6 +27,8 @@ async function openParent(): Promise<Page> {
   if (!browser) throw new Error("Test browser is not running.");
   const context = await browser.newContext();
   const page = await context.newPage();
+  // tsx keepNames rewrites serialized page.evaluate callbacks to call this helper.
+  await page.addInitScript("window.__name = (fn) => fn;");
   await page.goto(`http://127.0.0.1:${port}/test-parent.html`);
   return page;
 }
@@ -91,69 +93,126 @@ it("round-trips commands through the exact built Testudo iframe and embed client
     if (message.type() === "error") process.stderr.write(`[built-iframe console] ${message.text()}\n`);
   });
   const output = await page.evaluate(async () => {
-    const { connect } = await import("/geolibre-native/embed-client.js");
+    const embedClientUrl: string = "/geolibre-native/embed-client.js";
+    const { connect } = await import(embedClientUrl);
     const iframe = document.querySelector("#app") as HTMLIFrameElement;
+    const proxyMetrics = { fetchCount: 0, sawHostAuth: false };
     const client = await connect(iframe, {
       origin: location.origin,
       timeoutMs: 15_000,
       fetchArtifact: async ({ artifactRef }, signal) => {
+        proxyMetrics.fetchCount += 1;
         const response = await fetch(`/host-proxy-artifact?ref=${encodeURIComponent(artifactRef)}`, {
           headers: { Authorization: "Bearer host-only-e2e" }, signal,
         });
         if (!response.ok) throw new Error("Host proxy fixture failed.");
+        proxyMetrics.sawHostAuth = true;
         return response.arrayBuffer();
       },
+    });
+    (window as Window & { __testudoClient?: typeof client; __testudoProxyMetrics?: typeof proxyMetrics }).__testudoClient = client;
+    (window as Window & { __testudoProxyMetrics?: typeof proxyMetrics }).__testudoProxyMetrics = proxyMetrics;
+    client.on("testudoStateChanged", (state) => {
+      if (state.tviewId === "built-smoke" && state.progress) {
+        (window as Window & { __testudoProgress?: typeof state.progress }).__testudoProgress = state.progress;
+      }
     });
     const initialTViews = await client.testudoGetTViews();
     const created = await client.testudoCreateTView({ tviewId: "built-smoke" });
     const state = await client.testudoGetState({ tviewId: "built-smoke" });
-    const iframeWindow = iframe.contentWindow!;
-    const childFrame = iframeWindow;
-    const artifactResponse = new Promise<{ type: string; payload: { requestId: string; tviewId: string; generation: number; artifactRef: string; bytes: ArrayBuffer } }>((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error("Host-proxied artifact response timed out.")), 10_000);
-      childFrame.addEventListener("message", function onResponse(event) {
-        if (event.source !== window) return;
-        const data = event.data;
-        if (data?.type !== "testudoArtifactResponse") return;
-        childFrame.removeEventListener("message", onResponse);
-        window.clearTimeout(timer);
-        resolve(data);
-      });
-    });
-    const childChallenge = await pageChallenge();
-    iframeWindow.postMessage({
-      v: 2, source: "geolibre", type: "testudoStateChanged",
-      payload: { tviewId: "built-smoke", generation: 1, status: "loading" },
-    }, location.origin);
-    iframeWindow.postMessage({
-      v: 2, source: "geolibre", type: "testudoArtifactRequest",
-      payload: { requestId: "built-iframe-artifact-1", tviewId: "built-smoke", generation: 1,
-        artifactRef: "artifacts/manifest.json", challenge: childChallenge },
-    }, location.origin);
-    const fetchedArtifact = await artifactResponse;
-    const artifactText = new TextDecoder().decode(fetchedArtifact.payload.bytes);
-    client.disconnect();
-    return { initialTViews, created, state, fetchedArtifact, artifactText };
-
-    async function pageChallenge(): Promise<string> {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const ready = (window as Window & { __testudoReady?: { challenge?: string } }).__testudoReady;
-        if (ready?.challenge) return ready.challenge;
-        await new Promise((resolve) => window.setTimeout(resolve, 20));
-      }
-      throw new Error("Built iframe did not publish its challenge.");
-    }
+    return { initialTViews, created, state };
   });
 
   assert.deepEqual(output.initialTViews, []);
   assert.equal(output.created.tviewId, "built-smoke");
   assert.equal(output.state.tviewId, "built-smoke");
   assert.equal(output.state.status, "empty");
-  assert.equal(output.fetchedArtifact.type, "testudoArtifactResponse");
-  assert.equal(output.fetchedArtifact.payload.requestId, "built-iframe-artifact-1");
-  assert.equal(output.fetchedArtifact.payload.tviewId, "built-smoke");
-  assert.equal(output.fetchedArtifact.payload.generation, 1);
-  assert.equal(output.fetchedArtifact.payload.artifactRef, "artifacts/manifest.json");
-  assert.equal(output.artifactText, "host-proxied-artifact-bytes");
+
+  const childFrame = page.frames().find((frame) => frame.url().includes("/geolibre-native/"));
+  assert.ok(childFrame, "built Testudo iframe frame is present");
+  const challenge = await page.evaluate(() => {
+    const ready = (window as Window & { __testudoReady?: { challenge?: string } }).__testudoReady;
+    if (!ready?.challenge) throw new Error("Built iframe did not publish its challenge.");
+    return ready.challenge;
+  });
+  await childFrame.evaluate(() => {
+    (window as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies = [];
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent || event.data?.type !== "testudoArtifactResponse") return;
+      const payload = event.data.payload;
+      (window as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies?.push({
+        requestId: payload.requestId,
+        tviewId: payload.tviewId,
+        generation: payload.generation,
+        artifactRef: payload.artifactRef,
+        artifactText: payload.bytes instanceof ArrayBuffer ? new TextDecoder().decode(payload.bytes) : null,
+      });
+    });
+  });
+
+  // Send a state event through the built iframe's real window message channel.
+  // The host client must surface the loader progress and advance this TView's
+  // generation before it will accept artifact requests for that generation.
+  await childFrame.evaluate(() => window.parent.postMessage({
+    v: 2,
+    source: "geolibre",
+    type: "testudoStateChanged",
+    payload: {
+      tviewId: "built-smoke",
+      generation: 2,
+      status: "loading",
+      progress: { label: "Fetching package", value: 0.5, loaded: 5, total: 10 },
+    },
+  }, location.origin));
+  await page.waitForFunction(() => {
+    const progress = (window as Window & { __testudoProgress?: { loaded?: number; total?: number } }).__testudoProgress;
+    return progress?.loaded === 5 && progress.total === 10;
+  });
+
+  await childFrame.evaluate((currentChallenge) => {
+    window.parent.postMessage({
+      v: 2, source: "geolibre", type: "testudoArtifactRequest",
+      payload: { requestId: "built-iframe-stale", tviewId: "built-smoke", generation: 1,
+        artifactRef: "artifacts/manifest.json", challenge: currentChallenge },
+    }, location.origin);
+    window.parent.postMessage({
+      v: 2, source: "geolibre", type: "testudoArtifactRequest",
+      payload: { requestId: "built-iframe-credential", tviewId: "built-smoke", generation: 2,
+        artifactRef: "artifacts/manifest.json", challenge: currentChallenge, authorization: "fixture-only-rejected" },
+    }, location.origin);
+  }, challenge);
+  await page.waitForTimeout(50);
+  const rejectedMetrics = await page.evaluate(() => ({
+    fetchCount: (window as Window & { __testudoProxyMetrics?: { fetchCount: number } }).__testudoProxyMetrics?.fetchCount,
+    replies: (window.frames[0] as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies?.length,
+  }));
+  assert.deepEqual(rejectedMetrics, { fetchCount: 0, replies: 0 });
+
+  await childFrame.evaluate((currentChallenge) => window.parent.postMessage({
+    v: 2, source: "geolibre", type: "testudoArtifactRequest",
+    payload: { requestId: "built-iframe-artifact-1", tviewId: "built-smoke", generation: 2,
+      artifactRef: "artifacts/manifest.json", challenge: currentChallenge },
+  }, location.origin), challenge);
+  await childFrame.waitForFunction(() =>
+    ((window as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies?.length ?? 0) === 1,
+  );
+  const fetchedArtifact = await childFrame.evaluate(() =>
+    (window as Window & { __testudoArtifactReplies?: Array<Record<string, unknown>> }).__testudoArtifactReplies?.[0],
+  );
+  const proxyMetrics = await page.evaluate(() =>
+    (window as Window & { __testudoProxyMetrics?: { fetchCount: number; sawHostAuth: boolean } }).__testudoProxyMetrics,
+  );
+  assert.deepEqual(fetchedArtifact, {
+    requestId: "built-iframe-artifact-1",
+    tviewId: "built-smoke",
+    generation: 2,
+    artifactRef: "artifacts/manifest.json",
+    artifactText: "host-proxied-artifact-bytes",
+  });
+  assert.deepEqual(proxyMetrics, { fetchCount: 1, sawHostAuth: true });
   assert.equal(hostProxySawHostAuth, true);
+
+  await page.evaluate(() =>
+    (window as Window & { __testudoClient?: { disconnect(): void } }).__testudoClient?.disconnect(),
+  );
 });
