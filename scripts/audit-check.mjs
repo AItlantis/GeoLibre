@@ -10,12 +10,43 @@
 // Rules for adding an entry: there must be no patched version available, the
 // vulnerable code must not reach a GeoLibre runtime path, and the reason has to
 // say why on both counts. Anything upgradeable gets upgraded instead.
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 // Severities that fail the build. Moderate/low are left to Dependabot PRs.
 const BLOCKING = new Set(["high", "critical"]);
 
 const ALLOWLIST = new Map();
+
+// npm's advisory report is keyed by the upstream tarball version and cannot
+// see patch-package edits. These entries are accepted only while the exact
+// patched source guard is present in the installed package.
+const PATCHED_SOURCE_ADVISORIES = new Map([
+  ["GHSA-86w9-cpqp-85rv", {
+    packageName: "node-forge",
+    packageVersion: "1.4.0",
+    path: "node_modules/node-forge/lib/rsa.js",
+    sourceGuard: "obj.value.length !== 2 || obj.value[0].value.length > 2",
+  }],
+  ["GHSA-vfj7-8cjw-p6xm", {
+    packageName: "braces",
+    packageVersion: "3.0.3",
+    path: "node_modules/braces/lib/parse.js",
+    sourceGuard: "depth >= MAX_NESTING_DEPTH",
+  }],
+]);
+
+function patchedSourceIsInstalled(id, advisory) {
+  const expected = PATCHED_SOURCE_ADVISORIES.get(id);
+  if (!expected || !advisory.packages.has(expected.packageName) || !existsSync(expected.path)) return false;
+  try {
+    const packageJson = JSON.parse(readFileSync(`node_modules/${expected.packageName}/package.json`, "utf8"));
+    const source = readFileSync(expected.path, "utf8");
+    return packageJson.version === expected.packageVersion && source.includes(expected.sourceGuard);
+  } catch {
+    return false;
+  }
+}
 
 const audit = spawnSync("npm", ["audit", "--omit=dev", "--json"], {
   encoding: "utf8",
@@ -96,13 +127,18 @@ for (const vuln of Object.values(report.vulnerabilities)) {
 }
 
 const blocking = [...advisories].filter(
-  ([id, a]) => BLOCKING.has(a.severity) && !ALLOWLIST.has(id),
+  ([id, a]) => BLOCKING.has(a.severity) && !ALLOWLIST.has(id) && !patchedSourceIsInstalled(id, a),
 );
 const allowed = [...advisories].filter(([id]) => ALLOWLIST.has(id));
+const remediated = [...advisories].filter(([id, a]) => PATCHED_SOURCE_ADVISORIES.has(id) && patchedSourceIsInstalled(id, a));
 
 for (const [id, a] of allowed) {
   console.log(`allowed  ${a.severity.padEnd(8)} ${id}  ${[...a.packages].join(", ")}`);
   console.log(`         ${ALLOWLIST.get(id)}`);
+}
+for (const [id, a] of remediated) {
+  console.log(`patched  ${a.severity.padEnd(8)} ${id}  ${[...a.packages].join(", ")}`);
+  console.log(`         verified ${PATCHED_SOURCE_ADVISORIES.get(id).packageName}@${PATCHED_SOURCE_ADVISORIES.get(id).packageVersion} source guard`);
 }
 
 // Stale entries are a warning, not a failure: the advisory database is a live
@@ -127,5 +163,5 @@ for (const [id, a] of blocking) {
   console.error(`           ${a.title}`);
   if (a.url) console.error(`           ${a.url}`);
 }
-console.error("\nUpgrade the dependency, or add an entry to ALLOWLIST in scripts/audit-check.mjs.");
+console.error("\nUpgrade the dependency or add a verified source patch. Do not allowlist vulnerable source.");
 process.exit(1);

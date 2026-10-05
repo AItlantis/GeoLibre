@@ -160,6 +160,35 @@ export interface EmbedRequest {
   requestId: string | null;
 }
 
+/** v2, namespaced Testudo command envelope; transport authentication is handled by useEmbedApi. */
+export interface TestudoEmbedRequest {
+  type: `testudo${string}`;
+  payload: Record<string, unknown>;
+  requestId: string;
+}
+
+const TESTUDO_COMMANDS = new Set([
+  "testudoCreateTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView",
+  "testudoLoadPackage", "testudoSetPlugin", "testudoSetMode",
+  "testudoSetPreset", "testudoGetState", "testudoSetScenario", "testudoSetPlaybackPlaying",
+  "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState",
+  "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode",
+  "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery",
+  "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState",
+  "testudoRequestInvestigation", "testudoRespondGeoAIRequest", "testudoSetGuestCapability", "testudoOpenAnnotations",
+  "testudoOpenRecordTour", "testudoOpenRecordVideo",
+]);
+
+/** Parse only the Testudo v2 namespace and require its child-issued challenge. */
+export function parseTestudoEmbedRequest(data: unknown, challenge: string): TestudoEmbedRequest | null {
+  if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo") return null;
+  if (typeof data.type !== "string" || !TESTUDO_COMMANDS.has(data.type)) return null;
+  if (typeof data.requestId !== "string" || data.requestId.length < 1 || data.requestId.length > 200) return null;
+  if (!isRecord(data.payload) || data.payload.challenge !== challenge) return null;
+  const { challenge: _challenge, ...payload } = data.payload;
+  return { type: data.type as TestudoEmbedRequest["type"], payload, requestId: data.requestId };
+}
+
 /** App → host event names. */
 export type EmbedEventType =
   | "ready"
@@ -169,7 +198,11 @@ export type EmbedEventType =
   | "rendererchange"
   | "viewChanged"
   | "toolCompleted"
-  | "serverFileWritten";
+  | "serverFileWritten"
+  | "testudoStateChanged"
+  | "testudoActiveTViewChanged"
+  | "testudoPlaybackChanged"
+  | "testudoGeoAIRequest";
 
 /** An app → host message, ready to hand to `postMessage`. */
 export interface EmbedEvent {

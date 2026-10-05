@@ -3,6 +3,11 @@ import { type RefObject, useEffect } from "react";
 import { getLayerBounds, type MapEngine } from "@geolibre/map";
 import { imageBlobToDataUrl } from "@geolibre/map";
 import {
+  TestudoFeatureBridge,
+  getTestudoPackageProvider,
+  type TestudoPackageBootstrap,
+} from "@geolibre/plugins";
+import {
   buildEmbedEvent,
   buildEmbedLayer,
   embedEventTargets,
@@ -11,6 +16,7 @@ import {
   embedRequestVersion,
   isEmbedOriginAllowed,
   parseEmbedRequest,
+  parseTestudoEmbedRequest,
   readEmbedOrigins,
   requireEmbedLayer,
   resolveHighlightIds,
@@ -81,6 +87,14 @@ export function useEmbedApi(
     let hostOrigin: string | null = null;
     let hostVersion: 1 | 2 | null = null;
     let disposed = false;
+    const randomChallengeBytes = new Uint8Array(16);
+    crypto.getRandomValues(randomChallengeBytes);
+    const testudoChallenge = [...randomChallengeBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const testudo = new TestudoFeatureBridge((bootstrap) => {
+      const selected = bootstrap.selectedPlugin ?? bootstrap.capabilities?.find((item) => item.available)?.id;
+      if (!selected) return null;
+      return getTestudoPackageProvider(selected as "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison", bootstrap);
+    });
 
     const emit = (type: EmbedEventType, payload: Record<string, unknown>, version?: 1 | 2) => {
       if (disposed) return;
@@ -116,6 +130,158 @@ export function useEmbedApi(
         },
         version,
       );
+    };
+
+    const emitTestudoState = (tviewId: string) => {
+      try {
+        emit("testudoStateChanged", testudo.getState(tviewId) as unknown as Record<string, unknown>, 2);
+      } catch {
+        // A closed TView has no state to publish.
+      }
+    };
+    const unsubscribeActiveTView = testudo.subscribeActiveTView((tviewId) => {
+      emit("testudoActiveTViewChanged", { tviewId }, 2);
+    });
+    const unsubscribeGeoAI = testudo.subscribeGeoAIRequests((request) => {
+      emit("testudoGeoAIRequest", request as unknown as Record<string, unknown>, 2);
+    });
+    const unsubscribePlayback = testudo.subscribePlayback((tviewId, state) => {
+      emit("testudoPlaybackChanged", { ...state, tviewId }, 2);
+    });
+    const clearGuestCapability = () => testudo.clearGuestCapability();
+
+    const requiredText = (payload: Record<string, unknown>, name: string, max = 512) => {
+      const value = payload[name];
+      if (typeof value !== "string" || !value.trim() || value.length > max) {
+        throw new Error(`${name} must be a non-empty string of at most ${max} characters.`);
+      }
+      return value;
+    };
+    const scopedId = (payload: Record<string, unknown>) => requiredText(payload, "tviewId", 120);
+    const testudoState = (tviewId: string) => emitTestudoState(tviewId);
+    const runTestudoCommand = async (type: string, payload: Record<string, unknown>): Promise<unknown> => {
+      switch (type) {
+        case "testudoCreateTView": {
+          const result = testudo.createTView(requiredText(payload, "tviewId", 120));
+          emitTestudoState(result.tviewId);
+          return result;
+        }
+        case "testudoGetTViews": return testudo.getTViews();
+        case "testudoSetActiveTView": {
+          const result = testudo.setActiveTView(scopedId(payload));
+          emit("testudoActiveTViewChanged", result, 2);
+          return result;
+        }
+        case "testudoGetActiveTView": return testudo.getActiveTView();
+        case "testudoLoadPackage": {
+          const tviewId = scopedId(payload);
+          const bootstrap = payload.bootstrap as TestudoPackageBootstrap | undefined;
+          if (!bootstrap || typeof bootstrap !== "object") throw new Error("A published package bootstrap is required.");
+          const selectedPlugin = typeof payload.selectedPlugin === "string"
+            ? payload.selectedPlugin
+            : bootstrap.capabilities?.find((item) => item.available)?.id;
+          const result = await testudo.loadPackage(tviewId, { ...bootstrap, ...(selectedPlugin ? { selectedPlugin } : {}) }, (progress) => {
+            emit("testudoStateChanged", {
+              ...testudo.getState(tviewId),
+              progress: { label: progress.label ?? "Loading package", value: progress.value, loaded: progress.loaded, total: progress.total },
+            }, 2);
+          });
+          testudoState(tviewId);
+          return testudo.getState(tviewId);
+        }
+        case "testudoGetState": return testudo.getState(scopedId(payload));
+        case "testudoSetPlugin": await testudo.selectPlugin(scopedId(payload), requiredText(payload, "id", 80)); testudoState(scopedId(payload)); return testudo.getState(scopedId(payload));
+        case "testudoSetPreset": await testudo.applyPreset(scopedId(payload), requiredText(payload, "id", 100)); testudoState(scopedId(payload)); return testudo.getState(scopedId(payload));
+        case "testudoSetMode":
+        case "testudoSetViewMode": {
+          const tviewId = scopedId(payload);
+          const selected = await testudo.setViewMode(tviewId, requiredText(payload, "mode", 20) as "animation" | "flow" | "paths" | "density");
+          testudoState(tviewId);
+          return { mode: selected };
+        }
+        case "testudoSetScenario": {
+          const tviewId = scopedId(payload);
+          const id = await testudo.selectScenario(tviewId, requiredText(payload, "scenarioId", 120));
+          const scenario = testudo.sessions.get(tviewId)?.scenarios?.find((item) => item.id === id);
+          testudoState(tviewId);
+          return { id, label: scenario?.label ?? id, selected: true, replicationIds: scenario?.replications?.map((item) => item.id) ?? [] };
+        }
+        case "testudoSetPlaybackPlaying": {
+          const tviewId = scopedId(payload);
+          if (typeof payload.playing !== "boolean") throw new Error("playing must be a boolean.");
+          const state = await testudo.playback(tviewId, payload.playing ? "play" : "pause");
+          emit("testudoPlaybackChanged", { ...state, tviewId }, 2);
+          return state;
+        }
+        case "testudoRestartPlayback": {
+          const tviewId = scopedId(payload); const state = await testudo.playback(tviewId, "restart");
+          emit("testudoPlaybackChanged", { ...state, tviewId }, 2); return state;
+        }
+        case "testudoSeekPlayback":
+        case "testudoSetPlaybackSpeed": {
+          const tviewId = scopedId(payload); const isSeek = type === "testudoSeekPlayback";
+          const value = payload[isSeek ? "tick" : "speed"];
+          if (typeof value !== "number") throw new Error(`${isSeek ? "tick" : "speed"} must be a number.`);
+          const state = await testudo.playback(tviewId, isSeek ? "seek" : "speed", value);
+          emit("testudoPlaybackChanged", { ...state, tviewId }, 2); return state;
+        }
+        case "testudoGetPlaybackState": return testudo.getPlaybackState(scopedId(payload));
+        case "testudoSetCameraView": {
+          const tviewId = scopedId(payload); const view = payload.view as { center: [number, number]; zoom: number; bearing?: number; pitch?: number };
+          if (!view || !Array.isArray(view.center)) throw new Error("view must contain a camera center and zoom.");
+          await testudo.setCameraView(tviewId, view); return view;
+        }
+        case "testudoGetCameraView": return testudo.getCameraView(scopedId(payload));
+        case "testudoSetMapControl": {
+          const tviewId = scopedId(payload); if (typeof payload.visible !== "boolean") throw new Error("visible must be a boolean.");
+          return { visible: await testudo.setMapControl(tviewId, requiredText(payload, "controlId", 100), payload.visible) };
+        }
+        case "testudoSetNetworkFilter": {
+          const tviewId = scopedId(payload); const filter = payload.filter as { id?: unknown; enabled?: unknown; value?: unknown };
+          if (!filter || typeof filter.id !== "string" || typeof filter.enabled !== "boolean") throw new Error("filter must contain id and enabled.");
+          await testudo.setNetworkFilter(tviewId, filter as { id: string; enabled: boolean; value?: string | number | boolean }); return { applied: true };
+        }
+        case "testudoSetLegendVisibility":
+        case "testudoSetEsriWorldImagery": {
+          const tviewId = scopedId(payload); if (typeof payload.visible !== "boolean") throw new Error("visible must be a boolean.");
+          const controlId = type === "testudoSetLegendVisibility" ? "legend" : "esri-world-imagery";
+          return { visible: await testudo.setMapControl(tviewId, controlId, payload.visible) };
+        }
+        case "testudoSetKpiGeometry": {
+          const tviewId = scopedId(payload); if (typeof payload.visible !== "boolean" || (payload.geometry !== "lanes" && payload.geometry !== "sections")) throw new Error("geometry and visible are invalid.");
+          return testudo.setKpiGeometry(tviewId, payload.geometry, payload.visible);
+        }
+        case "testudoGetKpiGeometryState": return testudo.getKpiGeometryState(scopedId(payload));
+        case "testudoSetRenderer": {
+          const tviewId = scopedId(payload); if (payload.renderer !== "maplibre" && payload.renderer !== "cesium") throw new Error("renderer is invalid.");
+          return { renderer: await testudo.setRenderer(tviewId, payload.renderer) };
+        }
+        case "testudoGetMapControlState": return testudo.getMapControlState(scopedId(payload));
+        case "testudoSetGuestCapability": {
+          if (payload.protocol !== 1) throw new Error("Guest capability protocol is unsupported.");
+          return testudo.setGuestCapability(requiredText(payload, "guestEmbedToken", 4096), payload.expiresAt as number);
+        }
+        case "testudoRequestInvestigation": {
+          const result = await testudo.requestInvestigation(scopedId(payload), requiredText(payload, "question", 8_000), typeof payload.activeScenarioId === "string" ? payload.activeScenarioId : undefined);
+          return result;
+        }
+        case "testudoRespondGeoAIRequest": {
+          const requestId = requiredText(payload, "requestId", 200);
+          const tviewId = scopedId(payload);
+          if (typeof payload.generation !== "number" || !Number.isSafeInteger(payload.generation) || payload.generation < 1) {
+            throw new Error("GeoAI reply generation is invalid.");
+          }
+          const reply = {
+            ...(typeof payload.content === "string" ? { content: payload.content } : {}),
+            ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+          };
+          return testudo.respondGeoAIRequestTuple(requestId, tviewId, payload.generation, reply);
+        }
+        case "testudoOpenAnnotations": return { active: await testudo.openAnnotations(scopedId(payload)) };
+        case "testudoOpenRecordTour": await testudo.openRecordTour(scopedId(payload)); return { opened: true };
+        case "testudoOpenRecordVideo": await testudo.openRecordVideo(scopedId(payload)); return { opened: true };
+        default: throw new Error(`Unsupported Testudo command: ${type}`);
+      }
     };
 
     const controller = () => mapControllerRef.current;
@@ -303,6 +469,25 @@ export function useEmbedApi(
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== host) return;
       if (!isEmbedOriginAllowed(event.origin, allowedOrigins)) return;
+      if (
+        event.data && typeof event.data === "object" &&
+        (event.data as Record<string, unknown>).source === "testudo"
+      ) {
+        const request = parseTestudoEmbedRequest(event.data, testudoChallenge);
+        if (!request) return;
+        if (!hostOrigin && event.origin && event.origin !== "null") hostOrigin = event.origin;
+        hostVersion ??= 2;
+        void runTestudoCommand(request.type, request.payload).then(
+          (result) => ack(request.requestId, 2, true, undefined, result),
+          (error: unknown) => ack(
+            request.requestId,
+            2,
+            false,
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
+        return;
+      }
       const request = parseEmbedRequest(event.data);
       if (!request) return;
       // A valid, allowed message identifies the host: scope every later event to
@@ -437,13 +622,17 @@ export function useEmbedApi(
     // publish bump re-runs this effect to emit it then.
     const engine = controller();
     if (engine && engine.kind === useAppStore.getState().primaryRenderer) {
-      emit("ready", { version: __GEOLIBRE_VERSION__ });
+      emit("ready", { version: __GEOLIBRE_VERSION__, challenge: testudoChallenge });
     }
 
     return () => {
       disposed = true;
+      clearGuestCapability();
       window.removeEventListener("message", handleMessage);
       unsubscribe();
+      unsubscribeActiveTView();
+      unsubscribeGeoAI();
+      unsubscribePlayback();
       loadAbort?.abort();
       for (const abort of dataLoadAborts) abort.abort();
       dataLoadAborts.clear();

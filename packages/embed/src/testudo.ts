@@ -1,0 +1,66 @@
+export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison";
+export type TestudoDemoMode = "animation" | "flow" | "paths" | "density";
+export type TestudoViewMode = TestudoDemoMode;
+export type TestudoRenderer = "maplibre" | "cesium";
+export type TestudoKpiGeometry = "lanes" | "sections";
+
+export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
+export interface TestudoBootstrap {
+  packageId: string;
+  versionId: string;
+  label: string;
+  origin: "published";
+  manifestPath: string;
+  nativeManifestPath: string;
+  artifactEndpoint: string;
+  capabilities: TestudoCapability[];
+  presets: Array<{ id: string; label?: string; plugin: TestudoCapabilityId; settings?: Record<string, string | number | boolean>; view?: { center: [number, number]; zoom: number; pitch?: number; bearing?: number } }>;
+}
+
+export interface TestudoPackageProgress { label: string; value: number; loaded: number; total: number }
+export interface TestudoViewerState {
+  tviewId: string;
+  generation: number;
+  package: { packageId: string; versionId: string | null; label: string; origin: "published" | "local" } | null;
+  selectedPlugin: TestudoCapabilityId | null;
+  capabilities: TestudoCapability[];
+  availableModes: TestudoDemoMode[];
+  selectedMode?: TestudoDemoMode;
+  status: "empty" | "loading" | "ready" | "error";
+  error?: string;
+  presetId?: string;
+  progress?: TestudoPackageProgress;
+}
+export interface TestudoPlaybackState {
+  available: boolean;
+  loading: boolean;
+  playing: boolean;
+  tick: number;
+  maxTick: number;
+  speed: number;
+  dt: number;
+  loop: boolean;
+}
+export interface TestudoLoadPackage { tviewId: string; bootstrap: TestudoBootstrap; selectedPlugin?: TestudoCapabilityId; presetId?: string }
+export interface TestudoScenarioState { id: string; label: string; selected: boolean; replicationIds: number[] }
+export interface TestudoCameraView { center: [number, number]; zoom: number; bearing?: number; pitch?: number }
+export interface TestudoNetworkFilter { id: string; enabled: boolean; value?: string | number | boolean }
+export interface TestudoMapControlState { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: TestudoRenderer }
+export interface TestudoActiveTView { tviewId: string | null }
+export interface TestudoTViewInfo { tviewId: string; generation: number; loaded: boolean }
+export interface TestudoGeoAIRequest {
+  requestId: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  context: { tviewId: string; generation: number; packageId: string; versionId: string; pluginId: string; scenarioId?: string };
+}
+
+export interface TestudoScopedPayload { tviewId: string }
+export interface TestudoInvestigationAccepted { requestId: string; tviewId: string; generation: number; accepted: true }
+export interface TestudoSetGuestCapability { protocol: 1; guestEmbedToken: string; expiresAt: number }
+export interface TestudoGeoAIReplyPayload {
+  requestId: string;
+  tviewId: string;
+  generation: number;
+  content?: string;
+  error?: string;
+}

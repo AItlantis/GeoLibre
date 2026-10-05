@@ -1,3 +1,26 @@
+import type {
+  TestudoBootstrap,
+  TestudoActiveTView,
+  TestudoTViewInfo,
+  TestudoCameraView,
+  TestudoCapabilityId,
+  TestudoDemoMode,
+  TestudoGeoAIReplyPayload,
+  TestudoGeoAIRequest,
+  TestudoInvestigationAccepted,
+  TestudoKpiGeometry,
+  TestudoLoadPackage,
+  TestudoNetworkFilter,
+  TestudoMapControlState,
+  TestudoPlaybackState,
+  TestudoRenderer,
+  TestudoScenarioState,
+  TestudoSetGuestCapability,
+  TestudoScopedPayload,
+  TestudoViewerState,
+} from "./testudo";
+export type * from "./testudo";
+
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -50,7 +73,11 @@ export interface AddDataOptions {
 }
 
 export type EmbedEventMap = {
-  ready: { version: string };
+  ready: { version: string; challenge?: string };
+  testudoStateChanged: TestudoViewerState;
+  testudoActiveTViewChanged: TestudoActiveTView;
+  testudoPlaybackChanged: TestudoPlaybackState & TestudoScopedPayload;
+  testudoGeoAIRequest: TestudoGeoAIRequest;
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack
@@ -78,6 +105,38 @@ export interface ConnectOptions {
 }
 
 export interface GeoLibreEmbedClient {
+  testudoCreateTView(payload: { tviewId: string }): Promise<TestudoTViewInfo>;
+  testudoGetTViews(): Promise<TestudoTViewInfo[]>;
+  testudoSetActiveTView(payload: { tviewId: string }): Promise<TestudoActiveTView>;
+  testudoGetActiveTView(): Promise<TestudoActiveTView>;
+  testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
+  testudoSetPlugin(payload: TestudoScopedPayload & { id: TestudoCapabilityId }): Promise<TestudoViewerState>;
+  testudoSetMode(payload: TestudoScopedPayload & { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
+  testudoSetPreset(payload: TestudoScopedPayload & { id: string }): Promise<TestudoViewerState>;
+  testudoGetState(payload: TestudoScopedPayload): Promise<TestudoViewerState>;
+  testudoSetScenario(payload: TestudoScopedPayload & { scenarioId: string }): Promise<TestudoScenarioState>;
+  testudoSetPlaybackPlaying(payload: TestudoScopedPayload & { playing: boolean }): Promise<TestudoPlaybackState>;
+  testudoRestartPlayback(payload: TestudoScopedPayload): Promise<TestudoPlaybackState>;
+  testudoSeekPlayback(payload: TestudoScopedPayload & { tick: number }): Promise<TestudoPlaybackState>;
+  testudoSetPlaybackSpeed(payload: TestudoScopedPayload & { speed: number }): Promise<TestudoPlaybackState>;
+  testudoGetPlaybackState(payload: TestudoScopedPayload): Promise<TestudoPlaybackState>;
+  testudoSetCameraView(payload: TestudoScopedPayload & { view: TestudoCameraView }): Promise<TestudoCameraView>;
+  testudoGetCameraView(payload: TestudoScopedPayload): Promise<TestudoCameraView | null>;
+  testudoSetMapControl(payload: TestudoScopedPayload & { controlId: string; visible: boolean }): Promise<{ visible: boolean }>;
+  testudoSetViewMode(payload: TestudoScopedPayload & { mode: TestudoDemoMode }): Promise<{ mode: TestudoDemoMode }>;
+  testudoSetNetworkFilter(payload: TestudoScopedPayload & { filter: TestudoNetworkFilter }): Promise<{ applied: true }>;
+  testudoSetLegendVisibility(payload: TestudoScopedPayload & { visible: boolean }): Promise<{ visible: boolean }>;
+  testudoSetEsriWorldImagery(payload: TestudoScopedPayload & { visible: boolean }): Promise<{ visible: boolean }>;
+  testudoSetKpiGeometry(payload: TestudoScopedPayload & { geometry: TestudoKpiGeometry; visible: boolean }): Promise<{ showLanes: boolean; showSections: boolean }>;
+  testudoGetKpiGeometryState(payload: TestudoScopedPayload): Promise<{ showLanes: boolean; showSections: boolean }>;
+  testudoSetRenderer(payload: TestudoScopedPayload & { renderer: TestudoRenderer }): Promise<{ renderer: TestudoRenderer }>;
+  testudoGetMapControlState(payload: TestudoScopedPayload): Promise<TestudoMapControlState>;
+  testudoSetGuestCapability(payload: TestudoSetGuestCapability): Promise<{ accepted: true; expiresAt: number }>;
+  testudoRequestInvestigation(payload: { question: string; tviewId: string; activeScenarioId?: string }): Promise<TestudoInvestigationAccepted>;
+  testudoRespondGeoAIRequest(payload: TestudoGeoAIReplyPayload): Promise<{ requestId: string; accepted: boolean }>;
+  testudoOpenAnnotations(payload: TestudoScopedPayload): Promise<{ active: boolean }>;
+  testudoOpenRecordTour(payload: TestudoScopedPayload): Promise<{ opened: true }>;
+  testudoOpenRecordVideo(payload: TestudoScopedPayload): Promise<{ opened: true }>;
   loadProject(url: string): Promise<void>;
   setView(target: ViewTarget): Promise<void>;
   highlightFeature(payload: {
@@ -132,6 +191,7 @@ export function connect(
   if (!target) return Promise.reject(new Error("The iframe has no contentWindow"));
 
   let sequence = 0;
+  let testudoChallenge: string | null = null;
   let disconnected = false;
   const pending = new Map<string, Pending>();
   const listeners = new Map<EventName, Set<(payload: never) => void>>();
@@ -166,6 +226,38 @@ export function connect(
   });
 
   const client: GeoLibreEmbedClient = {
+    testudoCreateTView: (payload) => sendTestudo<TestudoTViewInfo>("testudoCreateTView", payload),
+    testudoGetTViews: () => sendTestudo<TestudoTViewInfo[]>("testudoGetTViews"),
+    testudoSetActiveTView: (payload) => sendTestudo<TestudoActiveTView>("testudoSetActiveTView", payload),
+    testudoGetActiveTView: () => sendTestudo<TestudoActiveTView>("testudoGetActiveTView"),
+    testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", payload as unknown as Record<string, unknown>),
+    testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload as unknown as Record<string, unknown>),
+    testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload as unknown as Record<string, unknown>),
+    testudoSetPreset: (payload) => sendTestudo<TestudoViewerState>("testudoSetPreset", payload as unknown as Record<string, unknown>),
+    testudoGetState: (payload) => sendTestudo<TestudoViewerState>("testudoGetState", payload as unknown as Record<string, unknown>),
+    testudoSetScenario: (payload) => sendTestudo<TestudoScenarioState>("testudoSetScenario", payload as unknown as Record<string, unknown>),
+    testudoSetPlaybackPlaying: (payload) => sendTestudo<TestudoPlaybackState>("testudoSetPlaybackPlaying", payload as unknown as Record<string, unknown>),
+    testudoRestartPlayback: (payload) => sendTestudo<TestudoPlaybackState>("testudoRestartPlayback", payload as unknown as Record<string, unknown>),
+    testudoSeekPlayback: (payload) => sendTestudo<TestudoPlaybackState>("testudoSeekPlayback", payload as unknown as Record<string, unknown>),
+    testudoSetPlaybackSpeed: (payload) => sendTestudo<TestudoPlaybackState>("testudoSetPlaybackSpeed", payload as unknown as Record<string, unknown>),
+    testudoGetPlaybackState: (payload) => sendTestudo<TestudoPlaybackState>("testudoGetPlaybackState", payload as unknown as Record<string, unknown>),
+    testudoSetCameraView: (payload) => sendTestudo<TestudoCameraView>("testudoSetCameraView", payload as unknown as Record<string, unknown>),
+    testudoGetCameraView: (payload) => sendTestudo<TestudoCameraView | null>("testudoGetCameraView", payload as unknown as Record<string, unknown>),
+    testudoSetMapControl: (payload) => sendTestudo<{ visible: boolean }>("testudoSetMapControl", payload as unknown as Record<string, unknown>),
+    testudoSetViewMode: (payload) => sendTestudo<{ mode: TestudoDemoMode }>("testudoSetViewMode", payload as unknown as Record<string, unknown>),
+    testudoSetNetworkFilter: (payload) => sendTestudo<{ applied: true }>("testudoSetNetworkFilter", payload as unknown as Record<string, unknown>),
+    testudoSetLegendVisibility: (payload) => sendTestudo<{ visible: boolean }>("testudoSetLegendVisibility", payload as unknown as Record<string, unknown>),
+    testudoSetEsriWorldImagery: (payload) => sendTestudo<{ visible: boolean }>("testudoSetEsriWorldImagery", payload as unknown as Record<string, unknown>),
+    testudoSetKpiGeometry: (payload) => sendTestudo<{ showLanes: boolean; showSections: boolean }>("testudoSetKpiGeometry", payload as unknown as Record<string, unknown>),
+    testudoGetKpiGeometryState: (payload) => sendTestudo<{ showLanes: boolean; showSections: boolean }>("testudoGetKpiGeometryState", payload as unknown as Record<string, unknown>),
+    testudoSetRenderer: (payload) => sendTestudo<{ renderer: TestudoRenderer }>("testudoSetRenderer", payload as unknown as Record<string, unknown>),
+    testudoGetMapControlState: (payload) => sendTestudo<TestudoMapControlState>("testudoGetMapControlState", payload as unknown as Record<string, unknown>),
+    testudoSetGuestCapability: (payload) => sendTestudo<{ accepted: true; expiresAt: number }>("testudoSetGuestCapability", payload as unknown as Record<string, unknown>),
+    testudoRequestInvestigation: (payload) => sendTestudo<TestudoInvestigationAccepted>("testudoRequestInvestigation", payload as unknown as Record<string, unknown>),
+    testudoRespondGeoAIRequest: (payload) => sendTestudo<{ requestId: string; accepted: boolean }>("testudoRespondGeoAIRequest", payload as unknown as Record<string, unknown>),
+    testudoOpenAnnotations: (payload) => sendTestudo<{ active: boolean }>("testudoOpenAnnotations", payload as unknown as Record<string, unknown>),
+    testudoOpenRecordTour: (payload) => sendTestudo<{ opened: true }>("testudoOpenRecordTour", payload as unknown as Record<string, unknown>),
+    testudoOpenRecordVideo: (payload) => sendTestudo<{ opened: true }>("testudoOpenRecordVideo", payload as unknown as Record<string, unknown>),
     loadProject: (url) => send("loadProject", { url }),
     setView: (target) => send("setView", target as unknown as Record<string, unknown>),
     highlightFeature: (payload) =>
@@ -196,6 +288,23 @@ export function connect(
     },
   };
 
+  const sendTestudo = <T>(type: string, payload: Record<string, unknown> = {}): Promise<T> => {
+    if (disconnected) return Promise.reject(new Error("The GeoLibre client is disconnected"));
+    if (!testudoChallenge || !/^[a-f0-9]{32}$/.test(testudoChallenge)) return Promise.reject(new Error("The Testudo viewer challenge is unavailable"));
+    const requestId = `testudo-${Date.now()}-${++sequence}`;
+    target.postMessage({ v: EMBED_API_VERSION, source: "testudo", type, payload: { ...payload, challenge: testudoChallenge }, requestId }, origin);
+    return new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pending.delete(requestId);
+        reject(new Error(`Timed out waiting for a response to \"${type}\"`));
+      }, options.requestTimeoutMs ?? 15_000);
+      pending.set(requestId, {
+        resolve: (value) => { window.clearTimeout(timer); resolve(value as T); },
+        reject: (reason) => { window.clearTimeout(timer); reject(reason); },
+      });
+    });
+  };
+
   const receive = (event: MessageEvent) => {
     if (event.source !== target || event.origin !== origin) return;
     const data = event.data as Record<string, unknown> | null;
@@ -215,6 +324,8 @@ export function connect(
         else request.reject(new Error(String(payload.error ?? "GeoLibre request failed")));
       }
     } else if (type === "ready") {
+      const challenge = typeof payload.challenge === "string" ? payload.challenge : null;
+      testudoChallenge = challenge && /^[a-f0-9]{32}$/.test(challenge) ? challenge : null;
       readyResolve?.(client);
     }
     for (const listener of listeners.get(type) ?? []) listener(payload as never);

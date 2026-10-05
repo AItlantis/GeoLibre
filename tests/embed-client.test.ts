@@ -45,6 +45,112 @@ afterEach(() => {
 });
 
 describe("@geolibre/embed client", () => {
+  it("round-trips Testudo commands with exact origin, child challenge, and typed ack", async () => {
+    const { iframe, receive, sent } = harness();
+    const pending = connect(iframe, { origin: "https://app.test" });
+    const challenge = "0123456789abcdef0123456789abcdef";
+    receive("ready", { version: "3.1.0", challenge });
+    const client = await pending;
+    const result = client.testudoSetScenario({ tviewId: "comparison:right", scenarioId: "proposal" });
+    const request = sent.at(-1)!;
+    assert.equal(request.origin, "https://app.test");
+    assert.deepEqual(request.message, {
+      v: EMBED_API_VERSION,
+      source: "testudo",
+      type: "testudoSetScenario",
+      payload: { tviewId: "comparison:right", scenarioId: "proposal", challenge },
+      requestId: request.message.requestId,
+    });
+    receive("ack", { requestId: request.message.requestId as string, ok: true, result: { id: "proposal", label: "Proposal", selected: true, replicationIds: [12, 13] } });
+    assert.deepEqual(await result, { id: "proposal", label: "Proposal", selected: true, replicationIds: [12, 13] });
+    client.disconnect();
+  });
+
+  it("sends every public host-to-iframe Testudo command through the authenticated envelope", async () => {
+    const { iframe, receive, sent } = harness();
+    const pending = connect(iframe, { origin: "https://app.test" });
+    const challenge = "0123456789abcdef0123456789abcdef";
+    receive("ready", { challenge });
+    const client = await pending;
+    const noArgumentCommands = new Set(["testudoGetTViews", "testudoGetActiveTView"]);
+    const methodNames = Object.keys(client).filter((name) => name.startsWith("testudo"));
+    const expected = [
+      "testudoCreateTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView",
+      "testudoLoadPackage", "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState",
+      "testudoSetScenario", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback",
+      "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView",
+      "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility",
+      "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer",
+      "testudoGetMapControlState", "testudoSetGuestCapability", "testudoRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnnotations", "testudoOpenRecordTour",
+      "testudoOpenRecordVideo",
+    ];
+    assert.deepEqual(methodNames.sort(), expected.sort());
+    for (const name of methodNames) {
+      const method = (client as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
+      const payload = name === "testudoRespondGeoAIRequest"
+        ? { requestId: "ai-1", tviewId: "main", generation: 1, content: "ok" }
+        : name === "testudoSetGuestCapability"
+          ? { protocol: 1, guestEmbedToken: "guest-secret", expiresAt: Date.now() + 60_000 }
+          : { tviewId: "main" };
+      const response = noArgumentCommands.has(name) ? method() : method(payload as never);
+      const envelope = sent.at(-1)!.message;
+      assert.equal(envelope.type, name);
+      assert.deepEqual(envelope.payload, noArgumentCommands.has(name)
+        ? { challenge }
+        : { ...payload, challenge });
+      receive("ack", { requestId: envelope.requestId, ok: true, result: null });
+      await response;
+    }
+    client.disconnect();
+  });
+
+  it("correlates GeoAI requests to a TView and generation and sends replies to that owner", async () => {
+    const { iframe, receive, sent } = harness();
+    const pending = connect(iframe, { origin: "https://app.test" });
+    const challenge = "abcdef0123456789abcdef0123456789";
+    receive("ready", { challenge });
+    const client = await pending;
+    const seen: unknown[] = [];
+    client.on("testudoGeoAIRequest", (request) => seen.push(request));
+    const geoAIRequest = {
+      requestId: "testudo-ai-1",
+      messages: [{ role: "user" as const, content: "Explain this corridor" }],
+      context: { tviewId: "comparison:left", generation: 7, packageId: "London/demo", versionId: "v1", pluginId: "scenario-comparison", scenarioId: "baseline" },
+    };
+    receive("testudoGeoAIRequest", geoAIRequest);
+    assert.deepEqual(seen, [geoAIRequest]);
+    const reply = client.testudoRespondGeoAIRequest({ requestId: geoAIRequest.requestId, tviewId: "comparison:left", generation: 7, content: "Travel time increases." });
+    const message = sent.at(-1)!.message;
+    assert.equal(message.type, "testudoRespondGeoAIRequest");
+    assert.deepEqual(message.payload, { requestId: "testudo-ai-1", tviewId: "comparison:left", generation: 7, content: "Travel time increases.", challenge });
+    receive("ack", { requestId: message.requestId as string, ok: true, result: { requestId: "testudo-ai-1", accepted: true } });
+    assert.deepEqual(await reply, { requestId: "testudo-ai-1", accepted: true });
+    client.disconnect();
+  });
+
+  it("rejects Testudo commands when the ready challenge is missing or malformed", async () => {
+    const { iframe, receive } = harness();
+    const pending = connect(iframe, { origin: "https://app.test" });
+    receive("ready", { challenge: "not-a-challenge" });
+    const client = await pending;
+    await assert.rejects(client.testudoGetPlaybackState({ tviewId: "main" }), /challenge is unavailable/);
+    client.disconnect();
+  });
+
+  it("refuses to send after a challenge from another frame origin", async () => {
+    const { iframe, receive } = harness();
+    const pending = connect(iframe, { origin: "https://app.test" });
+    receive("ready", { challenge: "0123456789abcdef0123456789abcdef" }, "https://other.test");
+    receive("ready", { challenge: "0123456789abcdef0123456789abcdef" }, "https://app.test", {});
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(settled, false);
+    receive("ready", { challenge: "0123456789abcdef0123456789abcdef" });
+    const client = await pending;
+    client.disconnect();
+  });
+
   it("filters ready events by source, frame, and exact origin", async () => {
     const { iframe, receive } = harness();
     const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });

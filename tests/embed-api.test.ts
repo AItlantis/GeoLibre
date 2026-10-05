@@ -16,6 +16,7 @@ import {
   isEmbedOriginAllowed,
   parseEmbedOrigins,
   parseEmbedRequest,
+  parseTestudoEmbedRequest,
   readEmbedOrigins,
   requireEmbedLayer,
   resolveHighlightIds,
@@ -160,6 +161,30 @@ describe("parseEmbedRequest envelope", () => {
       command: { type: "setView", target: { kind: "camera", zoom: 4 } },
       requestId: "abc",
     });
+  });
+});
+
+describe("parseTestudoEmbedRequest", () => {
+  const challenge = "0123456789abcdef0123456789abcdef";
+
+  it("accepts only v2 Testudo commands with the exact child challenge", () => {
+    assert.deepEqual(parseTestudoEmbedRequest({
+      v: 2, source: "testudo", type: "testudoCreateTView", requestId: "r1",
+      payload: { tviewId: "map-a", challenge },
+    }, challenge), {
+      type: "testudoCreateTView", requestId: "r1", payload: { tviewId: "map-a" },
+    });
+    assert.equal(parseTestudoEmbedRequest({
+      v: 2, source: "testudo", type: "testudoCreateTView", requestId: "r1",
+      payload: { tviewId: "map-a", challenge: "wrong" },
+    }, challenge), null);
+  });
+
+  it("rejects regular embed traffic, unsupported versions, and unknown Testudo commands", () => {
+    const envelope = { v: 2, source: "testudo", requestId: "r1", payload: { challenge } };
+    assert.equal(parseTestudoEmbedRequest({ ...envelope, type: "testudoRunArbitrary" }, challenge), null);
+    assert.equal(parseTestudoEmbedRequest({ ...envelope, type: "testudoGetState", v: 1 }, challenge), null);
+    assert.equal(parseTestudoEmbedRequest({ ...envelope, source: "geolibre", type: "testudoGetState" }, challenge), null);
   });
 });
 

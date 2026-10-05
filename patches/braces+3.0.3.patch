@@ -1,0 +1,24 @@
+diff --git a/node_modules/braces/lib/parse.js b/node_modules/braces/lib/parse.js
+index 3a6988e6..1bdee2ca 100644
+--- a/node_modules/braces/lib/parse.js
++++ b/node_modules/braces/lib/parse.js
+@@ -28,6 +28,8 @@ const {
+  * parse
+  */
+
++const MAX_NESTING_DEPTH = 100;
++
+ const parse = (input, options = {}) => {
+   if (typeof input !== 'string') {
+     throw new TypeError('Expected a string');
+@@ -195,6 +197,10 @@ const parse = (input, options = {}) => {
+      */
+
+     if (value === CHAR_LEFT_CURLY_BRACE) {
++      if (depth >= MAX_NESTING_DEPTH) {
++        throw new SyntaxError(`Maximum brace nesting depth (${MAX_NESTING_DEPTH}) exceeded`);
++      }
++
+       depth++;
+
+       const dollar = prev.value && prev.value.slice(-1) === '$' || block.dollar === true;

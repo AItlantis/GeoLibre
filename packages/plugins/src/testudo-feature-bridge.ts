@@ -1,0 +1,526 @@
+import {
+  TestudoFeatureSessions,
+  validTestudoProgress,
+  type TestudoCameraView,
+  type TestudoCapabilityKey,
+  type TestudoFeatureContext,
+  type TestudoFeatureSession,
+  type TestudoGeoAIReply,
+  type TestudoGeoAIRequest,
+  type TestudoNetworkFilter,
+  type TestudoPackageProgress,
+  type TestudoPlaybackState,
+  type TestudoViewMode,
+} from "./shared/testudo-feature-session";
+
+export interface TestudoPackageBootstrap {
+  packageId: string;
+  versionId: string;
+  label: string;
+  artifactEndpoint: string;
+  capabilities?: Array<{ id: TestudoCapabilityKey; available: boolean; reason?: string; label?: string; description?: string }>;
+  presets?: Array<{ id: string; plugin?: string; settings?: Record<string, unknown> }>;
+  selectedPlugin?: string;
+}
+
+export interface TestudoFeatureProviderFactory {
+  open(
+    bootstrap: TestudoPackageBootstrap,
+    context: TestudoFeatureContext,
+    onProgress: (progress: TestudoPackageProgress) => void,
+    getArtifactAuthorizationHeader: () => string | null,
+  ): Promise<TestudoFeatureSession>;
+}
+
+export type TestudoFeatureProviderResolver = (
+  bootstrap: TestudoPackageBootstrap,
+) => TestudoFeatureProviderFactory | null;
+
+export interface TestudoInvestigationAccepted {
+  requestId: string;
+  tviewId: string;
+  generation: number;
+  accepted: true;
+}
+
+export interface TestudoTViewInfo {
+  tviewId: string;
+  generation: number;
+  loaded: boolean;
+}
+
+export interface TestudoFeatureViewerState {
+  tviewId: string;
+  generation: number;
+  package: { packageId: string; versionId: string | null; label: string; origin: "published" | "local" } | null;
+  selectedPlugin: string | null;
+  capabilities: NonNullable<TestudoFeatureSession["capabilities"]>;
+  availableModes: NonNullable<TestudoFeatureSession["availableModes"]>;
+  selectedMode?: TestudoFeatureSession["selectedMode"];
+  status: "empty" | "loading" | "ready" | "error";
+  error?: string;
+  presetId?: string;
+  progress?: TestudoPackageProgress;
+}
+
+interface PendingInvestigation {
+  request: TestudoGeoAIRequest;
+  session: TestudoFeatureSession;
+}
+
+/**
+ * The command handler behind the Testudo plugin. It keeps all simulation state
+ * and async work attached to a TView provider. Host code supplies only package
+ * loading and iframe message transport.
+ */
+export class TestudoFeatureBridge {
+  readonly sessions = new TestudoFeatureSessions();
+  private readonly factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver;
+  private readonly generations = new Map<string, number>();
+  private readonly pendingLoads = new Map<string, number>();
+  private readonly pendingGeoAI = new Map<string, PendingInvestigation>();
+  private sequence = 0;
+  private activeTViewId: string | null = null;
+  private readonly activeTViewListeners = new Set<(tviewId: string | null) => void>();
+  private readonly geoAIListeners = new Set<(request: TestudoGeoAIRequest) => void>();
+  private readonly playbackListeners = new Set<(tviewId: string, state: TestudoPlaybackState) => void>();
+  private readonly playbackSubscriptions = new Map<string, () => void>();
+  private readonly tviews = new Map<string, number>();
+  private readonly bootstraps = new Map<string, TestudoPackageBootstrap>();
+  private readonly states = new Map<string, TestudoFeatureViewerState>();
+  private guestCapability: { value: string; expiresAt: number } | null = null;
+
+  constructor(factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver) {
+    this.factory = factory;
+  }
+
+  setGuestCapability(value: string, expiresAt: number): { accepted: true; expiresAt: number } {
+    if (!value.trim() || value.length > 4096 || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new Error("Guest artifact capability is invalid or expired.");
+    }
+    this.guestCapability = { value, expiresAt };
+    return { accepted: true, expiresAt };
+  }
+
+  clearGuestCapability(): void {
+    this.guestCapability = null;
+  }
+
+  private getArtifactAuthorizationHeader = (): string | null => {
+    const capability = this.guestCapability;
+    if (!capability || capability.expiresAt <= Date.now()) {
+      this.guestCapability = null;
+      return null;
+    }
+    return `Bearer ${capability.value}`;
+  };
+
+  createTView(tviewId: string): TestudoTViewInfo {
+    if (!tviewId.trim() || tviewId.length > 120) throw new Error("TView id must contain 1 to 120 characters.");
+    if (this.tviews.has(tviewId)) throw new Error(`TView ${tviewId} already exists.`);
+    this.tviews.set(tviewId, 0);
+    this.states.set(tviewId, {
+      tviewId, generation: 0, package: null, selectedPlugin: null, capabilities: [],
+      availableModes: [], status: "empty",
+    });
+    return { tviewId, generation: 0, loaded: false };
+  }
+
+  getTViews(): TestudoTViewInfo[] {
+    return [...this.tviews.entries()].map(([tviewId, generation]) => ({
+      tviewId,
+      generation,
+      loaded: this.sessions.get(tviewId)?.context.generation === generation && generation > 0,
+    }));
+  }
+
+  getState(tviewId: string): TestudoFeatureViewerState {
+    const state = this.states.get(tviewId);
+    if (!state) throw new Error(`TView ${tviewId} has not been created.`);
+    return { ...state, capabilities: [...state.capabilities], availableModes: [...state.availableModes] };
+  }
+
+  setActiveTView(tviewId: string): { tviewId: string } {
+    if (!tviewId.trim()) throw new Error("A TView id is required.");
+    if (!this.tviews.has(tviewId)) throw new Error(`TView ${tviewId} has not been created.`);
+    this.activeTViewId = tviewId;
+    for (const listener of this.activeTViewListeners) listener(tviewId);
+    return { tviewId };
+  }
+
+  getActiveTView(): { tviewId: string | null } {
+    return { tviewId: this.activeTViewId };
+  }
+
+  subscribeActiveTView(listener: (tviewId: string | null) => void): () => void {
+    this.activeTViewListeners.add(listener);
+    return () => this.activeTViewListeners.delete(listener);
+  }
+
+  subscribeGeoAIRequests(listener: (request: TestudoGeoAIRequest) => void): () => void {
+    this.geoAIListeners.add(listener);
+    return () => this.geoAIListeners.delete(listener);
+  }
+
+  subscribePlayback(listener: (tviewId: string, state: TestudoPlaybackState) => void): () => void {
+    this.playbackListeners.add(listener);
+    return () => this.playbackListeners.delete(listener);
+  }
+
+  async loadPackage(
+    tviewId: string,
+    bootstrap: TestudoPackageBootstrap,
+    onProgress: (progress: TestudoPackageProgress) => void = () => {},
+  ): Promise<TestudoFeatureContext> {
+    if (!tviewId.trim()) throw new Error("A TView id is required.");
+    if (!this.tviews.has(tviewId)) throw new Error(`TView ${tviewId} has not been created.`);
+    if (!bootstrap?.packageId || !bootstrap.versionId || !bootstrap.artifactEndpoint) {
+      throw new Error("The published package bootstrap is incomplete.");
+    }
+    const previousSession = this.sessions.remove(tviewId);
+    if (previousSession) {
+      for (const [requestId, pending] of this.pendingGeoAI) {
+        if (pending.session === previousSession) this.pendingGeoAI.delete(requestId);
+      }
+    }
+    const generation = (this.generations.get(tviewId) ?? 0) + 1;
+    this.generations.set(tviewId, generation);
+    this.tviews.set(tviewId, generation);
+    this.pendingLoads.set(tviewId, generation);
+    this.bootstraps.set(tviewId, bootstrap);
+    const oldState = this.states.get(tviewId)!;
+    this.states.set(tviewId, {
+      ...oldState, generation, package: {
+        packageId: bootstrap.packageId, versionId: bootstrap.versionId,
+        label: bootstrap.label ?? bootstrap.packageId, origin: "published",
+      }, selectedPlugin: bootstrap.selectedPlugin ?? null,
+      capabilities: [...(bootstrap.capabilities ?? [])],
+      availableModes: [], status: "loading", error: undefined, progress: undefined,
+    });
+    const context: TestudoFeatureContext = {
+      tviewId,
+      packageId: bootstrap.packageId,
+      versionId: bootstrap.versionId,
+      pluginId: bootstrap.selectedPlugin ?? null,
+      generation,
+    };
+    let provider: TestudoFeatureSession;
+    const reportProgress = (raw: TestudoPackageProgress) => {
+      if (this.pendingLoads.get(tviewId) !== generation) return;
+      const measured = validTestudoProgress(raw);
+      const progress = { ...measured, label: measured.label ?? bootstrap.label ?? "Loading package" };
+      const currentState = this.states.get(tviewId);
+      if (currentState?.generation === generation) this.states.set(tviewId, { ...currentState, progress });
+      onProgress(progress);
+    };
+    try {
+      const factory = typeof this.factory === "function" ? this.factory(bootstrap) : this.factory;
+      if (!factory) throw new Error("No active GeoLibre plugin provides a declared Testudo capability.");
+      provider = await factory.open(bootstrap, context, reportProgress, this.getArtifactAuthorizationHeader);
+    } catch (error) {
+      if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
+      const currentState = this.states.get(tviewId);
+      if (currentState?.generation === generation) this.states.set(tviewId, {
+        ...currentState, status: "error", error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    if (provider.context.tviewId !== tviewId || provider.context.generation !== generation
+      || provider.context.packageId !== bootstrap.packageId || provider.context.versionId !== bootstrap.versionId) {
+      if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
+      await provider.dispose?.();
+      throw new Error("The Testudo provider returned a session outside its requested scope.");
+    }
+    if (this.pendingLoads.get(tviewId) !== generation) {
+      await provider.dispose?.();
+      throw new Error("The Testudo package load was superseded by a newer request.");
+    }
+    try {
+      const session = provider.loadPackage ? await this.loadSession(provider, reportProgress) : provider;
+      if (this.pendingLoads.get(tviewId) !== generation || this.generations.get(tviewId) !== generation) {
+        throw new Error("The Testudo package load was superseded by a newer request.");
+      }
+      this.pendingLoads.delete(tviewId);
+      this.sessions.install(session);
+      this.playbackSubscriptions.get(tviewId)?.();
+      if (session.playback?.subscribe) {
+        const unsubscribe = session.playback.subscribe((state) => {
+          if (this.sessions.get(tviewId) !== session) return;
+          for (const listener of this.playbackListeners) listener(tviewId, state);
+        });
+        this.playbackSubscriptions.set(tviewId, unsubscribe);
+      }
+      this.states.set(tviewId, {
+        tviewId, generation, package: {
+          packageId: bootstrap.packageId,
+          versionId: bootstrap.versionId,
+          label: bootstrap.label ?? bootstrap.packageId,
+          origin: "published",
+        },
+        selectedPlugin: session.context.pluginId,
+        capabilities: [...(session.capabilities ?? bootstrap.capabilities ?? [])],
+        availableModes: [...(session.availableModes ?? [])],
+        ...(session.selectedMode ? { selectedMode: session.selectedMode } : {}),
+        ...(session.presetId ? { presetId: session.presetId } : {}),
+        status: "ready",
+      });
+      return session.context;
+    } catch (error) {
+      if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
+      const currentState = this.states.get(tviewId);
+      if (currentState?.generation === generation) this.states.set(tviewId, {
+        ...currentState, status: "error", error: error instanceof Error ? error.message : String(error),
+      });
+      await provider.dispose?.();
+      throw error;
+    }
+  }
+
+  async selectPlugin(tviewId: string, pluginId: string): Promise<string> {
+    if (!pluginId || pluginId.length > 80) throw new Error("Plugin id is invalid.");
+    const session = this.requireSession(tviewId);
+    if (session.context.pluginId === pluginId) return pluginId;
+    if (session.selectPlugin) {
+      const selected = await session.selectPlugin(pluginId);
+      this.assertCurrent(session);
+      session.context.pluginId = selected;
+      const state = this.states.get(tviewId);
+      if (state) this.states.set(tviewId, { ...state, selectedPlugin: selected });
+      return selected;
+    }
+    throw new Error("Plugin selection is unavailable for this package provider.");
+  }
+
+  async applyPreset(tviewId: string, presetId: string): Promise<string> {
+    if (!presetId || presetId.length > 100) throw new Error("Preset id is invalid.");
+    const session = this.requireSession(tviewId);
+    if (!session.applyPreset) throw new Error("Presets are unavailable for this package.");
+    const applied = await session.applyPreset(presetId);
+    this.assertCurrent(session);
+    const state = this.states.get(tviewId);
+    if (state) this.states.set(tviewId, { ...state, presetId: applied });
+    return applied;
+  }
+
+  async selectScenario(tviewId: string, scenarioId: string): Promise<string> {
+    const session = this.requireSession(tviewId);
+    if (!session.scenarios?.some((scenario) => scenario.id === scenarioId)) {
+      throw new Error(`Scenario ${scenarioId} is not declared for TView ${tviewId}.`);
+    }
+    if (!session.selectScenario) throw new Error("Scenario selection is unavailable for this package.");
+    const selected = await session.selectScenario(scenarioId);
+    if (this.sessions.get(tviewId) !== session) throw new Error("The scenario request belongs to a stale package.");
+    const selectedProperty = Object.getOwnPropertyDescriptor(session, "selectedScenarioId");
+    if (!selectedProperty || selectedProperty.writable || selectedProperty.set) session.selectedScenarioId = selected;
+    return selected;
+  }
+
+  async playback(tviewId: string, command: "play" | "pause" | "restart" | "seek" | "speed", value?: number) {
+    const playback = this.requireSession(tviewId).playback;
+    if (!playback) throw new Error("Playback is unavailable for this package.");
+    if (command === "play") return playback.setPlaying(true);
+    if (command === "pause") return playback.setPlaying(false);
+    if (command === "restart") return playback.restart();
+    if (command === "seek") {
+      if (!Number.isFinite(value) || value! < 0) throw new Error("Playback tick must be a non-negative number.");
+      return playback.seek(value!);
+    }
+    if (!Number.isFinite(value) || value! < 0.25 || value! > 20) throw new Error("Playback speed must be between 0.25 and 20.");
+    return playback.setSpeed(value!);
+  }
+
+  getPlaybackState(tviewId: string) {
+    return this.requireSession(tviewId).playback?.getState() ?? {
+      available: false, loading: false, playing: false, tick: 0, maxTick: 0, speed: 1, dt: 0, loop: false,
+    };
+  }
+
+  getCameraView(tviewId: string): TestudoCameraView | null {
+    return this.requireSession(tviewId).getCameraView?.() ?? null;
+  }
+
+  async setCameraView(tviewId: string, view: TestudoCameraView): Promise<void> {
+    if (!Number.isFinite(view.zoom) || view.center.some((value) => !Number.isFinite(value))) {
+      throw new Error("Camera coordinates and zoom must be finite numbers.");
+    }
+    const session = this.requireSession(tviewId);
+    if (!session.setCameraView) throw new Error("Camera control is unavailable for this package.");
+    await session.setCameraView(view);
+    this.assertCurrent(session);
+  }
+
+  async setMapControl(tviewId: string, controlId: string, visible: boolean): Promise<boolean> {
+    if (!controlId || controlId.length > 100) throw new Error("Map control id is invalid.");
+    const session = this.requireSession(tviewId);
+    if (!session.setMapControl) throw new Error("Map controls are unavailable for this package.");
+    const changed = await session.setMapControl(controlId, visible);
+    this.assertCurrent(session);
+    return changed;
+  }
+
+  getMapControlState(tviewId: string) {
+    return this.requireSession(tviewId).getMapControlState?.() ?? {
+      legendVisible: false, esriWorldImageryVisible: false, renderer: "maplibre" as const,
+    };
+  }
+
+  async setRenderer(tviewId: string, renderer: "maplibre" | "cesium") {
+    const session = this.requireSession(tviewId);
+    if (!session.setRenderer) throw new Error("Renderer control is unavailable for this package.");
+    const selected = await session.setRenderer(renderer);
+    this.assertCurrent(session);
+    return selected;
+  }
+
+  async setKpiGeometry(tviewId: string, geometry: "lanes" | "sections", visible: boolean) {
+    const session = this.requireSession(tviewId);
+    if (!session.setKpiGeometry) throw new Error("KPI geometry controls are unavailable for this package.");
+    const state = await session.setKpiGeometry(geometry, visible);
+    this.assertCurrent(session);
+    return state;
+  }
+
+  getKpiGeometryState(tviewId: string) {
+    return this.requireSession(tviewId).getKpiGeometryState?.() ?? { showLanes: false, showSections: false };
+  }
+
+  async openAnnotations(tviewId: string) {
+    const session = this.requireSession(tviewId);
+    if (!session.openAnnotations) throw new Error("Annotations are unavailable for this package.");
+    const active = await session.openAnnotations();
+    this.assertCurrent(session);
+    return active;
+  }
+
+  async openRecordTour(tviewId: string) {
+    const session = this.requireSession(tviewId);
+    if (!session.openRecordTour) throw new Error("Record tours are unavailable for this package.");
+    await session.openRecordTour();
+    this.assertCurrent(session);
+  }
+
+  async openRecordVideo(tviewId: string) {
+    const session = this.requireSession(tviewId);
+    if (!session.openRecordVideo) throw new Error("Record video is unavailable for this package.");
+    await session.openRecordVideo();
+    this.assertCurrent(session);
+  }
+
+  async setViewMode(tviewId: string, mode: TestudoViewMode): Promise<TestudoViewMode> {
+    const session = this.requireSession(tviewId);
+    if (!session.setViewMode) throw new Error("View modes are unavailable for this package.");
+    const selected = await session.setViewMode(mode);
+    this.assertCurrent(session);
+    session.selectedMode = selected;
+    const state = this.states.get(tviewId);
+    if (state) this.states.set(tviewId, { ...state, selectedMode: selected });
+    return selected;
+  }
+
+  async setNetworkFilter(tviewId: string, filter: TestudoNetworkFilter): Promise<void> {
+    const session = this.requireSession(tviewId);
+    if (!session.setNetworkFilter) throw new Error("Network filters are unavailable for this package.");
+    await session.setNetworkFilter(filter);
+    this.assertCurrent(session);
+  }
+
+  async requestInvestigation(
+    tviewId: string,
+    question: string,
+    activeScenarioId?: string,
+  ): Promise<TestudoInvestigationAccepted> {
+    const session = this.requireSession(tviewId);
+    if (!session.requestGeoAI) throw new Error("GeoAI requests are unavailable for this package.");
+    const normalized = question.trim();
+    if (!normalized || normalized.length > 8_000) throw new Error("Investigation question must contain 1 to 8000 characters.");
+    if (activeScenarioId && !session.scenarios?.some((scenario) => scenario.id === activeScenarioId)) {
+      throw new Error(`Scenario ${activeScenarioId} is not declared for TView ${tviewId}.`);
+    }
+    const requestId = `testudo-ai-${Date.now()}-${++this.sequence}`;
+    const request: TestudoGeoAIRequest = {
+      requestId,
+      messages: [{ role: "user", content: normalized }],
+      context: { ...session.context, ...(activeScenarioId ? { scenarioId: activeScenarioId } : {}) },
+    };
+    this.pendingGeoAI.set(requestId, { request, session });
+    try {
+      for (const listener of this.geoAIListeners) listener(request);
+      await session.requestGeoAI(request);
+    } catch (error) {
+      this.pendingGeoAI.delete(requestId);
+      throw error;
+    }
+    this.assertCurrent(session);
+    return { requestId, tviewId, generation: session.context.generation, accepted: true };
+  }
+
+  async respondGeoAIRequest(
+    requestId: string,
+    context: TestudoGeoAIRequest["context"],
+    reply: TestudoGeoAIReply,
+  ): Promise<{ requestId: string; accepted: boolean }> {
+    const pending = this.pendingGeoAI.get(requestId);
+    const expected = pending?.request.context;
+    const sameContext = expected && expected.tviewId === context.tviewId
+      && expected.generation === context.generation && expected.packageId === context.packageId
+      && expected.versionId === context.versionId && expected.pluginId === context.pluginId
+      && expected.scenarioId === context.scenarioId;
+    if (!pending || !sameContext || !this.sessions.isCurrent({ tviewId: context.tviewId, generation: context.generation })) {
+      return { requestId, accepted: false };
+    }
+    this.pendingGeoAI.delete(requestId);
+    await pending.session.deliverGeoAIReply?.(requestId, reply);
+    return { requestId, accepted: true };
+  }
+
+  async respondGeoAIRequestTuple(
+    requestId: string,
+    tviewId: string,
+    generation: number,
+    reply: TestudoGeoAIReply,
+  ): Promise<{ requestId: string; accepted: boolean }> {
+    const pending = this.pendingGeoAI.get(requestId);
+    const context = pending?.request.context;
+    if (!context || context.tviewId !== tviewId || context.generation !== generation) {
+      return { requestId, accepted: false };
+    }
+    return this.respondGeoAIRequest(requestId, context, reply);
+  }
+
+  close(tviewId: string): void {
+    this.pendingLoads.delete(tviewId);
+    const session = this.sessions.get(tviewId);
+    this.playbackSubscriptions.get(tviewId)?.();
+    this.playbackSubscriptions.delete(tviewId);
+    if (session) {
+      for (const [requestId, pending] of this.pendingGeoAI) {
+        if (pending.session === session) this.pendingGeoAI.delete(requestId);
+      }
+    }
+    const generation = (this.generations.get(tviewId) ?? 0) + 1;
+    this.generations.set(tviewId, generation);
+    if (session) this.sessions.remove(tviewId);
+    this.tviews.delete(tviewId);
+    this.states.delete(tviewId);
+    this.bootstraps.delete(tviewId);
+    if (this.activeTViewId === tviewId) {
+      this.activeTViewId = null;
+      for (const listener of this.activeTViewListeners) listener(null);
+    }
+  }
+
+  private requireSession(tviewId: string): TestudoFeatureSession {
+    const session = this.sessions.get(tviewId);
+    if (!session) throw new Error(`No Testudo package is loaded for TView ${tviewId}.`);
+    return session;
+  }
+
+  private assertCurrent(session: TestudoFeatureSession): void {
+    if (this.sessions.get(session.context.tviewId) !== session) throw new Error("This command belongs to a stale Testudo package.");
+  }
+
+  private async loadSession(provider: TestudoFeatureSession, onProgress: (progress: TestudoPackageProgress) => void) {
+    await provider.loadPackage!(onProgress);
+    return provider;
+  }
+}
