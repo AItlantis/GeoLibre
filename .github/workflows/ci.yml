@@ -129,13 +129,15 @@ jobs:
       - name: Build the iframe artifact and round-trip the Testudo bridge
         run: |
           npm run build
-          (npm run preview -w geolibre-desktop -- --host 127.0.0.1 --port 4173 > /tmp/geolibre-preview.log 2>&1 &)
+          node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4174 --strictPort > /tmp/geolibre-preview.log 2>&1 &
+          PREVIEW_PID=$!
+          trap 'kill "$PREVIEW_PID" 2>/dev/null || true; wait "$PREVIEW_PID" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:4173/ >/dev/null; then break; fi
+            if curl --fail --silent http://127.0.0.1:4174/ >/dev/null; then break; fi
             sleep 2
           done
-          curl --fail --silent http://127.0.0.1:4173/ >/dev/null
-          node scripts/test-testudo-bridge-iframe.mjs
+          curl --fail --silent http://127.0.0.1:4174/ >/dev/null
+          TESTUDO_IFRAME_BASE_URL=http://127.0.0.1:4174 node scripts/test-testudo-bridge-iframe.mjs
 
       - name: Run E2E core tests
         run: npm run test:e2e -- --project=core
