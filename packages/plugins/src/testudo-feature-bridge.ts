@@ -28,8 +28,30 @@ export interface TestudoFeatureProviderFactory {
     bootstrap: TestudoPackageBootstrap,
     context: TestudoFeatureContext,
     onProgress: (progress: TestudoPackageProgress) => void,
-    getArtifactAuthorizationHeader: () => string | null,
+    fetchArtifact: (artifactRef: string) => Promise<ArrayBuffer>,
   ): Promise<TestudoFeatureSession>;
+}
+
+export interface TestudoArtifactRequest {
+  requestId: string;
+  tviewId: string;
+  generation: number;
+  artifactRef: string;
+}
+
+export type TestudoArtifactFetcher = (
+  request: TestudoArtifactRequest,
+  signal: AbortSignal,
+) => Promise<ArrayBuffer>;
+
+function isSafeArtifactReference(value: string): boolean {
+  if (!value.trim() || value.length > 2048 || /[?#\\\u0000-\u001f]/.test(value)
+    || value.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  try {
+    return !decodeURIComponent(value).split("/").some((part) => part === "..");
+  } catch {
+    return false;
+  }
 }
 
 export type TestudoFeatureProviderResolver = (
@@ -76,6 +98,7 @@ interface PendingInvestigation {
 export class TestudoFeatureBridge {
   readonly sessions = new TestudoFeatureSessions();
   private readonly factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver;
+  private readonly artifactFetcher: TestudoArtifactFetcher;
   private readonly generations = new Map<string, number>();
   private readonly pendingLoads = new Map<string, number>();
   private readonly pendingGeoAI = new Map<string, PendingInvestigation>();
@@ -88,32 +111,53 @@ export class TestudoFeatureBridge {
   private readonly tviews = new Map<string, number>();
   private readonly bootstraps = new Map<string, TestudoPackageBootstrap>();
   private readonly states = new Map<string, TestudoFeatureViewerState>();
-  private guestCapability: { value: string; expiresAt: number } | null = null;
+  private readonly pendingArtifacts = new Map<string, { request: TestudoArtifactRequest; controller: AbortController }>();
 
-  constructor(factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver) {
+  constructor(
+    factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver,
+    artifactFetcher: TestudoArtifactFetcher = async () => {
+      throw new Error("Host-proxied artifact fetching is unavailable.");
+    },
+  ) {
     this.factory = factory;
+    this.artifactFetcher = artifactFetcher;
   }
 
-  setGuestCapability(value: string, expiresAt: number): { accepted: true; expiresAt: number } {
-    if (!value.trim() || value.length > 4096 || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-      throw new Error("Guest artifact capability is invalid or expired.");
+  private cancelArtifactRequests(tviewId: string, keepGeneration?: number): void {
+    for (const [requestId, pending] of this.pendingArtifacts) {
+      if (pending.request.tviewId === tviewId && pending.request.generation !== keepGeneration) {
+        this.pendingArtifacts.delete(requestId);
+        pending.controller.abort();
+      }
     }
-    this.guestCapability = { value, expiresAt };
-    return { accepted: true, expiresAt };
   }
 
-  clearGuestCapability(): void {
-    this.guestCapability = null;
-  }
-
-  private getArtifactAuthorizationHeader = (): string | null => {
-    const capability = this.guestCapability;
-    if (!capability || capability.expiresAt <= Date.now()) {
-      this.guestCapability = null;
-      return null;
+  private fetchArtifactFor(context: TestudoFeatureContext, artifactRef: string): Promise<ArrayBuffer> {
+    if (typeof artifactRef !== "string" || !isSafeArtifactReference(artifactRef)) {
+      return Promise.reject(new Error("Artifact reference must be a relative package path."));
     }
-    return `Bearer ${capability.value}`;
-  };
+    if (this.generations.get(context.tviewId) !== context.generation) {
+      return Promise.reject(new Error("Artifact request belongs to a stale Testudo package."));
+    }
+    const request: TestudoArtifactRequest = {
+      requestId: `testudo-artifact-${Date.now()}-${++this.sequence}`,
+      tviewId: context.tviewId,
+      generation: context.generation,
+      artifactRef,
+    };
+    const controller = new AbortController();
+    this.pendingArtifacts.set(request.requestId, { request, controller });
+    return this.artifactFetcher(request, controller.signal).then((bytes) => {
+      if (this.pendingArtifacts.get(request.requestId)?.request !== request
+        || this.generations.get(context.tviewId) !== context.generation
+        || controller.signal.aborted) {
+        throw new Error("Artifact response belongs to a stale Testudo package.");
+      }
+      return bytes;
+    }).finally(() => {
+      this.pendingArtifacts.delete(request.requestId);
+    });
+  }
 
   createTView(tviewId: string): TestudoTViewInfo {
     if (!tviewId.trim() || tviewId.length > 120) throw new Error("TView id must contain 1 to 120 characters.");
@@ -178,6 +222,7 @@ export class TestudoFeatureBridge {
       throw new Error("The published package bootstrap is incomplete.");
     }
     const previousSession = this.sessions.remove(tviewId);
+    this.cancelArtifactRequests(tviewId);
     if (previousSession) {
       for (const [requestId, pending] of this.pendingGeoAI) {
         if (pending.session === previousSession) this.pendingGeoAI.delete(requestId);
@@ -216,7 +261,12 @@ export class TestudoFeatureBridge {
     try {
       const factory = typeof this.factory === "function" ? this.factory(bootstrap) : this.factory;
       if (!factory) throw new Error("No active GeoLibre plugin provides a declared Testudo capability.");
-      provider = await factory.open(bootstrap, context, reportProgress, this.getArtifactAuthorizationHeader);
+      provider = await factory.open(
+        bootstrap,
+        context,
+        reportProgress,
+        (artifactRef) => this.fetchArtifactFor(context, artifactRef),
+      );
     } catch (error) {
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
       const currentState = this.states.get(tviewId);
@@ -266,12 +316,15 @@ export class TestudoFeatureBridge {
       });
       return session.context;
     } catch (error) {
+      const superseded = this.pendingLoads.get(tviewId) !== generation
+        || this.generations.get(tviewId) !== generation;
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
       const currentState = this.states.get(tviewId);
       if (currentState?.generation === generation) this.states.set(tviewId, {
         ...currentState, status: "error", error: error instanceof Error ? error.message : String(error),
       });
       await provider.dispose?.();
+      if (superseded) throw new Error("The Testudo package load was superseded by a newer request.");
       throw error;
     }
   }
@@ -488,6 +541,7 @@ export class TestudoFeatureBridge {
   }
 
   close(tviewId: string): void {
+    this.cancelArtifactRequests(tviewId);
     this.pendingLoads.delete(tviewId);
     const session = this.sessions.get(tviewId);
     this.playbackSubscriptions.get(tviewId)?.();

@@ -5,6 +5,7 @@ import { imageBlobToDataUrl } from "@geolibre/map";
 import {
   TestudoFeatureBridge,
   getTestudoPackageProvider,
+  type TestudoArtifactRequest,
   type TestudoPackageBootstrap,
 } from "@geolibre/plugins";
 import {
@@ -15,7 +16,9 @@ import {
   embedLayerSummaries,
   embedRequestVersion,
   isEmbedOriginAllowed,
+  matchesTestudoArtifactCorrelation,
   parseEmbedRequest,
+  parseTestudoArtifactResponse,
   parseTestudoEmbedRequest,
   readEmbedOrigins,
   requireEmbedLayer,
@@ -90,11 +93,61 @@ export function useEmbedApi(
     const randomChallengeBytes = new Uint8Array(16);
     crypto.getRandomValues(randomChallengeBytes);
     const testudoChallenge = [...randomChallengeBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const pendingArtifactRequests = new Map<string, {
+      request: TestudoArtifactRequest;
+      resolve: (bytes: ArrayBuffer) => void;
+      reject: (error: Error) => void;
+      timer: number;
+      signal: AbortSignal;
+      onAbort: () => void;
+    }>();
+    const fetchArtifactFromHost = (
+      request: TestudoArtifactRequest,
+      signal: AbortSignal,
+    ): Promise<ArrayBuffer> => new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException("Artifact request was cancelled.", "AbortError"));
+        return;
+      }
+      if (!hostOrigin || !testudoChallenge || !/^[a-f0-9]{32}$/.test(testudoChallenge)) {
+        reject(new Error("The embedding host is not authenticated for artifact requests."));
+        return;
+      }
+      if (pendingArtifactRequests.has(request.requestId)) {
+        reject(new Error("Artifact request id is already in flight."));
+        return;
+      }
+      const settle = (operation: () => void) => {
+        const pending = pendingArtifactRequests.get(request.requestId);
+        if (!pending) return;
+        pendingArtifactRequests.delete(request.requestId);
+        window.clearTimeout(pending.timer);
+        pending.signal.removeEventListener("abort", pending.onAbort);
+        operation();
+      };
+      const onAbort = () => settle(() => reject(new DOMException("Artifact request was cancelled.", "AbortError")));
+      const timer = window.setTimeout(
+        () => settle(() => reject(new Error("The host artifact request timed out."))),
+        30_000,
+      );
+      pendingArtifactRequests.set(request.requestId, { request, resolve, reject, timer, signal, onAbort });
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        host.postMessage({
+          v: 2,
+          source: "geolibre",
+          type: "testudoArtifactRequest",
+          payload: { ...request, challenge: testudoChallenge },
+        }, hostOrigin);
+      } catch (error) {
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+      }
+    });
     const testudo = new TestudoFeatureBridge((bootstrap) => {
       const selected = bootstrap.selectedPlugin ?? bootstrap.capabilities?.find((item) => item.available)?.id;
       if (!selected) return null;
       return getTestudoPackageProvider(selected as "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison", bootstrap);
-    });
+    }, fetchArtifactFromHost);
 
     const emit = (type: EmbedEventType, payload: Record<string, unknown>, version?: 1 | 2) => {
       if (disposed) return;
@@ -148,8 +201,6 @@ export function useEmbedApi(
     const unsubscribePlayback = testudo.subscribePlayback((tviewId, state) => {
       emit("testudoPlaybackChanged", { ...state, tviewId }, 2);
     });
-    const clearGuestCapability = () => testudo.clearGuestCapability();
-
     const requiredText = (payload: Record<string, unknown>, name: string, max = 512) => {
       const value = payload[name];
       if (typeof value !== "string" || !value.trim() || value.length > max) {
@@ -257,10 +308,6 @@ export function useEmbedApi(
           return { renderer: await testudo.setRenderer(tviewId, payload.renderer) };
         }
         case "testudoGetMapControlState": return testudo.getMapControlState(scopedId(payload));
-        case "testudoSetGuestCapability": {
-          if (payload.protocol !== 1) throw new Error("Guest capability protocol is unsupported.");
-          return testudo.setGuestCapability(requiredText(payload, "guestEmbedToken", 4096), payload.expiresAt as number);
-        }
         case "testudoRequestInvestigation": {
           const result = await testudo.requestInvestigation(scopedId(payload), requiredText(payload, "question", 8_000), typeof payload.activeScenarioId === "string" ? payload.activeScenarioId : undefined);
           return result;
@@ -469,10 +516,29 @@ export function useEmbedApi(
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== host) return;
       if (!isEmbedOriginAllowed(event.origin, allowedOrigins)) return;
+      if (hostOrigin && event.origin !== hostOrigin) return;
       if (
         event.data && typeof event.data === "object" &&
         (event.data as Record<string, unknown>).source === "testudo"
       ) {
+        if ((event.data as Record<string, unknown>).type === "testudoArtifactResponse") {
+          if (!hostOrigin || event.origin !== hostOrigin) return;
+          const response = parseTestudoArtifactResponse(event.data, testudoChallenge);
+          if (!response) return;
+          const pending = pendingArtifactRequests.get(response.requestId);
+          if (!pending || !matchesTestudoArtifactCorrelation(pending.request, response)) return;
+          try {
+            if (testudo.getState(response.tviewId).generation !== response.generation) return;
+          } catch {
+            return;
+          }
+          pendingArtifactRequests.delete(response.requestId);
+          window.clearTimeout(pending.timer);
+          pending.signal.removeEventListener("abort", pending.onAbort);
+          if (response.bytes) pending.resolve(response.bytes);
+          else pending.reject(new Error(response.error ?? "The host could not fetch the requested artifact."));
+          return;
+        }
         const request = parseTestudoEmbedRequest(event.data, testudoChallenge);
         if (!request) return;
         if (!hostOrigin && event.origin && event.origin !== "null") hostOrigin = event.origin;
@@ -627,7 +693,12 @@ export function useEmbedApi(
 
     return () => {
       disposed = true;
-      clearGuestCapability();
+      for (const pending of pendingArtifactRequests.values()) {
+        window.clearTimeout(pending.timer);
+        pending.signal.removeEventListener("abort", pending.onAbort);
+        pending.reject(new Error("The Testudo embed session ended."));
+      }
+      pendingArtifactRequests.clear();
       window.removeEventListener("message", handleMessage);
       unsubscribe();
       unsubscribeActiveTView();

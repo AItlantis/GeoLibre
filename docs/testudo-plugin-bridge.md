@@ -37,7 +37,6 @@ Package commands:
 | `testudoSetPlugin` | `{ tviewId, id }` | viewer state |
 | `testudoSetPreset` | `{ tviewId, id }` | viewer state |
 | `testudoGetState` | `{ tviewId }` | viewer state |
-| `testudoSetGuestCapability` | `{ protocol: 1, guestEmbedToken, expiresAt }` | `{ accepted: true, expiresAt }` |
 | `testudoRequestInvestigation` | `{ question, tviewId, activeScenarioId? }` | `{ requestId, tviewId, generation, accepted: true }` |
 | `testudoRespondGeoAIRequest` | `{ requestId, tviewId, generation, content?, error? }` | `{ requestId, accepted }` |
 | `testudoOpenRecordTour` / `testudoOpenRecordVideo` | `{ tviewId }` | `{ opened: true }` |
@@ -60,12 +59,34 @@ Invalid progress fails the provider load rather than producing a synthetic fract
 
 ## Credentials and GeoAI
 
-The child accepts `testudoSetGuestCapability` into memory and keeps the value
-out of package state, events, URLs, browser storage, and GeoAI requests. The
-provider receives a `getArtifactAuthorizationHeader()` callback only for
-authenticated package artifact fetches. Expired or cleared capabilities return
-`null`, and the iframe clears its copy when its embed session ends. The host
-retains its own in-memory capability for its separate Gateway GeoAI request.
+Package artifact credentials stay in the embedding host. The iframe has no
+guest-token setter and receives no authorization header. A provider asks for a
+relative artifact reference; the iframe sends a correlated
+`testudoArtifactRequest` containing only `requestId`, `tviewId`, `generation`,
+the artifact reference, and the child-issued challenge. The typed host client
+calls its `fetchArtifact` option, where the host can use its own in-memory auth,
+then transfers the `ArrayBuffer` in a `testudoArtifactResponse` that echoes the
+same correlation tuple. The host drops requests and results for unknown TViews,
+old generations, duplicate request ids, or a disconnected client. The iframe
+also checks the exact parent source, pinned origin, challenge, and full
+correlation tuple before handing bytes to the provider. No credential field or
+token is part of these protocol messages.
+
+```ts
+const client = await connect(iframe, {
+  origin: "https://gis.example.com",
+  fetchArtifact: async ({ artifactRef }, signal) => {
+    // Keep authorization in this host-side closure. Resolve only references
+    // from the package endpoint captured by the host.
+    const response = await fetch(resolvePackageArtifact(artifactRef), {
+      signal,
+      headers: getHostAuthorizationHeaders(),
+    });
+    if (!response.ok) throw new Error("Artifact fetch failed");
+    return response.arrayBuffer();
+  },
+});
+```
 
 `testudoGeoAIRequest` includes `requestId`, `messages`, and full context with
 package/version/plugin/scenario, `tviewId`, and `generation`. The host validates

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseTestudoEmbedRequest } from "../apps/geolibre-desktop/src/lib/embed-api";
+import {
+  matchesTestudoArtifactCorrelation,
+  parseTestudoArtifactResponse,
+  parseTestudoEmbedRequest,
+} from "../apps/geolibre-desktop/src/lib/embed-api";
 
 const challenge = "0123456789abcdef0123456789abcdef";
 const envelope = {
@@ -20,9 +24,31 @@ test("Testudo host handler parser accepts only a known command with the child ch
   assert.equal(parseTestudoEmbedRequest({ ...envelope, source: "geolibre" }, challenge), null);
   assert.equal(parseTestudoEmbedRequest({ ...envelope, v: 1 }, challenge), null);
   assert.equal(parseTestudoEmbedRequest({ ...envelope, requestId: "" }, challenge), null);
-  const guestCapability = parseTestudoEmbedRequest({ ...envelope, type: "testudoSetGuestCapability", payload: { protocol: 1, guestEmbedToken: "guest-secret", expiresAt: Date.now() + 10_000, challenge } }, challenge);
-  assert.equal(guestCapability?.type, "testudoSetGuestCapability");
-  assert.equal(guestCapability?.payload.guestEmbedToken, "guest-secret");
+  assert.equal(parseTestudoEmbedRequest({ ...envelope, type: "testudoSetArtifactCredential", payload: { authorization: "Bearer secret", challenge } }, challenge), null);
   assert.equal(parseTestudoEmbedRequest({ ...envelope, payload: { challenge: "wrong" } }, challenge), null);
   assert.equal(parseTestudoEmbedRequest({ ...envelope, payload: null }, challenge), null);
+});
+
+test("host artifact response parser and tuple matcher reject stale or mismatched correlation", () => {
+  const expected = { requestId: "artifact-1", tviewId: "compare:left", generation: 4, artifactRef: "manifest.json" };
+  const valid = {
+    v: 2,
+    source: "testudo",
+    type: "testudoArtifactResponse",
+    payload: { ...expected, challenge, bytes: new ArrayBuffer(3) },
+  };
+  const parsed = parseTestudoArtifactResponse(valid, challenge);
+  assert.ok(parsed);
+  assert.equal(matchesTestudoArtifactCorrelation(expected, parsed), true);
+  assert.equal(parseTestudoArtifactResponse({ ...valid, payload: { ...valid.payload, challenge: "wrong" } }, challenge), null);
+  assert.equal(parseTestudoArtifactResponse({ ...valid, payload: { ...valid.payload, accessToken: "must-not-cross" } }, challenge), null);
+  for (const mismatch of [
+    { requestId: "artifact-other" },
+    { tviewId: "compare:right" },
+    { generation: 3 },
+    { artifactRef: "other.bin" },
+  ]) {
+    const response = { ...expected, ...mismatch };
+    assert.equal(matchesTestudoArtifactCorrelation(expected, response), false);
+  }
 });

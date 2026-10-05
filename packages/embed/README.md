@@ -54,6 +54,14 @@ the target of every outbound message and the filter on inbound ones.
 | `origin`            | —       | Required. Exact origin hosting the app. |
 | `timeoutMs`         | 15000   | How long to wait for `ready`.           |
 | `requestTimeoutMs`  | 15000   | How long to wait for each command.      |
+| `fetchArtifact`     | unset   | Optional host-side Testudo artifact resolver. Keep credentials in its closure; only relative references and correlated bytes cross the iframe channel. |
+
+For Testudo packages, the iframe requests a relative artifact reference with
+its TView id and package generation. The host `fetchArtifact` callback receives
+that reference and an abort signal, fetches with host-owned in-memory auth, and
+returns an `ArrayBuffer`, `Uint8Array`, or `Blob`. The iframe receives only the
+bytes after the host echoes the exact correlation tuple. No auth header or token
+is part of the message protocol.
 
 | Method                                 | Resolves with           |
 | -------------------------------------- | ----------------------- |

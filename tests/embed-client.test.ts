@@ -11,10 +11,10 @@ class HostWindow extends EventTarget {
 
 function harness() {
   const host = new HostWindow();
-  const sent: Array<{ message: Record<string, unknown>; origin: string }> = [];
+  const sent: Array<{ message: Record<string, unknown>; origin: string; transfer: Transferable[] }> = [];
   const frameWindow = {
-    postMessage(message: Record<string, unknown>, origin: string) {
-      sent.push({ message, origin });
+    postMessage(message: Record<string, unknown>, origin: string, transfer: Transferable[] = []) {
+      sent.push({ message, origin, transfer });
     },
   };
   (globalThis as { window?: unknown }).window = host;
@@ -81,7 +81,7 @@ describe("@geolibre/embed client", () => {
       "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView",
       "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility",
       "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer",
-      "testudoGetMapControlState", "testudoSetGuestCapability", "testudoRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnnotations", "testudoOpenRecordTour",
+      "testudoGetMapControlState", "testudoRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnnotations", "testudoOpenRecordTour",
       "testudoOpenRecordVideo",
     ];
     assert.deepEqual(methodNames.sort(), expected.sort());
@@ -89,18 +89,96 @@ describe("@geolibre/embed client", () => {
       const method = (client as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[name]!;
       const payload = name === "testudoRespondGeoAIRequest"
         ? { requestId: "ai-1", tviewId: "main", generation: 1, content: "ok" }
-        : name === "testudoSetGuestCapability"
-          ? { protocol: 1, guestEmbedToken: "guest-secret", expiresAt: Date.now() + 60_000 }
-          : { tviewId: "main" };
+        : { tviewId: "main" };
       const response = noArgumentCommands.has(name) ? method() : method(payload as never);
       const envelope = sent.at(-1)!.message;
       assert.equal(envelope.type, name);
+      assertNoCredentialFields(envelope);
       assert.deepEqual(envelope.payload, noArgumentCommands.has(name)
         ? { challenge }
         : { ...payload, challenge });
-      receive("ack", { requestId: envelope.requestId, ok: true, result: null });
+      const result = name === "testudoCreateTView"
+        ? { tviewId: "main", generation: 0, loaded: false }
+        : name === "testudoGetTViews"
+          ? []
+          : name === "testudoLoadPackage"
+            ? { tviewId: "main", generation: 1, status: "ready" }
+            : null;
+      receive("ack", { requestId: envelope.requestId, ok: true, result });
       await response;
     }
+    client.disconnect();
+  });
+
+  it("fetches artifacts in the host and transfers only current correlated bytes", async () => {
+    const { iframe, receive, sent } = harness();
+    const received: Array<{ tviewId: string; generation: number; artifactRef: string; signal: AbortSignal }> = [];
+    const hostMemoryCredential = "host-memory-only";
+    const pendingBytes: Array<{ resolve: (bytes: ArrayBuffer) => void; signal: AbortSignal }> = [];
+    const pending = connect(iframe, {
+      origin: "https://app.test",
+      fetchArtifact: async (request, signal) => {
+        received.push({ ...request, signal });
+        assert.equal(hostMemoryCredential, "host-memory-only");
+        return new Promise<ArrayBuffer>((resolve) => pendingBytes.push({ resolve, signal }));
+      },
+    });
+    const challenge = "0123456789abcdef0123456789abcdef";
+    receive("ready", { challenge });
+    const client = await pending;
+    receive("testudoStateChanged", { tviewId: "left", generation: 3 });
+    const request = {
+      requestId: "artifact-left-3",
+      tviewId: "left",
+      generation: 3,
+      artifactRef: "artifacts/manifest.json",
+      challenge,
+    };
+    receive("testudoArtifactRequest", request, "https://other.test");
+    receive("testudoArtifactRequest", request, "https://app.test", {});
+    receive("testudoArtifactRequest", { ...request, challenge: "wrong" });
+    receive("testudoArtifactRequest", { ...request, authorization: "Bearer never-send" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(received.length, 0);
+    receive("testudoArtifactRequest", request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(received.length, 1);
+    assert.deepEqual({ tviewId: received[0]!.tviewId, generation: received[0]!.generation, artifactRef: received[0]!.artifactRef }, {
+      tviewId: "left", generation: 3, artifactRef: "artifacts/manifest.json",
+    });
+    const countAfterAcceptedRequest = sent.length;
+    receive("testudoArtifactRequest", { ...request, requestId: "stale", generation: 2 });
+    receive("testudoArtifactRequest", { ...request, requestId: "cross-view", tviewId: "right" });
+    receive("testudoArtifactRequest", { ...request, requestId: request.requestId, artifactRef: "artifacts/other.json" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(received.length, 1);
+    assert.equal(sent.length, countAfterAcceptedRequest);
+
+    receive("testudoStateChanged", { tviewId: "left", generation: 4 });
+    assert.equal(pendingBytes[0]!.signal.aborted, true);
+    pendingBytes[0]!.resolve(new TextEncoder().encode("stale").buffer);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(sent.length, countAfterAcceptedRequest);
+
+    receive("testudoArtifactRequest", { ...request, requestId: "current", generation: 4 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const currentBytes = new TextEncoder().encode("current package").buffer;
+    pendingBytes[1]!.resolve(currentBytes);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const response = sent.at(-1)!;
+    assert.equal(response.origin, "https://app.test");
+    assert.deepEqual(response.message, {
+      v: EMBED_API_VERSION,
+      source: "testudo",
+      type: "testudoArtifactResponse",
+      payload: {
+        requestId: "current", tviewId: "left", generation: 4,
+        artifactRef: "artifacts/manifest.json", challenge, bytes: currentBytes,
+      },
+    });
+    assert.equal(response.transfer.length, 1);
+    assert.equal(response.transfer[0], currentBytes);
+    assertNoCredentialFields(response.message);
     client.disconnect();
   });
 
@@ -270,3 +348,15 @@ describe("@geolibre/embed client", () => {
     client.disconnect();
   });
 });
+
+function assertNoCredentialFields(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) assertNoCredentialFields(item);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    assert.doesNotMatch(key, /authorization|token|credential|password|secret/i);
+    assertNoCredentialFields(child);
+  }
+}

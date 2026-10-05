@@ -70,23 +70,58 @@ test("host must create an explicit TView id before loading and can query its sta
   assert.deepEqual(bridge.getActiveTView(), { tviewId: null });
 });
 
-test("guest capability stays in memory and is exposed only as expiring artifact authorization", async () => {
-  let readAuthorization: (() => string | null) | undefined;
+test("provider artifact reads are proxied with only a TView, generation, and artifact ref", async () => {
+  const requests: Array<{ requestId: string; tviewId: string; generation: number; artifactRef: string }> = [];
   const bridge = new TestudoFeatureBridge({
-    open: async (_bootstrap, context, _progress, getArtifactAuthorizationHeader) => {
-      readAuthorization = getArtifactAuthorizationHeader;
+    open: async (_bootstrap, context, _progress, fetchArtifact) => {
+      const bytes = await fetchArtifact("artifacts/manifest.json");
+      assert.equal(new TextDecoder().decode(bytes), "manifest");
       return provider(context);
     },
+  }, async (request) => {
+    requests.push(request);
+    return new TextEncoder().encode("manifest").buffer;
   });
   bridge.createTView("main");
-  const expiresAt = Date.now() + 60_000;
-  assert.deepEqual(bridge.setGuestCapability("guest-secret", expiresAt), { accepted: true, expiresAt });
   await bridge.loadPackage("main", bootstrap);
-  assert.equal(readAuthorization?.(), "Bearer guest-secret");
-  assert.equal(JSON.stringify(bridge.getState("main")).includes("guest-secret"), false);
-  bridge.clearGuestCapability();
-  assert.equal(readAuthorization?.(), null);
-  assert.throws(() => bridge.setGuestCapability("expired", Date.now() - 1), /invalid or expired/);
+  assert.equal(requests.length, 1);
+  assert.match(requests[0]!.requestId, /^testudo-artifact-/);
+  assert.deepEqual({ ...requests[0], requestId: undefined }, {
+    requestId: undefined,
+    tviewId: "main",
+    generation: 1,
+    artifactRef: "artifacts/manifest.json",
+  });
+  assert.equal(JSON.stringify(requests).toLowerCase().includes("authorization"), false);
+  assert.equal(JSON.stringify(requests).toLowerCase().includes("token"), false);
+});
+
+test("a package reload drops the old generation's late artifact response", async () => {
+  let resolveArtifact: ((bytes: ArrayBuffer) => void) | undefined;
+  let artifactStarted!: () => void;
+  const started = new Promise<void>((resolve) => { artifactStarted = resolve; });
+  let oldFetch: Promise<ArrayBuffer> | undefined;
+  const bridge = new TestudoFeatureBridge({
+    open: async (_bootstrap, context, _progress, fetchArtifact) => {
+      const session = provider(context);
+      if (context.generation === 1) {
+        session.loadPackage = async () => {
+          oldFetch = fetchArtifact("artifacts/late.bin");
+          artifactStarted();
+          await oldFetch;
+        };
+      }
+      return session;
+    },
+  }, () => new Promise<ArrayBuffer>((resolve) => { resolveArtifact = resolve; }));
+  bridge.createTView("main");
+  const oldLoad = bridge.loadPackage("main", bootstrap);
+  await started;
+  await bridge.loadPackage("main", { ...bootstrap, versionId: "v2" });
+  resolveArtifact!(new ArrayBuffer(1));
+  await assert.rejects(oldFetch!, /stale Testudo package/);
+  await assert.rejects(oldLoad, /superseded by a newer request/);
+  assert.equal(bridge.getState("main").generation, 2);
 });
 
 test("comparison edge cases keep scenario selection independent and reject stale session writes", async () => {

@@ -56,7 +56,20 @@ export interface TestudoGeoAIRequest {
 
 export interface TestudoScopedPayload { tviewId: string }
 export interface TestudoInvestigationAccepted { requestId: string; tviewId: string; generation: number; accepted: true }
-export interface TestudoSetGuestCapability { protocol: 1; guestEmbedToken: string; expiresAt: number }
+/** Credential-free reference requested by a Testudo iframe from its embedding host. */
+export interface TestudoArtifactRequest {
+  requestId: string;
+  tviewId: string;
+  generation: number;
+  artifactRef: string;
+}
+
+/** Host-side artifact resolver; credentials stay in the host's closure. */
+export interface TestudoArtifactFetchRequest extends Omit<TestudoArtifactRequest, "requestId"> {}
+export type TestudoArtifactFetcher = (
+  request: TestudoArtifactFetchRequest,
+  signal: AbortSignal,
+) => Promise<ArrayBuffer | Uint8Array | Blob>;
 export interface TestudoGeoAIReplyPayload {
   requestId: string;
   tviewId: string;

@@ -175,7 +175,7 @@ const TESTUDO_COMMANDS = new Set([
   "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode",
   "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery",
   "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState",
-  "testudoRequestInvestigation", "testudoRespondGeoAIRequest", "testudoSetGuestCapability", "testudoOpenAnnotations",
+  "testudoRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnnotations",
   "testudoOpenRecordTour", "testudoOpenRecordVideo",
 ]);
 
@@ -184,9 +184,70 @@ export function parseTestudoEmbedRequest(data: unknown, challenge: string): Test
   if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo") return null;
   if (typeof data.type !== "string" || !TESTUDO_COMMANDS.has(data.type)) return null;
   if (typeof data.requestId !== "string" || data.requestId.length < 1 || data.requestId.length > 200) return null;
-  if (!isRecord(data.payload) || data.payload.challenge !== challenge) return null;
+  if (!isRecord(data.payload) || data.payload.challenge !== challenge || containsCredentialField(data.payload)) return null;
   const { challenge: _challenge, ...payload } = data.payload;
   return { type: data.type as TestudoEmbedRequest["type"], payload, requestId: data.requestId };
+}
+
+export interface TestudoArtifactResponse {
+  requestId: string;
+  tviewId: string;
+  generation: number;
+  artifactRef: string;
+  bytes?: ArrayBuffer;
+  error?: string;
+}
+
+export function matchesTestudoArtifactCorrelation(
+  expected: Pick<TestudoArtifactResponse, "requestId" | "tviewId" | "generation" | "artifactRef">,
+  received: Pick<TestudoArtifactResponse, "requestId" | "tviewId" | "generation" | "artifactRef">,
+): boolean {
+  return expected.requestId === received.requestId
+    && expected.tviewId === received.tviewId
+    && expected.generation === received.generation
+    && expected.artifactRef === received.artifactRef;
+}
+
+/** Parse a host-proxied artifact response after source and origin validation. */
+export function parseTestudoArtifactResponse(data: unknown, challenge: string): TestudoArtifactResponse | null {
+  if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo"
+    || data.type !== "testudoArtifactResponse" || !isRecord(data.payload)) return null;
+  const payload = data.payload;
+  if (payload.challenge !== challenge || containsCredentialField(payload)) return null;
+  const { requestId, tviewId, generation, artifactRef, bytes, error } = payload;
+  if (typeof requestId !== "string" || !requestId || requestId.length > 200
+    || typeof tviewId !== "string" || !tviewId || tviewId.length > 120
+    || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
+    || typeof artifactRef !== "string" || !isSafeArtifactReference(artifactRef)) return null;
+  if (bytes !== undefined && !(bytes instanceof ArrayBuffer)) return null;
+  if (error !== undefined && (typeof error !== "string" || error.length > 1000)) return null;
+  if (bytes === undefined && !error) return null;
+  return {
+    requestId,
+    tviewId,
+    generation,
+    artifactRef,
+    ...(bytes ? { bytes } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
+function containsCredentialField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsCredentialField);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, child]) =>
+    /authorization|token|credential|password|secret/i.test(key)
+    || containsCredentialField(child));
+}
+
+function isSafeArtifactReference(value: string): boolean {
+  if (!value.trim() || value.length > 2048 || /[?#\\\u0000-\u001f]/.test(value)
+    || value.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  try {
+    return !decodeURIComponent(value).split("/").some((part) => part === "..");
+  } catch {
+    return false;
+  }
 }
 
 /** App → host event names. */
