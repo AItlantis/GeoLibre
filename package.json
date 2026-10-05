@@ -22,6 +22,7 @@
     "lint": "eslint apps packages workers tests --max-warnings 264",
     "test": "npm run test:frontend",
     "test:frontend": "node --import tsx --test tests/*.test.ts",
+    "test:frontend:in-process": "node scripts/run-frontend-tests-in-process.mjs",
     "test:frontend:coverage": "node scripts/coverage-check.mjs",
     "test:backend": "python -m pytest backend/geolibre_server/tests",
     "test:backend:coverage": "python -m pytest backend/geolibre_server/tests --cov=geolibre_server --cov-report=term-missing --cov-fail-under=55",
