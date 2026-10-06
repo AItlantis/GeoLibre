@@ -13,6 +13,7 @@ import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
+import { openLocalPackageFromActivation } from "../../lib/testudo-picker-flow";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
@@ -29,6 +30,33 @@ const empty: TestudoViewerState = { package: null, selectedPlugin: null, assista
 type LocalPackagePickerWindow = Window & {
   showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<VehicleDirectoryHandle>;
 };
+function isBoundedDisplayObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded.length <= 16_000 && !/"(?:authorization|token|credential|password|secret)"\s*:/i.test(encoded);
+  } catch { return false; }
+}
+function isDisplayOnlyAction(value: unknown): value is { type: string; label: string; value?: unknown; controlId?: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const action = value as Record<string, unknown>;
+  if (typeof action.label !== "string" || !action.label.trim() || action.label.length > 80) return false;
+  if (action.type === "plugin") return ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"].includes(String(action.value));
+  if (action.type === "scenario") return typeof action.value === "string" && action.value.length <= 120;
+  if (action.type === "seek") return typeof action.value === "number" && Number.isFinite(action.value) && action.value >= 0 && action.value <= 1_000_000;
+  if (action.type === "mapControl") return ["legend", "esri-world-imagery"].includes(String(action.controlId)) && typeof action.value === "boolean";
+  if (action.type === "camera") {
+    if (!action.value || typeof action.value !== "object" || Array.isArray(action.value)) return false;
+    const camera = action.value as Record<string, unknown>;
+    return Array.isArray(camera.center) && camera.center.length === 2
+      && camera.center.every((number, index) => typeof number === "number" && Number.isFinite(number)
+        && (index === 0 ? number >= -180 && number <= 180 : number >= -90 && number <= 90))
+      && typeof camera.zoom === "number" && Number.isFinite(camera.zoom) && camera.zoom >= 0 && camera.zoom <= 24
+      && (camera.bearing === undefined || typeof camera.bearing === "number" && Number.isFinite(camera.bearing))
+      && (camera.pitch === undefined || typeof camera.pitch === "number" && Number.isFinite(camera.pitch) && camera.pitch >= 0 && camera.pitch <= 85);
+  }
+  return false;
+}
 const handlers = {
   "vehicle-playback": { open: plugins.openVehiclePlaybackPanel, close: plugins.closeVehiclePlaybackPanel, load: plugins.loadLocalVehiclePlaybackFolder, status: plugins.getVehiclePlaybackStatus, settings: plugins.setVehiclePlaybackSettings },
   "network-kpi": { open: plugins.openNetworkKpiPanel, close: plugins.closeNetworkKpiPanel, load: plugins.loadLocalNetworkKpiFolder, status: plugins.getNetworkKpiStatus, settings: plugins.setNetworkKpiSettings },
@@ -43,6 +71,8 @@ const handlers = {
 export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
   const { t } = useTranslation();
   const [state, setState] = useState<TestudoViewerState>(empty);
+  const [localPickerRequest, setLocalPickerRequest] = useState<string | null>(null);
+  const localPickerRequestRef = useRef<string | null>(null);
   const picker = useRef<((directory: VehicleDirectoryHandle) => Promise<void>) | null>(null);
   const modeSelector = useRef<((mode: TestudoDemoMode) => Promise<TestudoViewerState>) | null>(null);
   useEffect(() => {
@@ -157,7 +187,12 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (!disposed && target && allowed.includes(target)) window.parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
     };
     const unsubscribeBridgeGeoAI = featureBridge.subscribeGeoAIRequests(request => emit("testudoGeoAIRequest", request));
-    const unsubscribeBridgeReplies = featureBridge.subscribeGeoAIReplies(reply => emit("testudoGeoAIReply", reply));
+    const relayReplies = new Map<string, (reply: plugins.TestudoGeoAIReply & { requestId: string; tviewId: string; generation: number }) => void>();
+    const unsubscribeBridgeReplies = featureBridge.subscribeGeoAIReplies(reply => {
+      relayReplies.get(reply.requestId)?.(reply);
+      relayReplies.delete(reply.requestId);
+      emit("testudoGeoAIReply", reply);
+    });
     const readyTargets = pickBroadcastTargets(null, allowed, parentOriginHintFromBrowser()).filter(target => target !== "*");
     const ready = () => { if (!disposed) for (const target of readyTargets) window.parent.postMessage({ v: 2, source: "geolibre", type: "ready", payload: { version: "testudo-v1", challenge } }, target); };
     function requestArtifactFromParent(request: { requestId: string; tviewId: string; generation: number; artifactRef: string }, signal: AbortSignal): Promise<ArrayBuffer> {
@@ -234,6 +269,17 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           ? { active_scenario_id: activeScenarioId } : {}),
         ...(current.package?.label ? { package_name: current.package.label } : {}),
       };
+      if (plugin === "network-kpi") {
+        const kpi = plugins.getNetworkKpiStatus();
+        context.kpi_summary = { feature_count: kpi.featureCount, has_results: kpi.hasResults, has_sections: kpi.hasSections,
+          interval_count: kpi.intervals.length, ...(Number.isSafeInteger(kpi.did) && kpi.did !== null ? { replication_id: kpi.did } : {}) };
+      } else if (plugin === "path-analysis") {
+        const path = plugins.getPathAnalysisSnapshot();
+        context.kpi_summary = { selected_volume: path.selectedVolume, selected_section_count: path.selectedSections.length,
+          interval_count: path.intervals.length };
+      } else if (plugin === "vehicle-playback") {
+        context.kpi_summary = { visible_vehicle_count: plugins.getVehiclePlaybackStatus().vehicleCount };
+      }
       if (plugin === "path-analysis") {
         const selectedSection = plugins.getPathAnalysisSnapshot().selectedSection;
         if (typeof selectedSection === "number" && Number.isSafeInteger(selectedSection) && selectedSection >= 0) context.selected_section_id = selectedSection;
@@ -438,10 +484,32 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       directory = sourceDirectory(source, candidate.label);
       if (getGuestEmbedToken) plugins.initGeoAiChat({ origin, packageId: candidate.packageId, packageVersionId: candidate.versionId,
         guest: { getGuestEmbedToken }, getViewerContext: getGeoAiViewerContext });
+      else plugins.initGeoAiChat({ origin, packageId: candidate.packageId, packageVersionId: candidate.versionId,
+        getViewerContext: getGeoAiViewerContext,
+        relay: async ({ messages, viewerContext }) => {
+          const allowedPlugins = new Set(["vehicle-playback", "network-kpi", "scenario-comparison", "path-analysis", "emissions-h3"]);
+          const active = featureBridge.sessions.get("main");
+          if (!active?.context.pluginId || !allowedPlugins.has(active.context.pluginId)) throw new Error("GeoAI is unavailable for this viewer mode.");
+          const question = messages[messages.length - 1]?.content ?? "";
+          const accepted = await featureBridge.requestInvestigation("main", question,
+            typeof viewerContext.active_scenario_id === "number" ? String(viewerContext.active_scenario_id) : undefined,
+            messages, viewerContext as Record<string, unknown>);
+          return await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => { relayReplies.delete(accepted.requestId); featureBridge.cancelGeoAIRequest(accepted.requestId); reject(new Error("Timed out waiting for the Testudo host GeoAI response.")); }, 90_000);
+            relayReplies.set(accepted.requestId, reply => {
+              clearTimeout(timeout);
+              if (reply.tviewId !== accepted.tviewId || reply.generation !== accepted.generation) return;
+              resolve({ content: reply.content, error: reply.error, scenarioAnalysis: reply.scenarioAnalysis,
+                viewerAction: reply.viewerAction ? { scenario_id: reply.viewerAction.scenario_id, section_id: reply.viewerAction.section_id } : undefined,
+                proposedActions: reply.proposedActions?.map(action => ({ type: action.type, label: action.label, value: "value" in action ? action.value : undefined })) });
+            });
+          });
+        } });
       const safeCapabilities = candidate.capabilities.map(capability => capability.id === "geoai-buildings"
         ? { ...capability, available: false, reason: "GeoAI building detection requires a host-authenticated API and is disabled in the iframe." }
         : capability.id === "geoai" && !getGuestEmbedToken
-          ? { ...capability, available: false, reason: "GeoAI chat requires a host-authenticated API and is disabled in the iframe." }
+          ? { ...capability, available: Boolean(parentOrigin && allowed.includes(parentOrigin)),
+            reason: parentOrigin && allowed.includes(parentOrigin) ? undefined : "The Testudo host has not enabled GeoAI request handling." }
           : capability);
       update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: safeCapabilities, status: "loading" });
       const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai")?.id as TestudoSelectablePluginId | undefined ?? null;
@@ -521,28 +589,62 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       } catch (error) { update({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
       finally { busy = false; }
     };
-    const openLocalPackage = async () => {
-      if (busy || openingLocalPicker) throw new Error(t("testudo.loading"));
+    const loadPickedLocalPackage = async (selected: VehicleDirectoryHandle, requestId: string) => {
+      if (busy) throw new Error(t("testudo.loading"));
       const pickerWindow = window as LocalPackagePickerWindow;
       if (!pickerWindow.showDirectoryPicker) {
         const error = t("testudo.folderUnsupported");
         update({ status: "error", error });
         throw new Error(error);
       }
-      // Invoke the browser picker immediately in response to the validated
-      // host command so transient user activation is still available.
-      openingLocalPicker = true;
       try {
-        const selected = await pickerWindow.showDirectoryPicker({ mode: "read" });
         await picker.current?.(selected);
-        return current;
+        const result = current;
+        if (requestId) emit("ack", { requestId, ok: true, result });
+        return result;
       } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") return current;
+        if (error instanceof DOMException && error.name === "AbortError") {
+          localPickerRequestRef.current = null;
+          setLocalPickerRequest(null);
+          if (requestId) emit("ack", { requestId, ok: true, result: current });
+          return current;
+        }
         throw error;
-      } finally {
-        openingLocalPicker = false;
       }
     };
+    const onLocalPickerActivation = (event: Event) => {
+      const requestId = (event as CustomEvent<{ requestId?: string }>).detail?.requestId;
+      if (!requestId || requestId !== localPickerRequestRef.current) return;
+      const pickerWindow = window as LocalPackagePickerWindow;
+      if (!pickerWindow.showDirectoryPicker) {
+        const error = t("testudo.folderUnsupported");
+        update({ status: "error", error });
+        localPickerRequestRef.current = null;
+        setLocalPickerRequest(null);
+        emit("ack", { requestId, ok: false, error });
+        return;
+      }
+      if (openingLocalPicker) return;
+      openingLocalPicker = true;
+      localPickerRequestRef.current = null;
+      setLocalPickerRequest(null);
+      void openLocalPackageFromActivation(requestId, requestId,
+        () => pickerWindow.showDirectoryPicker!({ mode: "read" }), selected => loadPickedLocalPackage(selected, requestId))
+        .then(result => {
+          if (result === null) return;
+        }).catch(error => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          emit("ack", { requestId, ok: true, result: current });
+          return;
+        }
+        const detail = error instanceof Error ? error.message : String(error);
+        update({ status: "error", error: detail });
+        localPickerRequestRef.current = null;
+        setLocalPickerRequest(null);
+        emit("ack", { requestId, ok: false, error: detail });
+      }).finally(() => { openingLocalPicker = false; });
+    };
+    window.addEventListener("testudo-local-package-picker", onLocalPickerActivation);
     const requestInvestigation = (request: MessageEvent["data"]) => {
       const requestId = request.requestId as string;
       const question = request.payload.question as string;
@@ -589,11 +691,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         return;
       }
       if (request.type === "testudoOpenLocalPackage") {
-        void openLocalPackage().then(result => emit("ack", { requestId: request.requestId, ok: true, result }), error => {
-          const detail = error instanceof Error ? error.message : String(error);
-          update({ status: "error", error: detail });
-          emit("ack", { requestId: request.requestId, ok: false, error: detail });
-        });
+        localPickerRequestRef.current = request.requestId;
+        setLocalPickerRequest(request.requestId);
         return;
       }
       if (request.type === "testudoRequestInvestigation") {
@@ -659,7 +758,11 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             typeof request.payload?.activeScenarioId === "string" ? request.payload.activeScenarioId : undefined);
           if (request.type === "testudoRespondGeoAIRequest") return featureBridge.respondGeoAIRequestTuple(String(request.payload?.requestId ?? ""), String(request.payload?.tviewId ?? "main"),
             Number(request.payload?.generation), { content: typeof request.payload?.content === "string" ? request.payload.content : undefined,
-              error: typeof request.payload?.error === "string" ? request.payload.error : undefined });
+              error: typeof request.payload?.error === "string" ? request.payload.error : undefined,
+              scenarioAnalysis: isBoundedDisplayObject(request.payload?.scenario_analysis) ? request.payload.scenario_analysis
+                : isBoundedDisplayObject(request.payload?.scenarioAnalysis) ? request.payload.scenarioAnalysis : undefined,
+              proposedActions: Array.isArray(request.payload?.proposedActions) ? request.payload.proposedActions.slice(0, 8).filter(isDisplayOnlyAction) : undefined,
+              viewerAction: bootstrap && validateScenarioAnalysisAction(request.payload?.viewer_action ?? request.payload?.viewerAction, bootstrap.versionId, declaredScenarioIds) || undefined });
           if (request.type === "testudoOpenGeoAiChat") {
             const open = request.payload.open as boolean;
             if (open) {
@@ -687,11 +790,11 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-local-package-picker", onLocalPickerActivation); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));
-  const hasVisibleStatus = state.status === "loading" || Boolean(state.error);
+  const hasVisibleStatus = state.status === "loading" || Boolean(state.error) || Boolean(localPickerRequest);
   if (!canOpenGeoAi && !hasVisibleStatus) return null;
 
   // The embedding Testudo shell renders its own "open package" control and mode/plugin
@@ -701,6 +804,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
   return <div className="pointer-events-none absolute inset-x-3 top-3 z-40 flex justify-end" data-testudo-controls>
     <div className="pointer-events-auto w-fit min-w-0 max-w-[min(20rem,100%)] rounded-md border border-border bg-background p-3 shadow-lg">
       {canOpenGeoAi && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => { if (app) handlers["geoai"].open(app); }}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
+      {localPickerRequest && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => window.dispatchEvent(new CustomEvent("testudo-local-package-picker", { detail: { requestId: localPickerRequest } }))}>{t("testudo.chooseLocalFolder", "Choose a local package folder")}</button>}
       {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
       {state.error && <p role="alert" className="mt-2 break-words text-sm text-red-600">{state.error}</p>}
     </div>

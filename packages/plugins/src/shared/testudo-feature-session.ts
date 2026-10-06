@@ -92,15 +92,20 @@ export interface TestudoGeoAIRequest {
   context: TestudoFeatureContext & {
     scenarioId?: string;
     /** Bounded display metadata only; never package contents or map features. */
-    displayContext?: { tick?: number; camera?: TestudoCameraView };
+    displayContext?: { tick?: number; camera?: TestudoCameraView; viewerContext?: Record<string, unknown> };
   };
 }
 
 export interface TestudoGeoAIReply {
+  requestId?: string;
+  tviewId?: string;
+  generation?: number;
   content?: string;
   error?: string;
   /** Display-only suggestions. Consumers must validate before offering local actions. */
   proposedActions?: TestudoGeoAIProposedAction[];
+  scenarioAnalysis?: Record<string, unknown>;
+  viewerAction?: { scenario_id: string | number; section_id?: string | number | null; version_id: string; source: "server_catalog" };
 }
 export type TestudoGeoAIProposedAction =
   | { type: "plugin"; label: string; value: TestudoCapabilityKey }

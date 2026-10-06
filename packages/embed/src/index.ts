@@ -114,7 +114,7 @@ export interface GeoLibreEmbedClient {
   testudoSetCameraView(payload: { tviewId: string; view: TestudoCameraView; generation?: number }): Promise<TestudoCameraView | null>;
   testudoGetCameraView(payload: { tviewId: string; generation?: number }): Promise<TestudoCameraView | null>;
   testudoFeatureRequestInvestigation(payload: { tviewId: string; question: string; activeScenarioId?: string }): Promise<{ requestId: string; tviewId: string; generation: number; accepted: true }>;
-  testudoRespondGeoAIRequest(payload: { requestId: string; tviewId: string; generation: number; content?: string; error?: string }): Promise<{ requestId: string; accepted: boolean }>;
+  testudoRespondGeoAIRequest(payload: { requestId: string; tviewId: string; generation: number; content?: string; error?: string; proposedActions?: unknown[]; scenario_analysis?: Record<string, unknown>; viewer_action?: TestudoGeoAIReply["viewer_action"] }): Promise<{ requestId: string; accepted: boolean }>;
   loadProject(url: string): Promise<void>;
   setView(target: ViewTarget): Promise<void>;
   highlightFeature(payload: {

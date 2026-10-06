@@ -82,6 +82,12 @@ function GeoAiChatCard() {
             )}
             <span className="whitespace-pre-wrap">{message.text}</span>
             {message.scenarioAnalysis && <ScenarioAnalysisEvidence analysis={message.scenarioAnalysis} />}
+            {message.viewerAction && <p className="mt-1 text-xs text-muted-foreground">{t("toolbar.geoai.suggestedScenario", "Suggested scenario: {{scenario}}", { scenario: message.viewerAction.scenario_id })}</p>}
+            {message.proposedActions && message.proposedActions.length > 0 && (
+              <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground" aria-label={t("toolbar.geoai.suggestions", "Viewer suggestions")}>
+                {message.proposedActions.map((action, index) => <li key={`${message.id}-action-${index}`}>{action.label}</li>)}
+              </ul>
+            )}
           </div>
         ))}
       </div>

@@ -2,7 +2,14 @@
   "testudo": {
     "openLocal": "Open local package",
     "loading": "Loading package...",
-    "folderUnsupported": "Local packages require Chrome or Edge with folder access enabled."
+    "folderUnsupported": "Local packages require Chrome or Edge with folder access enabled.",
+    "chooseLocalFolder": "Choose a local package folder"
+  },
+  "toolbar": {
+    "geoai": {
+      "suggestions": "Viewer suggestions",
+      "suggestedScenario": "Suggested scenario: {{scenario}}"
+    }
   },
   "projectHistory": {
     "title": "Project History",

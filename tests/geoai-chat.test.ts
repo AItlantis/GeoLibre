@@ -236,6 +236,28 @@ describe("Testudo GeoAI chat transport", () => {
     assert.equal(getGeoAiChatStatus().error, "AI is currently unavailable.");
   });
 
+  it("uses a credential-free relay transport with a bounded transcript and display-only proposals", async () => {
+    let captured: unknown;
+    initGeoAiChat({ origin: "https://app.testudo.live", packageId: "p", packageVersionId: "v",
+      getViewerContext: () => ({ mode: "results", selected_section_id: 12, kpi_summary: { feature_count: 3 }, package_name: "x".repeat(400) }),
+      relay: async input => {
+        captured = input;
+        return { content: "Analysis", scenarioAnalysis: { status: "complete" },
+          viewerAction: { scenario_id: "scenario-2", section_id: 12 },
+          proposedActions: [{ type: "seek", label: "Inspect interval", value: 2 }] };
+      } });
+    await sendGeoAiChat("first question");
+    const status = await sendGeoAiChat("second question");
+    const request = captured as { messages: Array<{ role: string; content: string }>; viewerContext: Record<string, unknown> };
+    assert.equal(request.messages.length, 3);
+    assert.equal(request.messages.at(-1)?.content, "second question");
+    assert.equal((request.viewerContext.package_name as string).length, 160);
+    assert.deepEqual(status.messages.at(-1)?.scenarioAnalysis, { status: "complete" });
+    assert.deepEqual(status.messages.at(-1)?.viewerAction, { scenario_id: "scenario-2", section_id: 12 });
+    assert.equal(status.messages.at(-1)?.proposedActions?.some(action => action.label === "Inspect interval"), true);
+    assert.equal(JSON.stringify(request).toLowerCase().includes("token"), false);
+  });
+
   it("sendChat without init() reports the session requirement instead of throwing", async () => {
     const status = await sendGeoAiChat("hello");
     assert.equal(status.error, "GeoAI chat requires a signed-in session.");

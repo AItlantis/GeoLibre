@@ -527,6 +527,7 @@ export class TestudoFeatureBridge {
     question: string,
     activeScenarioId?: string,
     messages?: Array<{ role: "user" | "assistant"; content: string }>,
+    viewerContext?: Record<string, unknown>,
   ): Promise<TestudoInvestigationAccepted> {
     const session = this.requireSession(tviewId);
     // The bridge itself relays to the host through its listeners; a provider hook is optional.
@@ -538,9 +539,11 @@ export class TestudoFeatureBridge {
     }
     const requestId = `testudo-ai-${Date.now()}-${++this.sequence}`;
     const transcript = messages ?? [{ role: "user" as const, content: normalized }];
-    if (!Array.isArray(transcript) || transcript.length < 1 || transcript.length > 22
+    const relayContext = viewerContext !== undefined;
+    if (!Array.isArray(transcript) || transcript.length < 1 || transcript.length > (relayContext ? 11 : 22)
       || transcript.some((message) => !message || !["user", "assistant"].includes(message.role)
-        || typeof message.content !== "string" || message.content.length > 4_000)
+        || typeof message.content !== "string" || message.content.length > (relayContext ? 2_000 : 4_000))
+      || transcript.reduce((sum, message) => sum + message.content.length, 0) > (relayContext ? 20_000 : 88_000)
       || transcript[transcript.length - 1]?.role !== "user"
       || transcript[transcript.length - 1]?.content.trim() !== normalized) {
       throw new Error("Investigation transcript is invalid.");
@@ -557,7 +560,10 @@ export class TestudoFeatureBridge {
       messages: transcript.map(({ role, content }) => ({ role, content })),
       context: {
         ...session.context, ...(activeScenarioId ? { scenarioId: activeScenarioId } : {}),
-        ...(Object.keys(displayContext).length ? { displayContext } : {}),
+        ...(Object.keys(displayContext).length || viewerContext ? { displayContext: {
+          ...displayContext,
+          ...(viewerContext ? { viewerContext: sanitizeGeoAiViewerContext(viewerContext) } : {}),
+        } } : {}),
       },
     };
     this.pendingGeoAI.set(requestId, { request, session });
@@ -653,4 +659,22 @@ export class TestudoFeatureBridge {
     await provider.loadPackage!(onProgress);
     return provider;
   }
+}
+
+function sanitizeGeoAiViewerContext(value: Record<string, unknown>): Record<string, unknown> {
+  const allowed = new Set(["mode", "scenario_ids", "active_scenario_id", "selected_section_id", "selected_vehicle_id", "selected_path_id", "time_window", "camera_bounds", "kpi_summary"]);
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!allowed.has(key)) continue;
+    if (typeof item === "string") result[key] = item.slice(0, 120);
+    else if (typeof item === "number" && Number.isFinite(item)) result[key] = item;
+    else if (typeof item === "boolean") result[key] = item;
+    else if (Array.isArray(item)) result[key] = item.slice(0, 16).filter(entry => typeof entry === "number" && Number.isFinite(entry) || typeof entry === "string" && entry.length <= 120);
+    else if (item && typeof item === "object") {
+      const entries = Object.entries(item as Record<string, unknown>).slice(0, 12);
+      result[key] = Object.fromEntries(entries.filter(([childKey, entry]) => !/(authorization|token|credential|password|secret)/i.test(childKey)
+        && (typeof entry === "string" && entry.length <= 120 || typeof entry === "number" && Number.isFinite(entry) || typeof entry === "boolean")));
+    }
+  }
+  return result;
 }

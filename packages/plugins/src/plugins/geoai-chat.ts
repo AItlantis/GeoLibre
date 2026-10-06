@@ -8,6 +8,8 @@ export interface GeoAiChatMessage {
   role: "user" | "assistant" | "error";
   text: string;
   scenarioAnalysis?: Record<string, unknown>;
+  proposedActions?: Array<{ type: string; label: string; value?: unknown }>;
+  viewerAction?: { scenario_id: string | number; section_id?: string | number | null };
 }
 
 export interface GeoAiChatSettings {
@@ -32,11 +34,26 @@ export interface GeoAiViewerContext {
   scenario_ids?: number[];
   active_scenario_id?: number;
   selected_section_id?: number;
+  selected_vehicle_id?: string;
+  selected_path_id?: string;
   time_window?: { start: number; end: number };
   camera_bounds?: [number, number, number, number];
   map?: { available: boolean };
   package_name?: string;
+  kpi_summary?: Record<string, string | number | boolean>;
 }
+
+export interface GeoAiChatRelayReply {
+  content?: string;
+  error?: string;
+  scenarioAnalysis?: Record<string, unknown>;
+  proposedActions?: Array<{ type: string; label: string; value?: unknown }>;
+  viewerAction?: { scenario_id: string | number; section_id?: string | number | null };
+}
+export type GeoAiChatRelay = (input: {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  viewerContext: GeoAiViewerContext;
+}) => Promise<GeoAiChatRelayReply>;
 
 interface PrincipalSession {
   kind: "principal";
@@ -55,7 +72,13 @@ interface GuestSession {
   getViewerContext?: () => GeoAiViewerContext;
 }
 
-type ChatSession = PrincipalSession | GuestSession;
+interface RelaySession {
+  kind: "relay";
+  relay: GeoAiChatRelay;
+  getViewerContext?: () => GeoAiViewerContext;
+}
+
+type ChatSession = PrincipalSession | GuestSession | RelaySession;
 
 const idleStatus: GeoAiChatStatus = { loading: false, error: null, available: false, messages: [] };
 const defaultSettings: GeoAiChatSettings = { visible: false };
@@ -86,6 +109,8 @@ function boundedViewerContext(value: GeoAiViewerContext | undefined): GeoAiViewe
   }
   if (Number.isSafeInteger(value.active_scenario_id)) result.active_scenario_id = value.active_scenario_id;
   if (Number.isSafeInteger(value.selected_section_id)) result.selected_section_id = value.selected_section_id;
+  if (typeof value.selected_vehicle_id === "string") result.selected_vehicle_id = value.selected_vehicle_id.slice(0, 120);
+  if (typeof value.selected_path_id === "string") result.selected_path_id = value.selected_path_id.slice(0, 120);
   const window = value.time_window;
   if (window && Number.isFinite(window.start) && Number.isFinite(window.end) && window.start < window.end) {
     result.time_window = { start: window.start, end: window.end };
@@ -99,17 +124,26 @@ function boundedViewerContext(value: GeoAiViewerContext | undefined): GeoAiViewe
   }
   if (typeof value.map?.available === "boolean") result.map = { available: value.map.available };
   if (typeof value.package_name === "string") result.package_name = value.package_name.slice(0, 160);
+  if (value.kpi_summary && typeof value.kpi_summary === "object") {
+    const summary: NonNullable<GeoAiViewerContext["kpi_summary"]> = {};
+    for (const [key, item] of Object.entries(value.kpi_summary).slice(0, 12)) {
+      if (!/^[a-z0-9_-]{1,40}$/i.test(key)) continue;
+      if (typeof item === "string") summary[key] = item.slice(0, 120);
+      else if (typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) summary[key] = item;
+    }
+    if (Object.keys(summary).length) result.kpi_summary = summary;
+  }
   return result;
 }
 
-function endpoint(current: ChatSession): URL {
+function endpoint(current: PrincipalSession | GuestSession): URL {
   const path = current.kind === "guest"
     ? "/api/public/demo/geoai-chat"
     : "/api/v1/ai/chat";
   return new URL(path, current.origin);
 }
 
-async function request<T>(current: ChatSession, body: Record<string, unknown>): Promise<T> {
+async function request<T>(current: PrincipalSession | GuestSession, body: Record<string, unknown>): Promise<T> {
   const credential = current.kind === "guest" ? current.getGuestEmbedToken() : current.bearerToken;
   const scheme = current.kind === "guest" ? "Testudo-Embed" : "Bearer";
   const controller = new AbortController();
@@ -143,6 +177,7 @@ export function initGeoAiChat(options: {
   packageId?: string;
   packageVersionId?: string;
   guest?: { getGuestEmbedToken: () => string };
+  relay?: GeoAiChatRelay;
   getViewerContext?: () => GeoAiViewerContext;
 }): void {
   token += 1;
@@ -150,6 +185,8 @@ export function initGeoAiChat(options: {
     session = { kind: "principal", origin: options.origin, bearerToken: options.bearerToken, packageId: options.packageId, packageVersionId: options.packageVersionId, getViewerContext: options.getViewerContext };
   } else if (options.guest) {
     session = { kind: "guest", origin: options.origin, packageVersionId: options.packageVersionId ?? "", getGuestEmbedToken: options.guest.getGuestEmbedToken, getViewerContext: options.getViewerContext };
+  } else if (options.relay) {
+    session = { kind: "relay", relay: options.relay, getViewerContext: options.getViewerContext };
   } else session = null;
   status = { ...idleStatus };
   notify();
@@ -179,7 +216,7 @@ export async function sendGeoAiChat(prompt: string): Promise<GeoAiChatStatus> {
     notify();
     return status;
   }
-  const trimmed = prompt.trim().slice(0, 4000);
+  const trimmed = prompt.trim().slice(0, session.kind === "relay" ? 2_000 : 4_000);
   if (!trimmed) return status;
   const requestToken = token;
   const userMessage: GeoAiChatMessage = { id: `u-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", text: trimmed };
@@ -191,6 +228,25 @@ export async function sendGeoAiChat(prompt: string): Promise<GeoAiChatStatus> {
       .filter((message): message is GeoAiChatMessage & { role: "user" | "assistant" } => message.id !== userMessage.id && (message.role === "user" || message.role === "assistant"))
       .slice(-10)
       .map(message => ({ role: message.role, content: message.text.slice(-2000) }));
+    const transcript = [...messages, { role: "user" as const, content: trimmed }].slice(-11);
+    while (transcript.length > 1 && transcript.reduce((sum, message) => sum + message.content.length, 0) > 20_000) transcript.shift();
+    if (session.kind === "relay") {
+      const result = await session.relay({ messages: transcript, viewerContext });
+      if (requestToken !== token) return status;
+      const actions = Array.isArray(result.proposedActions) ? result.proposedActions.slice(0, 8) : [];
+      const responseText = result.content ?? result.error ?? "AI is currently unavailable.";
+      const message: GeoAiChatMessage = {
+        id: `a-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        role: result.error && !result.content ? "error" : "assistant",
+        text: responseText,
+        ...(result.scenarioAnalysis ? { scenarioAnalysis: result.scenarioAnalysis } : {}),
+        ...(actions.length ? { proposedActions: actions } : {}),
+        ...(result.viewerAction ? { viewerAction: result.viewerAction } : {}),
+      };
+      status = { ...status, loading: false, available: !result.error, error: result.error ?? null, messages: [...status.messages, message] };
+      notify();
+      return status;
+    }
     const body = session.kind === "guest"
       ? { prompt: trimmed, messages, viewer_context: viewerContext }
       : { package_id: session.packageId, package_version_id: session.packageVersionId, prompt: trimmed, messages, viewer_context: viewerContext };

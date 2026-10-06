@@ -322,3 +322,24 @@ test("GeoAI requests relay to a subscribed host even when the provider has no re
   assert.deepEqual(seen, ["What changed?"]);
   unsubscribe();
 });
+
+test("GeoAI relay bounds its transcript, sanitizes viewer context, and drops stale tuple replies", async () => {
+  const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => provider(context) });
+  const original = await createAndLoad(bridge, "main");
+  const seen: unknown[] = [];
+  bridge.subscribeGeoAIRequests(request => seen.push(request));
+  const messages = Array.from({ length: 11 }, (_, index) => ({ role: index === 10 ? "user" as const : "assistant" as const, content: `${index}:` + "x".repeat(1000) }));
+  const accepted = await bridge.requestInvestigation("main", messages[10]!.content, undefined, messages, {
+    mode: "results", selected_section_id: 7, kpi_summary: { feature_count: 4 }, bearerToken: "must not cross the bridge",
+  });
+  const request = seen[0] as { messages: Array<{ content: string }>; context: { tviewId: string; generation: number; displayContext?: Record<string, unknown> } };
+  const viewerContext = request.context.displayContext?.viewerContext as Record<string, unknown>;
+  assert.equal(request.messages.length, 11);
+  assert.equal(Object.hasOwn(viewerContext, "bearerToken"), false);
+  assert.equal(JSON.stringify(request).includes("must not cross the bridge"), false);
+  await assert.rejects(bridge.requestInvestigation("main", "oversized", undefined,
+    [{ role: "user", content: "x".repeat(2001) }]));
+  await bridge.loadPackage("main", { ...bootstrap, versionId: "v2" });
+  assert.deepEqual(await bridge.respondGeoAIRequestTuple(accepted.requestId, "main", original.generation, { content: "stale" }),
+    { requestId: accepted.requestId, accepted: false });
+});

@@ -78,6 +78,6 @@ export interface TestudoPlaybackState { available: boolean; loading: boolean; pl
 export interface TestudoGeoAIRequest {
   requestId: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
-  context: { tviewId: string; generation: number; packageId: string; versionId: string | null; pluginId: string | null; scenarioId?: string; displayContext?: { tick?: number; camera?: TestudoCameraView } };
+  context: { tviewId: string; generation: number; packageId: string; versionId: string | null; pluginId: string | null; scenarioId?: string; displayContext?: { tick?: number; camera?: TestudoCameraView; viewerContext?: Record<string, unknown> } };
 }
-export interface TestudoGeoAIReply { requestId: string; tviewId: string; generation: number; content?: string; error?: string }
+export interface TestudoGeoAIReply { requestId: string; tviewId: string; generation: number; content?: string; error?: string; proposedActions?: unknown[]; scenario_analysis?: Record<string, unknown>; viewer_action?: { scenario_id: string | number; section_id?: string | number | null; version_id: string; source: "server_catalog" } }
