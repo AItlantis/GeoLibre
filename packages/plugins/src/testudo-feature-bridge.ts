@@ -294,7 +294,8 @@ export class TestudoFeatureBridge {
       this.sessions.install(session);
       this.playbackSubscriptions.get(tviewId)?.();
       if (session.playback?.subscribe) {
-        const unsubscribe = session.playback.subscribe((state) => {
+        const unsubscribe = session.playback.subscribe((eventTViewId, generation, state) => {
+          if (eventTViewId !== tviewId || generation !== session.context.generation) return;
           if (this.sessions.get(tviewId) !== session) return;
           for (const listener of this.playbackListeners) listener(tviewId, state);
         });
@@ -368,22 +369,36 @@ export class TestudoFeatureBridge {
     return selected;
   }
 
-  async playback(tviewId: string, command: "play" | "pause" | "restart" | "seek" | "speed", value?: number) {
-    const playback = this.requireSession(tviewId).playback;
+  async playback(tviewId: string, command: "play" | "pause" | "restart" | "seek" | "speed", value?: number, generation?: number) {
+    const session = this.requireSession(tviewId);
+    const { playback } = session;
     if (!playback) throw new Error("Playback is unavailable for this package.");
-    if (command === "play") return playback.setPlaying(true);
-    if (command === "pause") return playback.setPlaying(false);
-    if (command === "restart") return playback.restart();
-    if (command === "seek") {
-      if (!Number.isFinite(value) || value! < 0) throw new Error("Playback tick must be a non-negative number.");
-      return playback.seek(value!);
+    const expected = generation ?? session.context.generation;
+    if (expected !== session.context.generation || !this.sessions.isCurrent({ tviewId, generation: expected })) {
+      throw new Error("Playback command belongs to a stale Testudo package.");
     }
-    if (!Number.isFinite(value) || value! < 0.25 || value! > 20) throw new Error("Playback speed must be between 0.25 and 20.");
-    return playback.setSpeed(value!);
+    let state: TestudoPlaybackState;
+    if (command === "play") state = await playback.play(tviewId, expected);
+    else if (command === "pause") state = await playback.pause(tviewId, expected);
+    else if (command === "restart") state = await playback.restart(tviewId, expected);
+    else if (command === "seek") {
+      if (!Number.isFinite(value) || value! < 0) throw new Error("Playback tick must be a non-negative number.");
+      state = await playback.seek(tviewId, expected, value!);
+    } else {
+      if (!Number.isFinite(value) || value! < 0.25 || value! > 20) throw new Error("Playback speed must be between 0.25 and 20.");
+      state = await playback.setSpeed(tviewId, expected, value!);
+    }
+    this.assertCurrent(session);
+    return state;
   }
 
-  getPlaybackState(tviewId: string) {
-    return this.requireSession(tviewId).playback?.getState() ?? {
+  getPlaybackState(tviewId: string, generation?: number) {
+    const session = this.requireSession(tviewId);
+    const expected = generation ?? session.context.generation;
+    if (expected !== session.context.generation || !this.sessions.isCurrent({ tviewId, generation: expected })) {
+      throw new Error("Playback state belongs to a stale Testudo package.");
+    }
+    return session.playback?.getPlaybackState(tviewId, expected) ?? {
       available: false, loading: false, playing: false, tick: 0, maxTick: 0, speed: 1, dt: 0, loop: false,
     };
   }

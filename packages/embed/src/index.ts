@@ -119,11 +119,11 @@ export interface GeoLibreEmbedClient {
   testudoSetPreset(payload: TestudoScopedPayload & { id: string }): Promise<TestudoViewerState>;
   testudoGetState(payload: TestudoScopedPayload): Promise<TestudoViewerState>;
   testudoSetScenario(payload: TestudoScopedPayload & { scenarioId: string }): Promise<TestudoScenarioState>;
-  testudoSetPlaybackPlaying(payload: TestudoScopedPayload & { playing: boolean }): Promise<TestudoPlaybackState>;
-  testudoRestartPlayback(payload: TestudoScopedPayload): Promise<TestudoPlaybackState>;
-  testudoSeekPlayback(payload: TestudoScopedPayload & { tick: number }): Promise<TestudoPlaybackState>;
-  testudoSetPlaybackSpeed(payload: TestudoScopedPayload & { speed: number }): Promise<TestudoPlaybackState>;
-  testudoGetPlaybackState(payload: TestudoScopedPayload): Promise<TestudoPlaybackState>;
+  testudoSetPlaybackPlaying(payload: TestudoScopedPayload & { playing: boolean; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoRestartPlayback(payload: TestudoScopedPayload & { generation?: number }): Promise<TestudoPlaybackState>;
+  testudoSeekPlayback(payload: TestudoScopedPayload & { tick: number; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoSetPlaybackSpeed(payload: TestudoScopedPayload & { speed: number; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoGetPlaybackState(payload: TestudoScopedPayload & { generation?: number }): Promise<TestudoPlaybackState>;
   testudoSetCameraView(payload: TestudoScopedPayload & { view: TestudoCameraView }): Promise<TestudoCameraView>;
   testudoGetCameraView(payload: TestudoScopedPayload): Promise<TestudoCameraView | null>;
   testudoSetMapControl(payload: TestudoScopedPayload & { controlId: string; visible: boolean }): Promise<{ visible: boolean }>;

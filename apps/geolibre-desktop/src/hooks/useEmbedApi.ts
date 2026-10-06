@@ -209,6 +209,13 @@ export function useEmbedApi(
       return value;
     };
     const scopedId = (payload: Record<string, unknown>) => requiredText(payload, "tviewId", 120);
+    const playbackGeneration = (payload: Record<string, unknown>) => {
+      if (payload.generation === undefined) return undefined;
+      if (!Number.isSafeInteger(payload.generation) || (payload.generation as number) < 1) {
+        throw new Error("generation must be a positive safe integer.");
+      }
+      return payload.generation as number;
+    };
     const testudoState = (tviewId: string) => emitTestudoState(tviewId);
     const runTestudoCommand = async (type: string, payload: Record<string, unknown>): Promise<unknown> => {
       switch (type) {
@@ -260,12 +267,12 @@ export function useEmbedApi(
         case "testudoSetPlaybackPlaying": {
           const tviewId = scopedId(payload);
           if (typeof payload.playing !== "boolean") throw new Error("playing must be a boolean.");
-          const state = await testudo.playback(tviewId, payload.playing ? "play" : "pause");
+          const state = await testudo.playback(tviewId, payload.playing ? "play" : "pause", undefined, playbackGeneration(payload));
           emit("testudoPlaybackChanged", { ...state, tviewId }, 2);
           return state;
         }
         case "testudoRestartPlayback": {
-          const tviewId = scopedId(payload); const state = await testudo.playback(tviewId, "restart");
+          const tviewId = scopedId(payload); const state = await testudo.playback(tviewId, "restart", undefined, playbackGeneration(payload));
           emit("testudoPlaybackChanged", { ...state, tviewId }, 2); return state;
         }
         case "testudoSeekPlayback":
@@ -273,10 +280,10 @@ export function useEmbedApi(
           const tviewId = scopedId(payload); const isSeek = type === "testudoSeekPlayback";
           const value = payload[isSeek ? "tick" : "speed"];
           if (typeof value !== "number") throw new Error(`${isSeek ? "tick" : "speed"} must be a number.`);
-          const state = await testudo.playback(tviewId, isSeek ? "seek" : "speed", value);
+          const state = await testudo.playback(tviewId, isSeek ? "seek" : "speed", value, playbackGeneration(payload));
           emit("testudoPlaybackChanged", { ...state, tviewId }, 2); return state;
         }
-        case "testudoGetPlaybackState": return testudo.getPlaybackState(scopedId(payload));
+        case "testudoGetPlaybackState": return testudo.getPlaybackState(scopedId(payload), playbackGeneration(payload));
         case "testudoSetCameraView": {
           const tviewId = scopedId(payload); const view = payload.view as { center: [number, number]; zoom: number; bearing?: number; pitch?: number };
           if (!view || !Array.isArray(view.center)) throw new Error("view must contain a camera center and zoom.");

@@ -30,6 +30,7 @@ import {
   type PluginToolLoadResult,
 } from "./tool-scope";
 import { createHostAssistantTools, type AssistantToolDeps } from "./tools";
+import { assertAssistantAllowed } from "../testudo-mode";
 
 /** A streamed update surfaced to the chat UI. */
 export type AssistantStreamEvent =
@@ -169,6 +170,7 @@ export class AssistantSession {
    * which is the common case and must cost nothing but the routing request.
    */
   private async *streamFastPath(prompt: string): AsyncGenerator<AssistantStreamEvent, boolean> {
+    assertAssistantAllowed();
     const endpoint = resolveSystemOneEndpoint(readRuntimeEnv());
     if (!endpoint) return false;
 
@@ -255,6 +257,7 @@ export class AssistantSession {
   }
 
   private async ensureAgent(): Promise<Agent> {
+    assertAssistantAllowed();
     if (this.agent) {
       if (this.toolsVersion !== getAssistantToolsVersion()) {
         // Refresh between prompts, retaining the agent and its conversation.
@@ -302,6 +305,7 @@ export class AssistantSession {
    * @yields {@link AssistantStreamEvent} updates as the model and tools run.
    */
   async *stream(prompt: string): AsyncGenerator<AssistantStreamEvent> {
+    assertAssistantAllowed();
     // Guard before ensureAgent can refresh tools, including callers outside the UI.
     if (this.streaming) throw new Error("An assistant response is already in progress.");
     this.streaming = true;

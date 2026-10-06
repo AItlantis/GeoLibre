@@ -50,6 +50,7 @@ it("round-trips commands through the exact built Testudo iframe and embed client
   assert.ok(manifest.files["embed-client.js"]);
 
   let hostProxySawHostAuth = false;
+  let proxiedArtifactCount = 0;
   server = createServer((request, response) => {
     const pathname = new URL(request.url ?? "/", `http://127.0.0.1:${port}`).pathname;
     if (pathname === "/test-parent.html") {
@@ -59,12 +60,13 @@ it("round-trips commands through the exact built Testudo iframe and embed client
     }
     if (pathname === "/host-proxy-artifact") {
       hostProxySawHostAuth = request.headers.authorization === "Bearer host-only-e2e";
+      proxiedArtifactCount += 1;
       if (!hostProxySawHostAuth) {
         response.writeHead(403).end();
         return;
       }
-      response.writeHead(200, { "content-type": "application/octet-stream" });
-      response.end("host-proxied-artifact-bytes");
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ dt: 0.5, n_ticks: 10, scenarios: [{ scid: 7, name: "Fixture" }] }));
       return;
     }
     if (pathname === `${manifest.base}geolibre-runtime-config.js`) {
@@ -93,6 +95,12 @@ it("round-trips commands through the exact built Testudo iframe and embed client
     if (message.type() === "error") process.stderr.write(`[built-iframe console] ${message.text()}\n`);
   });
   const output = await page.evaluate(async () => {
+    const artifactRelays: Array<Record<string, unknown>> = [];
+    window.addEventListener("message", (event) => {
+      if (event.source !== (document.querySelector("#app") as HTMLIFrameElement).contentWindow
+        || event.data?.type !== "testudoArtifactRequest") return;
+      artifactRelays.push(event.data.payload as Record<string, unknown>);
+    });
     const embedClientUrl: string = "/geolibre-native/embed-client.js";
     const { connect } = await import(embedClientUrl);
     const iframe = document.querySelector("#app") as HTMLIFrameElement;
@@ -120,98 +128,54 @@ it("round-trips commands through the exact built Testudo iframe and embed client
     const initialTViews = await client.testudoGetTViews();
     const created = await client.testudoCreateTView({ tviewId: "built-smoke" });
     const state = await client.testudoGetState({ tviewId: "built-smoke" });
-    return { initialTViews, created, state };
+    const loaded = await client.testudoLoadPackage({
+      tviewId: "built-smoke",
+      bootstrap: {
+        packageId: "fixture/vehicle-playback",
+        versionId: "fixture-v1",
+        label: "Playback fixture",
+        origin: "published",
+        manifestPath: "manifest.json",
+        nativeManifestPath: "manifest.json",
+        artifactEndpoint: "/package/fixture-v1/",
+        capabilities: [{ id: "vehicle-playback", available: true }],
+        presets: [],
+      },
+      selectedPlugin: "vehicle-playback",
+    });
+    const generation = loaded.generation;
+    const scenario = await client.testudoSetScenario({ tviewId: "built-smoke", scenarioId: "7" });
+    const playing = await client.testudoSetPlaybackPlaying({ tviewId: "built-smoke", playing: true, generation });
+    const paused = await client.testudoSetPlaybackPlaying({ tviewId: "built-smoke", playing: false, generation });
+    const sought = await client.testudoSeekPlayback({ tviewId: "built-smoke", tick: 6, generation });
+    const playbackState = await client.testudoGetPlaybackState({ tviewId: "built-smoke", generation });
+    return { initialTViews, created, state, loaded, scenario, playing, paused, sought, playbackState, proxyMetrics, artifactRelays };
   });
 
   assert.deepEqual(output.initialTViews, []);
   assert.equal(output.created.tviewId, "built-smoke");
   assert.equal(output.state.tviewId, "built-smoke");
   assert.equal(output.state.status, "empty");
+  assert.equal(output.loaded.status, "ready");
+  assert.equal(output.loaded.generation, 1);
+  assert.equal(output.scenario.id, "7");
+  assert.equal(output.playing.playing, true);
+  assert.equal(output.paused.playing, false);
+  assert.equal(output.sought.tick, 6);
+  assert.equal(output.playbackState.tick, 6);
+  assert.equal(output.playbackState.maxTick, 9);
+  assert.deepEqual(output.proxyMetrics, { fetchCount: 1, sawHostAuth: true });
+  assert.equal(output.artifactRelays.length, 1);
+  assert.deepEqual(Object.keys(output.artifactRelays[0] ?? {}).sort(), [
+    "artifactRef", "challenge", "generation", "requestId", "tviewId",
+  ]);
+  assert.equal(output.artifactRelays[0]?.tviewId, "built-smoke");
+  assert.equal(output.artifactRelays[0]?.generation, output.loaded.generation);
+  assert.equal(proxiedArtifactCount, 1);
+  assert.equal(hostProxySawHostAuth, true);
 
   const childFrame = page.frames().find((frame) => frame.url().includes("/geolibre-native/"));
   assert.ok(childFrame, "built Testudo iframe frame is present");
-  const challenge = await page.evaluate(() => {
-    const ready = (window as Window & { __testudoReady?: { challenge?: string } }).__testudoReady;
-    if (!ready?.challenge) throw new Error("Built iframe did not publish its challenge.");
-    return ready.challenge;
-  });
-  await childFrame.evaluate(() => {
-    (window as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies = [];
-    window.addEventListener("message", (event) => {
-      if (event.source !== window.parent || event.data?.type !== "testudoArtifactResponse") return;
-      const payload = event.data.payload;
-      (window as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies?.push({
-        requestId: payload.requestId,
-        tviewId: payload.tviewId,
-        generation: payload.generation,
-        artifactRef: payload.artifactRef,
-        artifactText: payload.bytes instanceof ArrayBuffer ? new TextDecoder().decode(payload.bytes) : null,
-      });
-    });
-  });
-
-  // Send a state event through the built iframe's real window message channel.
-  // The host client must surface the loader progress and advance this TView's
-  // generation before it will accept artifact requests for that generation.
-  await childFrame.evaluate(() => window.parent.postMessage({
-    v: 2,
-    source: "geolibre",
-    type: "testudoStateChanged",
-    payload: {
-      tviewId: "built-smoke",
-      generation: 2,
-      status: "loading",
-      progress: { label: "Fetching package", value: 0.5, loaded: 5, total: 10 },
-    },
-  }, location.origin));
-  await page.waitForFunction(() => {
-    const progress = (window as Window & { __testudoProgress?: { loaded?: number; total?: number } }).__testudoProgress;
-    return progress?.loaded === 5 && progress.total === 10;
-  });
-
-  await childFrame.evaluate((currentChallenge) => {
-    window.parent.postMessage({
-      v: 2, source: "geolibre", type: "testudoArtifactRequest",
-      payload: { requestId: "built-iframe-stale", tviewId: "built-smoke", generation: 1,
-        artifactRef: "artifacts/manifest.json", challenge: currentChallenge },
-    }, location.origin);
-    window.parent.postMessage({
-      v: 2, source: "geolibre", type: "testudoArtifactRequest",
-      payload: { requestId: "built-iframe-credential", tviewId: "built-smoke", generation: 2,
-        artifactRef: "artifacts/manifest.json", challenge: currentChallenge, authorization: "fixture-only-rejected" },
-    }, location.origin);
-  }, challenge);
-  await page.waitForTimeout(50);
-  const rejectedMetrics = await page.evaluate(() => ({
-    fetchCount: (window as Window & { __testudoProxyMetrics?: { fetchCount: number } }).__testudoProxyMetrics?.fetchCount,
-    replies: (window.frames[0] as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies?.length,
-  }));
-  assert.deepEqual(rejectedMetrics, { fetchCount: 0, replies: 0 });
-
-  await childFrame.evaluate((currentChallenge) => window.parent.postMessage({
-    v: 2, source: "geolibre", type: "testudoArtifactRequest",
-    payload: { requestId: "built-iframe-artifact-1", tviewId: "built-smoke", generation: 2,
-      artifactRef: "artifacts/manifest.json", challenge: currentChallenge },
-  }, location.origin), challenge);
-  await childFrame.waitForFunction(() =>
-    ((window as Window & { __testudoArtifactReplies?: unknown[] }).__testudoArtifactReplies?.length ?? 0) === 1,
-  );
-  const fetchedArtifact = await childFrame.evaluate(() =>
-    (window as Window & { __testudoArtifactReplies?: Array<Record<string, unknown>> }).__testudoArtifactReplies?.[0],
-  );
-  const proxyMetrics = await page.evaluate(() =>
-    (window as Window & { __testudoProxyMetrics?: { fetchCount: number; sawHostAuth: boolean } }).__testudoProxyMetrics,
-  );
-  assert.deepEqual(fetchedArtifact, {
-    requestId: "built-iframe-artifact-1",
-    tviewId: "built-smoke",
-    generation: 2,
-    artifactRef: "artifacts/manifest.json",
-    artifactText: "host-proxied-artifact-bytes",
-  });
-  assert.deepEqual(proxyMetrics, { fetchCount: 1, sawHostAuth: true });
-  assert.equal(hostProxySawHostAuth, true);
-
   await page.evaluate(() =>
     (window as Window & { __testudoClient?: { disconnect(): void } }).__testudoClient?.disconnect(),
   );

@@ -23,6 +23,8 @@ export interface LayoutOptions {
   toolbarVisible: boolean;
   /** Read-only embed chrome with Layers and map navigation, but no authoring UI. */
   viewer: boolean;
+  /** Product-shell embed where Testudo owns interaction and AI relay. */
+  testudo: boolean;
 }
 
 const COMPACT_LAYOUT_VALUES = new Set(["compact", "embed", "iframe"]);
@@ -61,6 +63,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
       statusBarVisible: true,
       toolbarVisible: true,
       viewer: false,
+      testudo: false,
       ...layoutSettings,
     };
   }
@@ -75,11 +78,12 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
   const mapOnly =
     params.has("maponly") && MAP_ONLY_VALUES.has(normalizedParam(params.get("maponly")));
   const viewer = isViewerLayout(window.location.search);
+  const testudo = layout === "testudo";
   // `maponly` implies `compact` so the map fills its container (the `<main>`
   // element gets `min-h-0`). This also forces `toolbarLabels` and
   // `showProjectInfo` to false below, which is harmless since the toolbar is
   // hidden, but any other consumer of `compact` sees `true` in map-only mode.
-  const compact = mapOnly || viewer || COMPACT_LAYOUT_VALUES.has(layout);
+  const compact = mapOnly || viewer || testudo || COMPACT_LAYOUT_VALUES.has(layout);
   const panelsHidden =
     mapOnly ||
     HIDDEN_PANEL_VALUES.has(panels) ||
@@ -107,6 +111,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
     toolbarLabels,
     toolbarVisible: !mapOnly && !HIDDEN_TOOLBAR_VALUES.has(toolbar),
     viewer,
+    testudo,
   };
 }
 

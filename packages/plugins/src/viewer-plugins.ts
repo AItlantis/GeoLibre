@@ -11,7 +11,7 @@
 // Read from `plugin-ids`, not from the plugin modules: `maplibre-geoagent.ts`
 // pulls in `maplibre-gl-earth-engine`, which touches `window` at module load,
 // so importing it here would make this list browser-only.
-import { ANNOTATIONS_PLUGIN_ID, GEOAGENT_PLUGIN_ID, GEO_EDITOR_PLUGIN_ID } from "./plugin-ids";
+import { ANNOTATIONS_PLUGIN_ID, GEOAGENT_PLUGIN_ID, GEO_EDITOR_PLUGIN_ID, TESTUDO_GEOAGENT_PLUGIN_ID } from "./plugin-ids";
 
 /**
  * Plugins that must never be active under the viewer preset, because their
@@ -49,3 +49,6 @@ export const VIEWER_BLOCKED_PLUGIN_IDS: readonly string[] = [
   ANNOTATIONS_PLUGIN_ID,
   GEOAGENT_PLUGIN_ID,
 ];
+
+/** Plugins that could open a provider backed AI control inside Testudo's iframe. */
+export const TESTUDO_BLOCKED_PLUGIN_IDS: readonly string[] = [TESTUDO_GEOAGENT_PLUGIN_ID];

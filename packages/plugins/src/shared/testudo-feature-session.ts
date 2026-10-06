@@ -37,12 +37,13 @@ export type TestudoNetworkFilter = {
 export type TestudoRenderer = "maplibre" | "cesium";
 
 export interface TestudoPlaybackFeature {
-  getState(): TestudoPlaybackState;
-  setPlaying(playing: boolean): Promise<TestudoPlaybackState> | TestudoPlaybackState;
-  restart(): Promise<TestudoPlaybackState> | TestudoPlaybackState;
-  seek(tick: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
-  setSpeed(speed: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
-  subscribe?(listener: (state: TestudoPlaybackState) => void): () => void;
+  getPlaybackState(tviewId: string, generation: number): TestudoPlaybackState;
+  play(tviewId: string, generation: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
+  pause(tviewId: string, generation: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
+  restart(tviewId: string, generation: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
+  seek(tviewId: string, generation: number, tick: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
+  setSpeed(tviewId: string, generation: number, speed: number): Promise<TestudoPlaybackState> | TestudoPlaybackState;
+  subscribe?(listener: (tviewId: string, generation: number, state: TestudoPlaybackState) => void): () => void;
 }
 
 export interface TestudoFeatureContext {

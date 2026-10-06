@@ -980,7 +980,7 @@ export function DesktopShell({
           </Suspense>
         </SectionErrorBoundary>
       ) : null}
-      {assistantOpen ? (
+      {assistantOpen && !layoutOptions.testudo ? (
         <SectionErrorBoundary label="Assistant" displayName={t("shell.section.assistant")}>
           <Suspense fallback={null}>
             <AssistantPanel mapControllerRef={mapControllerRef} />

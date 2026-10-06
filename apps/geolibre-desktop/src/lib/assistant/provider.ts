@@ -1,4 +1,5 @@
 import type { Model } from "@strands-agents/sdk";
+import { assertAssistantAllowed } from "../testudo-mode";
 
 /**
  * Supported LLM providers for the natural-language assistant. The boundary is
@@ -626,6 +627,7 @@ export function openAiCompatibleHeaders(
  * @returns A ready-to-use Strands model instance.
  */
 export async function createModel(config: AssistantProviderConfig): Promise<Model> {
+  assertAssistantAllowed();
   switch (config.provider) {
     case "google": {
       const { GoogleModel } = await import("@strands-agents/sdk/models/google");

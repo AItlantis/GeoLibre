@@ -49,8 +49,26 @@ selection; it is not a routing fallback.
 
 Playback commands are `testudoSetPlaybackPlaying`, `testudoRestartPlayback`,
 `testudoSeekPlayback`, `testudoSetPlaybackSpeed`, and
-`testudoGetPlaybackState`. Scenario selection and map/camera commands address a
+`testudoGetPlaybackState`. Playback methods may carry the current `generation`;
+when supplied, the bridge rejects commands from an older package generation.
+The playback feature itself receives both `tviewId` and `generation` on every
+operation. Scenario selection and map/camera commands address a
 specific `tviewId`; selection does not mutate a comparison's other view.
+
+Scenario ids are strings at the bridge boundary, including numeric simulation
+scenario ids. The Testudo shell should call `String(scid)` before sending
+`scenarioId` or `activeScenarioId`; replication ids remain numeric.
+
+`?layout=testudo` selects Testudo mode in `apps/geolibre-desktop/src/hooks/useLayoutOptions.ts`.
+It hides the stock Strands assistant and blocks GeoAgent. The remaining GeoAI
+path is the correlated `testudoGeoAIRequest` relay to the embedding host.
+
+The built-in `vehicle-playback` provider registers through
+`registerTestudoPackageProvider`, loads the package manifest over the host
+artifact relay, and owns a generation-scoped timeline and scenario selection.
+The scenario-comparison, network-KPI, path-analysis, emissions, and dataset-query
+providers remain unregistered in this v3.1 branch; commands that require those
+capabilities continue to report unavailable until their providers are ported.
 
 `testudoStateChanged`, `testudoPlaybackChanged`, and `testudoGeoAIRequest` are
 typed embed events. Progress is reported from real loader byte counters as

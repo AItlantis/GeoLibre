@@ -1,5 +1,5 @@
 import type { MapEngine } from "@geolibre/map";
-import { VIEWER_BLOCKED_PLUGIN_IDS } from "@geolibre/plugins";
+import { TESTUDO_BLOCKED_PLUGIN_IDS, VIEWER_BLOCKED_PLUGIN_IDS } from "@geolibre/plugins";
 import { useCallback, useEffect, type RefObject } from "react";
 import type { LayoutOptions } from "../useLayoutOptions";
 import { createAppAPI, getPluginManager } from "../usePlugins";
@@ -25,9 +25,12 @@ export function useViewerPluginGuard(
   // own so the restore effect below can re-assert it *after* restoring, which
   // effect ordering alone would not guarantee.
   const enforceViewerPlugins = useCallback(() => {
-    if (!layoutOptions.viewer) return;
+    if (!layoutOptions.viewer && !layoutOptions.testudo) return;
     const manager = getPluginManager();
-    for (const id of VIEWER_BLOCKED_PLUGIN_IDS) {
+    const blocked = layoutOptions.testudo
+      ? TESTUDO_BLOCKED_PLUGIN_IDS
+      : VIEWER_BLOCKED_PLUGIN_IDS;
+    for (const id of blocked) {
       if (!manager.isActive(id)) continue;
       // `isActive` is true from the moment activation starts, so a plugin that
       // mounts behind a dynamic import (GeoAgent) is "active" with no control
@@ -43,7 +46,7 @@ export function useViewerPluginGuard(
       }
       manager.deactivate(id, createAppAPI(mapControllerRef));
     }
-  }, [layoutOptions.viewer, mapControllerRef]);
+  }, [layoutOptions.viewer, layoutOptions.testudo, mapControllerRef]);
 
   useEffect(() => {
     enforceViewerPlugins();

@@ -71,6 +71,7 @@ export {
 export { maplibreLayerControlPlugin } from "./plugins/layer-control";
 export * from "./shared/testudo-feature-session";
 export * from "./testudo-feature-bridge";
+export { registerTestudoVehiclePlaybackProvider, testudoVehiclePlaybackProvider } from "./plugins/testudo-vehicle-playback";
 export * from "./testudo-provider-registry";
 export { getStyleMap } from "./plugins/style-map";
 export {
@@ -421,7 +422,7 @@ export {
   DECK_VIZ_SOURCE_KIND,
   isDeckVizLayer,
 } from "./plugins/deckgl-viz/store-layer";
-export { VIEWER_BLOCKED_PLUGIN_IDS } from "./viewer-plugins";
+export { TESTUDO_BLOCKED_PLUGIN_IDS, VIEWER_BLOCKED_PLUGIN_IDS } from "./viewer-plugins";
 export {
   maplibreAnnotationsPlugin,
   ANNOTATIONS_PLUGIN_ID,
