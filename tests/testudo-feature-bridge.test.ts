@@ -59,6 +59,7 @@ test("provider scenarios and playback are addressed to the requested TView", asy
 test("host must create an explicit TView id before loading and can query its status", async () => {
   const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => provider(context) });
   await assert.rejects(bridge.loadPackage("main", bootstrap), /has not been created/);
+  assert.throws(() => bridge.getState("wrong-tview"), /has not been created/);
   assert.deepEqual(bridge.createTView("main"), { tviewId: "main", generation: 0, loaded: false });
   assert.throws(() => bridge.createTView("main"), /already exists/);
   assert.deepEqual(bridge.getTViews(), [{ tviewId: "main", generation: 0, loaded: false }]);
@@ -95,6 +96,24 @@ test("provider artifact reads are proxied with only a TView, generation, and art
   });
   assert.equal(JSON.stringify(requests).toLowerCase().includes("authorization"), false);
   assert.equal(JSON.stringify(requests).toLowerCase().includes("token"), false);
+});
+
+test("local package artifacts are read in the iframe and the resulting ViewerState is local", async () => {
+  const bridge = new TestudoFeatureBridge({
+    open: async (_bootstrap, context, _progress, fetchArtifact) => {
+      assert.equal(new TextDecoder().decode(await fetchArtifact("manifest.json")), "local manifest");
+      return provider(context);
+    },
+  });
+  bridge.createTView("local-view");
+  await bridge.loadPackage("local-view", {
+    packageId: "fixture", versionId: "local", label: "Fixture", artifactEndpoint: "", origin: "local",
+  }, () => {}, async (path) => {
+    assert.equal(path, "manifest.json");
+    return new TextEncoder().encode("local manifest").buffer;
+  });
+  assert.equal(bridge.getState("local-view").package?.origin, "local");
+  assert.equal(bridge.getState("local-view").package?.versionId, null);
 });
 
 test("a package reload drops the old generation's late artifact response", async () => {

@@ -10,6 +10,7 @@ import type {
   TestudoInvestigationAccepted,
   TestudoKpiGeometry,
   TestudoLoadPackage,
+  TestudoOpenLocalPackage,
   TestudoNetworkFilter,
   TestudoMapControlState,
   TestudoPlaybackState,
@@ -80,8 +81,6 @@ export type EmbedEventMap = {
   testudoActiveTViewChanged: TestudoActiveTView;
   testudoPlaybackChanged: TestudoPlaybackState & TestudoScopedPayload;
   testudoGeoAIRequest: TestudoGeoAIRequest;
-  /** The Testudo shell should show its local package folder picker. */
-  testudoOpenLocalPackageRequested: { challenge: string };
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack
@@ -116,6 +115,8 @@ export interface GeoLibreEmbedClient {
   testudoSetActiveTView(payload: { tviewId: string }): Promise<TestudoActiveTView>;
   testudoGetActiveTView(): Promise<TestudoActiveTView>;
   testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
+  /** Open a local package folder inside the iframe; call directly from a user-activation handler. */
+  testudoOpenLocalPackage(payload: TestudoOpenLocalPackage): Promise<TestudoViewerState>;
   testudoSetPlugin(payload: TestudoScopedPayload & { id: TestudoCapabilityId }): Promise<TestudoViewerState>;
   testudoSetMode(payload: TestudoScopedPayload & { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoSetPreset(payload: TestudoScopedPayload & { id: string }): Promise<TestudoViewerState>;
@@ -283,6 +284,12 @@ export function connect(
     testudoLoadPackage: (payload) => {
       updateGeneration(payload.tviewId, (currentGenerations.get(payload.tviewId) ?? 0) + 1);
       return sendTestudo<TestudoViewerState>("testudoLoadPackage", payload as unknown as Record<string, unknown>).then((state) => {
+        updateGeneration(state.tviewId, state.generation);
+        return state;
+      });
+    },
+    testudoOpenLocalPackage: (payload) => {
+      return sendTestudo<TestudoViewerState>("testudoOpenLocalPackage", payload as unknown as Record<string, unknown>).then((state) => {
         updateGeneration(state.tviewId, state.generation);
         return state;
       });

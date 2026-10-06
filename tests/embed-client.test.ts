@@ -76,7 +76,7 @@ describe("@geolibre/embed client", () => {
     const methodNames = Object.keys(client).filter((name) => name.startsWith("testudo"));
     const expected = [
       "testudoCreateTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView",
-      "testudoLoadPackage", "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState",
+      "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState",
       "testudoSetScenario", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback",
       "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView",
       "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility",
@@ -103,6 +103,8 @@ describe("@geolibre/embed client", () => {
           ? []
           : name === "testudoLoadPackage"
             ? { tviewId: "main", generation: 1, status: "ready" }
+            : name === "testudoOpenLocalPackage"
+              ? { tviewId: "main", generation: 1, status: "ready", package: { packageId: "sample", versionId: null, label: "Sample", origin: "local" } }
             : null;
       receive("ack", { requestId: envelope.requestId, ok: true, result });
       await response;

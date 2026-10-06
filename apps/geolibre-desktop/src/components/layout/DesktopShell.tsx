@@ -89,7 +89,6 @@ import { PluginRightPanel } from "../panels/PluginRightPanel";
 import { StylePanel } from "../panels/StylePanel";
 import { SharedSidebar } from "../panels/SharedSidebar";
 import { Layers, SlidersHorizontal } from "lucide-react";
-import { TestudoMapActions } from "./TestudoMapActions";
 import { StoryMapComposeBar } from "../storymap/StoryMapComposeBar";
 import { StoryMapPanel } from "../storymap/StoryMapPanel";
 import { StoryMapPresenter } from "../storymap/StoryMapPresenter";
@@ -601,11 +600,6 @@ export function DesktopShell({
             layoutOptions.compact ? "min-h-0" : "min-h-72 md:min-h-0"
           }`}
         >
-          {layoutOptions.testudo ? (
-            <TestudoMapActions
-              onOpenLocalPackage={() => window.dispatchEvent(new Event("testudo:open-local-package"))}
-            />
-          ) : null}
           {/* Visually-hidden page title: gives the document the single
               top-level heading that assistive tech (and the axe
               `page-has-heading-one` check) expect, without altering the

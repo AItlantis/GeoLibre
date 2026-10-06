@@ -44,6 +44,7 @@ export interface TestudoPlaybackState {
   tickFollowers?: Array<{ capability: TestudoCapabilityId; following: boolean; timeSeriesAvailable: boolean }>;
 }
 export interface TestudoLoadPackage { tviewId: string; bootstrap: TestudoBootstrap; selectedPlugin?: TestudoCapabilityId; presetId?: string }
+export interface TestudoOpenLocalPackage { tviewId: string }
 export interface TestudoScenarioState { id: string; label: string; selected: boolean; replicationIds: number[] }
 export interface TestudoCameraView { center: [number, number]; zoom: number; bearing?: number; pitch?: number }
 export interface TestudoNetworkFilter { id: string; enabled: boolean; value?: string | number | boolean }

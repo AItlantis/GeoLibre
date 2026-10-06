@@ -180,6 +180,16 @@ describe("parseTestudoEmbedRequest", () => {
     }, challenge), null);
   });
 
+  it("accepts the scoped local-package command and rejects extra payload fields", () => {
+    const envelope = { v: 2, source: "testudo", type: "testudoOpenLocalPackage", requestId: "open-1" };
+    assert.deepEqual(parseTestudoEmbedRequest({ ...envelope, payload: { tviewId: "main", challenge } }, challenge), {
+      type: "testudoOpenLocalPackage", requestId: "open-1", payload: { tviewId: "main" },
+    });
+    assert.equal(parseTestudoEmbedRequest({ ...envelope, payload: { tviewId: "main", extra: true, challenge } }, challenge), null);
+    assert.equal(parseTestudoEmbedRequest({ ...envelope, payload: { challenge } }, challenge), null);
+    assert.equal(parseTestudoEmbedRequest({ ...envelope, payload: { tviewId: " ", challenge } }, challenge), null);
+  });
+
   it("rejects regular embed traffic, unsupported versions, and unknown Testudo commands", () => {
     const envelope = { v: 2, source: "testudo", requestId: "r1", payload: { challenge } };
     assert.equal(parseTestudoEmbedRequest({ ...envelope, type: "testudoRunArbitrary" }, challenge), null);

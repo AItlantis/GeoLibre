@@ -169,7 +169,7 @@ export interface TestudoEmbedRequest {
 
 const TESTUDO_COMMANDS = new Set([
   "testudoCreateTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView",
-  "testudoLoadPackage", "testudoSetPlugin", "testudoSetMode",
+  "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode",
   "testudoSetPreset", "testudoGetState", "testudoSetScenario", "testudoSetPlaybackPlaying",
   "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState",
   "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode",
@@ -186,6 +186,11 @@ export function parseTestudoEmbedRequest(data: unknown, challenge: string): Test
   if (typeof data.requestId !== "string" || data.requestId.length < 1 || data.requestId.length > 200) return null;
   if (!isRecord(data.payload) || data.payload.challenge !== challenge || containsCredentialField(data.payload)) return null;
   const { challenge: _challenge, ...payload } = data.payload;
+  if (data.type === "testudoOpenLocalPackage") {
+    const keys = Object.keys(payload);
+    if (keys.length !== 1 || keys[0] !== "tviewId"
+      || typeof payload.tviewId !== "string" || !payload.tviewId.trim() || payload.tviewId.length > 120) return null;
+  }
   return { type: data.type as TestudoEmbedRequest["type"], payload, requestId: data.requestId };
 }
 
@@ -263,8 +268,7 @@ export type EmbedEventType =
   | "testudoStateChanged"
   | "testudoActiveTViewChanged"
   | "testudoPlaybackChanged"
-  | "testudoGeoAIRequest"
-  | "testudoOpenLocalPackageRequested";
+  | "testudoGeoAIRequest";
 
 /** An app → host message, ready to hand to `postMessage`. */
 export interface EmbedEvent {

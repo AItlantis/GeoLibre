@@ -31,6 +31,7 @@ import { resolveProjectXyzLayers } from "../lib/xyz-url";
 import { isKnownWhiteboxToolId } from "../lib/whitebox-tool-url";
 import { loadDataUrl } from "./useDataUrlLoader";
 import type { createAppAPI } from "./usePlugins";
+import { pickTestudoLocalDirectory, validateTestudoLocalPackage } from "../lib/testudo-local-package";
 
 // Runtime `postMessage` API for a host page that frames GeoLibre (issue #1462).
 // Where `?url=`, `?maponly`, and `?tool=` configure the app once at load time,
@@ -161,10 +162,7 @@ export function useEmbedApi(
       }
     };
 
-    const onOpenLocalPackageRequest = () => {
-      emit("testudoOpenLocalPackageRequested", { challenge: testudoChallenge }, 2);
-    };
-    window.addEventListener("testudo:open-local-package", onOpenLocalPackageRequest);
+    let openingLocalPackage = false;
 
     const ack = (
       requestId: string | null,
@@ -218,6 +216,38 @@ export function useEmbedApi(
       return payload.generation as number;
     };
     const testudoState = (tviewId: string) => emitTestudoState(tviewId);
+    const openLocalPackage = async (tviewId: string) => {
+      // Check scope before opening a privileged picker, and invoke it before the
+      // first await so the browser can use the parent click's transient activation.
+      testudo.getState(tviewId);
+      if (openingLocalPackage) throw new Error("A local package is already being opened.");
+      openingLocalPackage = true;
+      try {
+        const directory = await pickTestudoLocalDirectory();
+        const local = await validateTestudoLocalPackage(directory);
+        const selectedPlugin = local.capabilities.find((item) => item.available)?.id;
+        if (!selectedPlugin) throw new Error("This package has no supported Testudo viewer capability.");
+        const bootstrap: TestudoPackageBootstrap = {
+          packageId: local.packageId,
+          versionId: "local",
+          label: local.label,
+          artifactEndpoint: "",
+          origin: "local",
+          capabilities: local.capabilities,
+          selectedPlugin,
+        };
+        await testudo.loadPackage(tviewId, bootstrap, (progress) => {
+          emit("testudoStateChanged", {
+            ...testudo.getState(tviewId),
+            progress: { label: progress.label ?? "Loading local package", value: progress.value, loaded: progress.loaded, total: progress.total },
+          }, 2);
+        }, local.readArtifact);
+        testudoState(tviewId);
+        return testudo.getState(tviewId);
+      } finally {
+        openingLocalPackage = false;
+      }
+    };
     const runTestudoCommand = async (type: string, payload: Record<string, unknown>): Promise<unknown> => {
       switch (type) {
         case "testudoCreateTView": {
@@ -232,6 +262,7 @@ export function useEmbedApi(
           return result;
         }
         case "testudoGetActiveTView": return testudo.getActiveTView();
+        case "testudoOpenLocalPackage": return openLocalPackage(scopedId(payload));
         case "testudoLoadPackage": {
           const tviewId = scopedId(payload);
           const bootstrap = payload.bootstrap as TestudoPackageBootstrap | undefined;
@@ -708,7 +739,6 @@ export function useEmbedApi(
       }
       pendingArtifactRequests.clear();
       window.removeEventListener("message", handleMessage);
-      window.removeEventListener("testudo:open-local-package", onOpenLocalPackageRequest);
       unsubscribe();
       unsubscribeActiveTView();
       unsubscribeGeoAI();

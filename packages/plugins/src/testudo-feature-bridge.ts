@@ -18,6 +18,8 @@ export interface TestudoPackageBootstrap {
   versionId: string;
   label: string;
   artifactEndpoint: string;
+  /** Set only by the in-iframe local folder loader. */
+  origin?: "published" | "local";
   capabilities?: Array<{ id: TestudoCapabilityKey; available: boolean; reason?: string; label?: string; description?: string }>;
   presets?: Array<{ id: string; plugin?: string; settings?: Record<string, unknown> }>;
   selectedPlugin?: string;
@@ -112,6 +114,7 @@ export class TestudoFeatureBridge {
   private readonly bootstraps = new Map<string, TestudoPackageBootstrap>();
   private readonly states = new Map<string, TestudoFeatureViewerState>();
   private readonly pendingArtifacts = new Map<string, { request: TestudoArtifactRequest; controller: AbortController }>();
+  private readonly localArtifactReaders = new Map<string, (artifactRef: string) => Promise<ArrayBuffer>>();
 
   constructor(
     factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver,
@@ -147,7 +150,10 @@ export class TestudoFeatureBridge {
     };
     const controller = new AbortController();
     this.pendingArtifacts.set(request.requestId, { request, controller });
-    return this.artifactFetcher(request, controller.signal).then((bytes) => {
+    const localReader = this.localArtifactReaders.get(context.tviewId);
+    return (localReader
+      ? localReader(artifactRef)
+      : this.artifactFetcher(request, controller.signal)).then((bytes) => {
       if (this.pendingArtifacts.get(request.requestId)?.request !== request
         || this.generations.get(context.tviewId) !== context.generation
         || controller.signal.aborted) {
@@ -215,10 +221,13 @@ export class TestudoFeatureBridge {
     tviewId: string,
     bootstrap: TestudoPackageBootstrap,
     onProgress: (progress: TestudoPackageProgress) => void = () => {},
+    localArtifactReader?: (artifactRef: string) => Promise<ArrayBuffer>,
   ): Promise<TestudoFeatureContext> {
     if (!tviewId.trim()) throw new Error("A TView id is required.");
     if (!this.tviews.has(tviewId)) throw new Error(`TView ${tviewId} has not been created.`);
-    if (!bootstrap?.packageId || !bootstrap.versionId || !bootstrap.artifactEndpoint) {
+    if (!bootstrap?.packageId || !bootstrap.versionId
+      || (bootstrap.origin !== "local" && !bootstrap.artifactEndpoint)
+      || (bootstrap.origin === "local" && !localArtifactReader)) {
       throw new Error("The published package bootstrap is incomplete.");
     }
     const previousSession = this.sessions.remove(tviewId);
@@ -233,11 +242,13 @@ export class TestudoFeatureBridge {
     this.tviews.set(tviewId, generation);
     this.pendingLoads.set(tviewId, generation);
     this.bootstraps.set(tviewId, bootstrap);
+    if (bootstrap.origin === "local") this.localArtifactReaders.set(tviewId, localArtifactReader!);
+    else this.localArtifactReaders.delete(tviewId);
     const oldState = this.states.get(tviewId)!;
     this.states.set(tviewId, {
       ...oldState, generation, package: {
-        packageId: bootstrap.packageId, versionId: bootstrap.versionId,
-        label: bootstrap.label ?? bootstrap.packageId, origin: "published",
+        packageId: bootstrap.packageId, versionId: bootstrap.origin === "local" ? null : bootstrap.versionId,
+        label: bootstrap.label ?? bootstrap.packageId, origin: bootstrap.origin ?? "published",
       }, selectedPlugin: bootstrap.selectedPlugin ?? null,
       capabilities: [...(bootstrap.capabilities ?? [])],
       availableModes: [], status: "loading", error: undefined, progress: undefined,
@@ -245,7 +256,7 @@ export class TestudoFeatureBridge {
     const context: TestudoFeatureContext = {
       tviewId,
       packageId: bootstrap.packageId,
-      versionId: bootstrap.versionId,
+      versionId: bootstrap.origin === "local" ? null : bootstrap.versionId,
       pluginId: bootstrap.selectedPlugin ?? null,
       generation,
     };
@@ -269,6 +280,7 @@ export class TestudoFeatureBridge {
       );
     } catch (error) {
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
+      if (this.generations.get(tviewId) === generation && bootstrap.origin === "local") this.localArtifactReaders.delete(tviewId);
       const currentState = this.states.get(tviewId);
       if (currentState?.generation === generation) this.states.set(tviewId, {
         ...currentState, status: "error", error: error instanceof Error ? error.message : String(error),
@@ -276,7 +288,8 @@ export class TestudoFeatureBridge {
       throw error;
     }
     if (provider.context.tviewId !== tviewId || provider.context.generation !== generation
-      || provider.context.packageId !== bootstrap.packageId || provider.context.versionId !== bootstrap.versionId) {
+      || provider.context.packageId !== bootstrap.packageId
+      || provider.context.versionId !== (bootstrap.origin === "local" ? null : bootstrap.versionId)) {
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
       await provider.dispose?.();
       throw new Error("The Testudo provider returned a session outside its requested scope.");
@@ -304,9 +317,9 @@ export class TestudoFeatureBridge {
       this.states.set(tviewId, {
         tviewId, generation, package: {
           packageId: bootstrap.packageId,
-          versionId: bootstrap.versionId,
+          versionId: bootstrap.origin === "local" ? null : bootstrap.versionId,
           label: bootstrap.label ?? bootstrap.packageId,
-          origin: "published",
+          origin: bootstrap.origin ?? "published",
         },
         selectedPlugin: session.context.pluginId,
         capabilities: [...(session.capabilities ?? bootstrap.capabilities ?? [])],
@@ -320,6 +333,7 @@ export class TestudoFeatureBridge {
       const superseded = this.pendingLoads.get(tviewId) !== generation
         || this.generations.get(tviewId) !== generation;
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
+      if (!superseded && bootstrap.origin === "local") this.localArtifactReaders.delete(tviewId);
       const currentState = this.states.get(tviewId);
       if (currentState?.generation === generation) this.states.set(tviewId, {
         ...currentState, status: "error", error: error instanceof Error ? error.message : String(error),
@@ -572,6 +586,7 @@ export class TestudoFeatureBridge {
     this.tviews.delete(tviewId);
     this.states.delete(tviewId);
     this.bootstraps.delete(tviewId);
+    this.localArtifactReaders.delete(tviewId);
     if (this.activeTViewId === tviewId) {
       this.activeTViewId = null;
       for (const listener of this.activeTViewListeners) listener(null);

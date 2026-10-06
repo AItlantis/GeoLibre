@@ -100,13 +100,14 @@ typed embed events. Progress is reported from real loader byte counters as
 `{ label, value, loaded, total }`, with `value` derived from `loaded / total`.
 Invalid progress fails the provider load rather than producing a synthetic fraction.
 
-In `?layout=testudo`, the map's **Open local package** action emits the typed
-`testudoOpenLocalPackageRequested` event. The embedding host must subscribe to
-that event, show its local-folder picker, and load the selected package through
-the existing `testudoCreateTView` / `testudoLoadPackage` commands. The host's
-`fetchArtifact` callback remains responsible for resolving package-relative
-artifact paths from that selected folder; directory handles and credentials do
-not cross the iframe boundary. The event is sent only when the embed API is
+In `?layout=testudo`, the Testudo shell opens a local package through
+`testudoOpenLocalPackage({ tviewId })`, which returns the resulting
+`ViewerState`. The iframe validates `manifest.json` and
+`geolibre/package.json`, opens its own read-only folder picker, and reads
+artifacts directly from that directory. Package bytes and directory handles
+stay in the iframe and never pass through the host. Call the command directly
+from the shell button's click handler so the browser can preserve transient user
+activation for the picker. The command is enabled only when the embed API is
 enabled by `VITE_GEOLIBRE_EMBED_ORIGINS` at build time or
 `GEOLIBRE_EMBED_ORIGINS` in `geolibre-runtime-config.js` at runtime.
 
