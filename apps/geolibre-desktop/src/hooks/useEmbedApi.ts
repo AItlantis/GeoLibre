@@ -11,6 +11,7 @@ import {
 import {
   buildEmbedEvent,
   buildEmbedLayer,
+  createEmbedEventPoster,
   embedEventTargets,
   embedEventVersions,
   embedLayerSummaries,
@@ -21,6 +22,7 @@ import {
   parseTestudoArtifactResponse,
   parseTestudoEmbedRequest,
   readEmbedOrigins,
+  resolveEmbedParentOrigin,
   requireEmbedLayer,
   resolveHighlightIds,
   type EmbedCommand,
@@ -85,9 +87,13 @@ export function useEmbedApi(
     // Not framed: there is no host to talk to (the app is the top-level page).
     if (!host || host === window) return;
 
-    // Both learned from the host's first allowed message, and both pinned for
-    // the rest of the session; see `embedEventTargets` / `embedEventVersions`
-    // for what each is null until then.
+    // A browser hint may resolve the parent before the first event; otherwise
+    // the verified challenge-bearing handshake pins the origin later.
+    const ancestorOrigins = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
+    const parentOriginHint = resolveEmbedParentOrigin([
+      document.referrer,
+      ancestorOrigins?.item(0),
+    ], allowedOrigins);
     let hostOrigin: string | null = null;
     let hostVersion: 1 | 2 | null = null;
     let disposed = false;
@@ -145,20 +151,24 @@ export function useEmbedApi(
       }
     });
     const testudo = new TestudoFeatureBridge((bootstrap) => getTestudoPackageProviderSuite(bootstrap), fetchArtifactFromHost);
+    const postEmbedEvent = createEmbedEventPoster(
+      (message, targetOrigin) => host.postMessage(message, targetOrigin),
+      (error) => console.error("[GeoLibre] Failed to post embed event", error),
+    );
+    const postEvent = (hostOriginForEvent: string | null, message: unknown) => {
+      const [targetOrigin] = embedEventTargets(hostOriginForEvent, allowedOrigins);
+      if (!targetOrigin) return;
+      postEmbedEvent(message, targetOrigin);
+    };
 
     const emit = (type: EmbedEventType, payload: Record<string, unknown>, version?: 1 | 2) => {
       if (disposed) return;
-      const targets = embedEventTargets(hostOrigin, allowedOrigins);
+      const targetOrigin = hostOrigin ?? parentOriginHint;
+      if (!embedEventTargets(targetOrigin, allowedOrigins).length) return;
       const versions = embedEventVersions(version, hostVersion);
       for (const eventVersion of versions) {
         const message = buildEmbedEvent(type, payload, eventVersion);
-        for (const target of targets) {
-          try {
-            host.postMessage(message, target);
-          } catch (error) {
-            console.error("[GeoLibre] Failed to post embed event", error);
-          }
-        }
+        postEvent(targetOrigin, message);
       }
     };
 

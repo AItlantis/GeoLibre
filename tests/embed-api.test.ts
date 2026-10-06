@@ -9,6 +9,7 @@ import {
   EMBED_ORIGINS_ENV,
   buildEmbedEvent,
   buildEmbedLayer,
+  createEmbedEventPoster,
   embedEventTargets,
   embedEventVersions,
   embedLayerSummaries,
@@ -18,6 +19,7 @@ import {
   parseEmbedRequest,
   parseTestudoEmbedRequest,
   readEmbedOrigins,
+  resolveEmbedParentOrigin,
   requireEmbedLayer,
   resolveHighlightIds,
   type EmbedHighlightTarget,
@@ -743,9 +745,14 @@ describe("resolveHighlightIds", () => {
 describe("embedEventTargets", () => {
   const allowed = ["https://erp.example.com", "https://portal.example.com"];
 
-  it("broadcasts to every configured origin until the host has spoken", () => {
-    // Otherwise a host would have to send a request just to hear `ready`.
-    assert.deepEqual(embedEventTargets(null, allowed), allowed);
+  it("resolves each supported Testudo parent from an allowed URL", () => {
+    const testudoOrigins = ["https://app.testudo.live", "https://www.testudo.live"];
+    assert.equal(resolveEmbedParentOrigin(["https://app.testudo.live/viewer"], testudoOrigins), "https://app.testudo.live");
+    assert.equal(resolveEmbedParentOrigin(["https://www.testudo.live/project"], testudoOrigins), "https://www.testudo.live");
+  });
+
+  it("skips an invalid referrer and validates the ancestor-origin fallback", () => {
+    assert.equal(resolveEmbedParentOrigin(["not a url", "https://app.testudo.live"], ["https://app.testudo.live"]), "https://app.testudo.live");
   });
 
   it("scopes to the host's exact origin once it is known", () => {
@@ -755,14 +762,36 @@ describe("embedEventTargets", () => {
     ]);
   });
 
-  it("collapses a wildcard allowlist to the wildcard target", () => {
-    assert.deepEqual(embedEventTargets(null, ["*", "https://erp.example.com"]), ["*"]);
+  it("rejects a parent origin that is not allowlisted", () => {
+    const testudoOrigins = ["https://app.testudo.live", "https://www.testudo.live"];
+    assert.equal(resolveEmbedParentOrigin(["https://attacker.example"], testudoOrigins), null);
+    assert.deepEqual(embedEventTargets("https://attacker.example", testudoOrigins), []);
+  });
+
+  it("sends nothing until one parent origin is resolved", () => {
+    assert.deepEqual(embedEventTargets(null, ["*", "https://erp.example.com"]), []);
   });
 
   it("still prefers a learned origin over the wildcard", () => {
     assert.deepEqual(embedEventTargets("https://erp.example.com", ["*"]), [
       "https://erp.example.com",
     ]);
+  });
+
+  it("contains postMessage failures, reports once, and sends later events", () => {
+    const sent: unknown[] = [];
+    const errors: unknown[] = [];
+    let shouldThrow = true;
+    const post = createEmbedEventPoster((event, target) => {
+      assert.equal(target, "https://app.testudo.live");
+      if (shouldThrow) { shouldThrow = false; throw new Error("blocked"); }
+      sent.push(event);
+    }, (error) => errors.push(error));
+    post({ type: "ready" }, "https://app.testudo.live");
+    post({ type: "stateChanged" }, "https://app.testudo.live");
+    post({ type: "progress" }, "https://app.testudo.live");
+    assert.deepEqual(sent, [{ type: "stateChanged" }, { type: "progress" }]);
+    assert.equal(errors.length, 1);
   });
 });
 

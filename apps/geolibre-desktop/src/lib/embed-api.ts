@@ -115,6 +115,38 @@ export function isEmbedOriginAllowed(
   return allowed.includes(origin);
 }
 
+/** Pick one validated parent origin from the browser's embedding hints. */
+export function resolveEmbedParentOrigin(
+  candidates: Array<string | null | undefined>,
+  allowedOrigins: string[],
+): string | null {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const origin = new URL(candidate).origin;
+      if (origin !== "null" && isEmbedOriginAllowed(origin, allowedOrigins)) return origin;
+    } catch { /* Ignore malformed or opaque embedding hints. */ }
+  }
+  return null;
+}
+
+/** Build a postMessage sender that contains failures and reports only the first. */
+export function createEmbedEventPoster(
+  postMessage: (message: unknown, targetOrigin: string) => void,
+  reportError: (error: unknown) => void,
+): (message: unknown, targetOrigin: string) => void {
+  let reported = false;
+  return (message, targetOrigin) => {
+    try {
+      postMessage(message, targetOrigin);
+    } catch (error) {
+      if (reported) return;
+      reported = true;
+      try { reportError(error); } catch { /* Error reporting must not interrupt subsequent events. */ }
+    }
+  };
+}
+
 /** Camera target for {@link EmbedCommand} `setView`. */
 export type EmbedViewTarget =
   | { kind: "bbox"; bbox: [number, number, number, number] }
@@ -281,21 +313,16 @@ export interface EmbedEvent {
 /**
  * The `postMessage` targets an outbound event goes to.
  *
- * Before the host has sent an allowed message there is no single origin to
- * address, so a broadcast goes to every configured origin — otherwise a host
- * would have to speak first just to hear `ready`. Once its origin is known,
- * everything is scoped to exactly that origin, keeping later payloads off any
- * other frame that happens to share the allowlist. The wildcard collapses to
- * `"*"` rather than enumerating, since that is what it means.
+ * Only a validated parent origin may receive an event. An unknown parent gets
+ * no event until the handshake or a validated browser embedding hint resolves it.
  *
- * @param hostOrigin - The host's origin, learned from its first allowed
- *   message; null until then.
+ * @param hostOrigin - The host's verified origin, or a browser hint already
+ *   validated against the allowlist; null until one is available.
  * @param allowedOrigins - The configured allowlist.
  */
 export function embedEventTargets(hostOrigin: string | null, allowedOrigins: string[]): string[] {
-  if (hostOrigin) return [hostOrigin];
-  if (allowedOrigins.includes(EMBED_ORIGIN_WILDCARD)) return [EMBED_ORIGIN_WILDCARD];
-  return allowedOrigins;
+  if (hostOrigin && isEmbedOriginAllowed(hostOrigin, allowedOrigins)) return [hostOrigin];
+  return [];
 }
 
 /**

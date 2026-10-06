@@ -94,15 +94,25 @@ export async function validateTestudoLocalPackage(root: TestudoLocalDirectoryHan
     throw new TestudoLocalPackageError("invalid-package", "Choose a built Testudo package containing manifest.json and geolibre/package.json.");
   }
   const sourceCapabilities = record(nativePackage.capabilities);
-  if (!sourceCapabilities) {
-    throw new TestudoLocalPackageError("invalid-package", "geolibre/package.json must declare package capabilities.");
+  const manifestCapabilities = record(manifest.capabilities);
+  if (!sourceCapabilities && !manifestCapabilities) {
+    throw new TestudoLocalPackageError("invalid-package", "The package manifest must declare capabilities.");
   }
-  const isAvailable = (name: string) => record(sourceCapabilities[name])?.state === "available";
-  const aliases: Array<[TestudoCapabilityId, string]> = [
-    ["vehicle-playback", "animation"], ["network-kpi", "results"], ["path-analysis", "unsupported"],
-    ["emissions-h3", "results"], ["scenario-comparison", "results"],
+  const isAvailable = (name: string) => {
+    const states = [record(sourceCapabilities?.[name]), record(manifestCapabilities?.[name])];
+    return states.some((capability) => capability?.state === "available" || capability?.status === "available");
+  };
+  const aliases: Array<[TestudoCapabilityId, string | null]> = [
+    ["vehicle-playback", "animation"], ["network-kpi", "results"],
+    // The package can contain indexed_paths, but this v3.1 provider suite has
+    // no path-analysis adapter to consume them.
+    ["path-analysis", null], ["emissions-h3", "results"], ["scenario-comparison", "results"],
   ];
-  const capabilities = aliases.map(([id, name]) => ({ id, available: isAvailable(name) }));
+  const capabilities = aliases.map(([id, name]) => ({
+    id,
+    available: name !== null && isAvailable(name),
+    ...(name === null ? { reason: "This package has indexed paths, but no Testudo path-analysis provider is available in v3.1." } : {}),
+  }));
   if (!capabilities.some((item) => item.available)) {
     throw new TestudoLocalPackageError("invalid-package", "This package has no supported Testudo viewer capability.");
   }

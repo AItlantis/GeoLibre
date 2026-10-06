@@ -51,10 +51,12 @@ test("all four registered providers share one clock across capability switches",
     for (const capability of ["network-kpi", "emissions-h3", "scenario-comparison"] as const) {
       await bridge.selectPlugin("primary", capability);
       const state = bridge.getPlaybackState("primary", loaded.generation);
+      assert.equal(state.available, true);
       assert.equal(state.tick, 2);
       assert.equal(state.speed, 2);
       assert.equal(state.playing, true);
       assert.equal(state.activeCapability, capability);
+      assert.equal(bridge.getPlaybackState("primary", loaded.generation).available, true);
       assert.deepEqual(state.tickFollowers?.map((entry) => entry.following), [true, true, true, true]);
       if (capability === "emissions-h3") {
         assert.deepEqual(bridge.sessions.get("primary")?.getPlaybackValues?.(), { tick: 2, values: { h3a: 3 } });

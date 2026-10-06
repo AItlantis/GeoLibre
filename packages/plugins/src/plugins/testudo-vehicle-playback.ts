@@ -21,8 +21,8 @@ function finite(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function parseScenarios(raw: JsonObject): TestudoScenario[] {
-  const source = Array.isArray(raw.scenarios) ? raw.scenarios : [];
+function parseScenarios(raw: JsonObject, packageInfo: JsonObject): TestudoScenario[] {
+  const source = Array.isArray(raw.scenarios) ? raw.scenarios : Array.isArray(packageInfo.scenarios) ? packageInfo.scenarios : [];
   return source.flatMap((value, index) => {
     const item = record(value);
     const rawId = item.scid ?? item.id;
@@ -40,11 +40,13 @@ function parseScenarios(raw: JsonObject): TestudoScenario[] {
   });
 }
 
-function playbackLimits(raw: JsonObject): { maxTick: number; dt: number } {
-  const maxFromCount = finite(raw.n_ticks ?? raw.tick_count, 1) - 1;
+function playbackLimits(raw: JsonObject, packageInfo: JsonObject): { maxTick: number; dt: number } {
+  const metadata = record(raw.metadata);
+  const time = record(packageInfo.time);
+  const maxFromCount = finite(raw.n_ticks ?? raw.tick_count ?? metadata.n_ticks, 1) - 1;
   return {
     maxTick: Math.max(0, Math.trunc(finite(raw.maxTick ?? raw.max_tick, maxFromCount))),
-    dt: Math.max(0.001, finite(raw.dt ?? raw.step_seconds, 1)),
+    dt: Math.max(0.001, finite(raw.dt ?? raw.step_seconds ?? metadata.dt ?? time.dtSeconds, 1)),
   };
 }
 
@@ -72,8 +74,12 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
     } catch {
       throw new Error("The vehicle playback manifest is not valid JSON.");
     }
-    const scenarios = parseScenarios(manifest);
-    const { maxTick, dt } = playbackLimits(manifest);
+    let packageInfo: JsonObject = {};
+    try {
+      packageInfo = record(JSON.parse(new TextDecoder().decode(await fetchArtifact("geolibre/package.json"))));
+    } catch { /* Older published packages may keep playback metadata in the root manifest. */ }
+    const scenarios = parseScenarios(manifest, packageInfo);
+    const { maxTick, dt } = playbackLimits(manifest, packageInfo);
     let state = initialPlaybackState(maxTick, dt);
     let selectedScenarioId = scenarios[0]?.id;
     let interval: ReturnType<typeof setInterval> | undefined;

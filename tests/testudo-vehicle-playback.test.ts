@@ -12,6 +12,10 @@ const fixtureManifest = JSON.stringify({
   n_ticks: 12,
   scenarios: [{ scid: 42, name: "AM peak", replications: [{ did: 5, didname: "Run 5" }] }],
 });
+const packageFixture = JSON.stringify({
+  time: { dtSeconds: 0.8, intervalCount: 768 },
+  scenarios: [{ scid: 49320, name: "Reference", replications: [{ did: 49342, didname: "Run A" }] }],
+});
 const bootstrap: TestudoPackageBootstrap = {
   packageId: "fixture/vehicle-playback",
   versionId: "fixture-v1",
@@ -38,8 +42,9 @@ test("a fixture package loads through the host artifact proxy and supports corre
   const artifactRequests: Array<{ requestId: string; tviewId: string; generation: number; artifactRef: string }> = [];
   const fetchArtifact = async (request: (typeof artifactRequests)[number]) => {
     artifactRequests.push(request);
-    assert.equal(request.artifactRef, "manifest.json");
-    return new TextEncoder().encode(fixtureManifest).buffer;
+    if (request.artifactRef === "manifest.json") return new TextEncoder().encode(fixtureManifest).buffer;
+    assert.equal(request.artifactRef, "geolibre/package.json");
+    return new TextEncoder().encode(packageFixture).buffer;
   };
   const proxiedBridge = new TestudoFeatureBridge(
     (packageBootstrap) => getTestudoPackageProvider("vehicle-playback", packageBootstrap),
@@ -50,7 +55,7 @@ test("a fixture package loads through the host artifact proxy and supports corre
     const context = await proxiedBridge.loadPackage("vehicle-view", bootstrap);
     assert.equal(context.generation, 1);
     assert.equal(proxiedBridge.getState("vehicle-view").status, "ready");
-    assert.equal(artifactRequests.length, 1);
+    assert.equal(artifactRequests.length, 2);
     assert.equal(artifactRequests[0]?.tviewId, "vehicle-view");
     assert.equal(artifactRequests[0]?.generation, context.generation);
     assert.match(artifactRequests[0]?.requestId ?? "", /^testudo-artifact-/);
@@ -70,6 +75,36 @@ test("a fixture package loads through the host artifact proxy and supports corre
     assert.equal(proxiedBridge.getPlaybackState("vehicle-view", context.generation).available, true);
   } finally {
     proxiedBridge.close("vehicle-view");
+    unregister();
+  }
+});
+
+test("playback reads timeline and scenario metadata from the real v3.1 package layout", async () => {
+  const unregister = registerTestudoVehiclePlaybackProvider();
+  const artifactBytes = new Map([
+    ["manifest.json", new TextEncoder().encode(JSON.stringify({ metadata: { dt: 0.8, n_ticks: 768 } })).buffer],
+    ["geolibre/package.json", new TextEncoder().encode(packageFixture).buffer],
+  ]);
+  const bridge = new TestudoFeatureBridge(
+    (packageBootstrap) => getTestudoPackageProvider("vehicle-playback", packageBootstrap),
+    async (request) => {
+      const bytes = artifactBytes.get(request.artifactRef);
+      if (!bytes) throw new Error(`Unexpected artifact request ${request.artifactRef}`);
+      return bytes;
+    },
+  );
+  try {
+    bridge.createTView("real-package");
+    const context = await bridge.loadPackage("real-package", bootstrap);
+    assert.deepEqual(bridge.sessions.get("real-package")?.scenarios, [
+      { id: "49320", label: "Reference", replications: [{ id: 49342, label: "Run A" }] },
+    ]);
+    const state = bridge.getPlaybackState("real-package", context.generation);
+    assert.equal(state.available, true);
+    assert.equal(state.maxTick, 767);
+    assert.equal(state.dt, 0.8);
+  } finally {
+    bridge.close("real-package");
     unregister();
   }
 });

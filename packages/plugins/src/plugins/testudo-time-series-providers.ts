@@ -11,7 +11,12 @@ const manifest = async (fetchArtifact: (ref: string) => Promise<ArrayBuffer>, on
   try { return record(JSON.parse(new TextDecoder().decode(bytes))); }
   catch { throw new Error("The Testudo time-series manifest is not valid JSON."); }
 };
-const ticks = (raw: Json): number => Math.max(0, Math.trunc(finite(raw.maxTick ?? raw.max_tick) ?? ((finite(raw.n_ticks ?? raw.tick_count) ?? 1) - 1)));
+const ticks = (raw: Json, packageInfo: Json): number => {
+  const metadata = record(raw.metadata);
+  const time = record(packageInfo.time);
+  return Math.max(0, Math.trunc(finite(raw.maxTick ?? raw.max_tick)
+    ?? ((finite(raw.n_ticks ?? raw.tick_count ?? metadata.n_ticks ?? time.intervalCount) ?? 1) - 1)));
+};
 const seriesAt = (raw: unknown, tick: number): unknown => {
   if (!Array.isArray(raw)) return undefined;
   return raw[Math.max(0, Math.min(raw.length - 1, Math.trunc(tick)))];
@@ -21,12 +26,18 @@ function provider(capability: "network-kpi" | "emissions-h3" | "scenario-compari
   return {
     async open(bootstrap: TestudoPackageBootstrap, context: TestudoFeatureContext, onProgress, fetchArtifact): Promise<TestudoFeatureSession> {
       const data = await manifest(fetchArtifact, onProgress);
+      let packageInfo: Json = {};
+      try { packageInfo = record(JSON.parse(new TextDecoder().decode(await fetchArtifact("geolibre/package.json")))); }
+      catch { /* Older packages may carry their scenario metadata in manifest.json. */ }
       const field = capability === "network-kpi" ? "kpiTimeSeries" : capability === "emissions-h3" ? "emissionsTimeSeries" : "comparisonTimeSeries";
       const rows = record(data[field]);
       const hasSeries = Object.values(rows).some((value) => Array.isArray(value) && value.length > 0);
-      const maxTick = ticks(data);
-      const dt = Math.max(0.001, finite(data.dt ?? data.step_seconds) ?? 1);
-      const scenarios: TestudoScenario[] = Array.isArray(data.scenarios) ? data.scenarios.flatMap((value, index) => {
+      const maxTick = ticks(data, packageInfo);
+      const time = record(packageInfo.time);
+      const metadata = record(data.metadata);
+      const dt = Math.max(0.001, finite(data.dt ?? data.step_seconds ?? metadata.dt ?? time.dtSeconds) ?? 1);
+      const scenarioSource = Array.isArray(data.scenarios) ? data.scenarios : packageInfo.scenarios;
+      const scenarios: TestudoScenario[] = Array.isArray(scenarioSource) ? scenarioSource.flatMap((value, index) => {
         const row = record(value);
         const id = row.scid ?? row.id;
         if (typeof id !== "string" && typeof id !== "number") return [];

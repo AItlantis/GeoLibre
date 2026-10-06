@@ -200,14 +200,15 @@ it("round-trips commands through the exact built Testudo iframe and embed client
   assert.match(output.staleSeekError ?? "", /stale/i);
   assert.equal(output.playbackState.tick, 6);
   assert.equal(output.playbackState.maxTick, 9);
-  assert.deepEqual(output.proxyMetrics, { fetchCount: 1, sawHostAuth: true });
-  assert.equal(output.artifactRelays.length, 1);
+  assert.deepEqual(output.proxyMetrics, { fetchCount: 2, sawHostAuth: true });
+  // manifest.json plus geolibre/package.json metadata, both through the host proxy.
+  assert.equal(output.artifactRelays.length, 2);
   assert.deepEqual(Object.keys(output.artifactRelays[0] ?? {}).sort(), [
     "artifactRef", "challenge", "generation", "requestId", "tviewId",
   ]);
   assert.equal(output.artifactRelays[0]?.tviewId, "built-smoke");
   assert.equal(output.artifactRelays[0]?.generation, output.loaded.generation);
-  assert.equal(proxiedArtifactCount, 1);
+  assert.equal(proxiedArtifactCount, 2);
   assert.equal(hostProxySawHostAuth, true);
 
   const childFrame = page.frames().find((frame) => frame.url().includes("/geolibre-native/"));
