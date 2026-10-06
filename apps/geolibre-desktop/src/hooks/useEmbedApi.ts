@@ -8,6 +8,7 @@ import {
   type TestudoArtifactRequest,
   type TestudoMapHandle,
   type TestudoPackageBootstrap,
+  type TestudoGeoAIProposedAction,
 } from "@geolibre/plugins";
 import {
   buildEmbedEvent,
@@ -51,6 +52,26 @@ import { pickTestudoLocalDirectory, validateTestudoLocalPackage } from "../lib/t
 
 /** Minimum gap between `viewChanged` events while the user drags the map. */
 const VIEW_THROTTLE_MS = 250;
+const TESTUDO_ACTION_CAPABILITIES = new Set(["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"]);
+function validGeoAIAction(value: unknown): value is TestudoGeoAIProposedAction {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const action = value as Record<string, unknown>;
+  if (typeof action.label !== "string" || !action.label.trim() || action.label.length > 80) return false;
+  if (action.type === "plugin") return typeof action.value === "string" && TESTUDO_ACTION_CAPABILITIES.has(action.value);
+  if (action.type === "scenario") return typeof action.value === "string" && action.value.length > 0 && action.value.length <= 120;
+  if (action.type === "seek") return typeof action.value === "number" && Number.isFinite(action.value) && action.value >= 0 && action.value <= 1_000_000;
+  if (action.type === "mapControl") return (action.controlId === "legend" || action.controlId === "esri-world-imagery") && typeof action.value === "boolean";
+  if (action.type === "camera") {
+    const camera = action.value as Record<string, unknown> | null;
+    return !!camera && Array.isArray(camera.center) && camera.center.length === 2
+      && camera.center.every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))
+      && Math.abs(camera.center[0] as number) <= 180 && Math.abs(camera.center[1] as number) <= 90
+      && typeof camera.zoom === "number" && Number.isFinite(camera.zoom) && camera.zoom >= 0 && camera.zoom <= 24
+      && (camera.bearing === undefined || typeof camera.bearing === "number" && Number.isFinite(camera.bearing))
+      && (camera.pitch === undefined || typeof camera.pitch === "number" && Number.isFinite(camera.pitch) && camera.pitch >= 0 && camera.pitch <= 85);
+  }
+  return false;
+}
 
 /**
  * Bridges a framed GeoLibre with an arbitrary host page over a versioned
@@ -209,6 +230,66 @@ export function useEmbedApi(
     const unsubscribeGeoAI = testudo.subscribeGeoAIRequests((request) => {
       emit("testudoGeoAIRequest", request as unknown as Record<string, unknown>, 2);
     });
+    const unsubscribeGeoAIReplies = testudo.subscribeGeoAIReplies((reply) => {
+      window.dispatchEvent(new CustomEvent("testudo-geoai-reply", { detail: reply }));
+    });
+    const cancelledLocalGeoAI = new Set<string>();
+    const onGeoAICommand = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+      if (!detail || typeof detail.type !== "string") return;
+      void (async () => {
+        try {
+          if (detail.type === "request") {
+            const tviewId = requiredText(detail, "tviewId", 120);
+            const question = requiredText(detail, "question", 4_000);
+            const messages = detail.messages as Array<{ role: "user" | "assistant"; content: string }>;
+            const accepted = await testudo.requestInvestigation(tviewId, question,
+              typeof detail.scenarioId === "string" ? detail.scenarioId : undefined, messages);
+            const localRequestId = typeof detail.localRequestId === "string" ? detail.localRequestId : "";
+            if (cancelledLocalGeoAI.delete(localRequestId)) testudo.cancelGeoAIRequest(accepted.requestId);
+            else window.dispatchEvent(new CustomEvent("testudo-geoai-accepted", { detail: { ...accepted, localRequestId } }));
+          } else if (detail.type === "cancel" && typeof detail.requestId === "string") {
+            testudo.cancelGeoAIRequest(detail.requestId);
+          } else if (detail.type === "cancel-local" && typeof detail.localRequestId === "string") {
+            cancelledLocalGeoAI.add(detail.localRequestId);
+          } else if (detail.type === "state") {
+            const tviews = testudo.getTViews();
+            const active = testudo.getActiveTView().tviewId;
+            const tviewId = active && tviews.some((view) => view.tviewId === active)
+              ? active : tviews.find((view) => view.loaded)?.tviewId;
+            if (tviewId) {
+              const state = testudo.getState(tviewId);
+              window.dispatchEvent(new CustomEvent("testudo-geoai-state", {
+                detail: { ...state, scenarioId: testudo.sessions.get(tviewId)?.selectedScenarioId },
+              }));
+            }
+          } else if (detail.type === "action") {
+            const tviewId = requiredText(detail, "tviewId", 120);
+            const generation = playbackGeneration(detail);
+            if (generation === undefined || testudo.getState(tviewId).generation !== generation) {
+              throw new Error("This viewer suggestion belongs to a stale package view.");
+            }
+            switch (detail.actionType) {
+              case "plugin": await testudo.selectPlugin(tviewId, requiredText(detail, "value", 80)); break;
+              case "scenario": await testudo.selectScenario(tviewId, requiredText(detail, "value", 120)); break;
+              case "seek": await testudo.playback(tviewId, "seek", Number(detail.value), generation); break;
+              case "mapControl": await testudo.setMapControl(tviewId, requiredText(detail, "controlId", 100), detail.value === true, generation); break;
+              case "camera": await testudo.setCameraView(tviewId, detail.value as { center: [number, number]; zoom: number; bearing?: number; pitch?: number }, generation); break;
+              default: throw new Error("This viewer suggestion is not supported.");
+            }
+            testudoState(tviewId);
+          }
+        } catch (error) {
+          window.dispatchEvent(new CustomEvent("testudo-geoai-error", {
+            detail: {
+              message: error instanceof Error ? error.message : "GeoAI request failed.",
+              ...(typeof detail.localRequestId === "string" ? { localRequestId: detail.localRequestId } : {}),
+            },
+          }));
+        }
+      })();
+    };
+    window.addEventListener("testudo-geoai-command", onGeoAICommand);
     const unsubscribePlayback = testudo.subscribePlayback((tviewId, state) => {
       emit("testudoPlaybackChanged", { ...state, tviewId }, 2);
     });
@@ -227,7 +308,13 @@ export function useEmbedApi(
       }
       return payload.generation as number;
     };
-    const testudoState = (tviewId: string) => emitTestudoState(tviewId);
+    const testudoState = (tviewId: string) => {
+      emitTestudoState(tviewId);
+      const state = testudo.getState(tviewId);
+      window.dispatchEvent(new CustomEvent("testudo-geoai-state", {
+        detail: { ...state, scenarioId: testudo.sessions.get(tviewId)?.selectedScenarioId },
+      }));
+    };
     const openLocalPackage = async (tviewId: string) => {
       // Check scope before opening a privileged picker, and invoke it before the
       // first await so the browser can use the parent click's transient activation.
@@ -377,6 +464,8 @@ export function useEmbedApi(
           const reply = {
             ...(typeof payload.content === "string" ? { content: payload.content } : {}),
             ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+            ...(Array.isArray(payload.proposedActions)
+              ? { proposedActions: payload.proposedActions.slice(0, 8).filter(validGeoAIAction) } : {}),
           };
           return testudo.respondGeoAIRequestTuple(requestId, tviewId, payload.generation, reply);
         }
@@ -748,6 +837,8 @@ export function useEmbedApi(
     }
 
     return () => {
+      window.removeEventListener("testudo-geoai-command", onGeoAICommand);
+      unsubscribeGeoAIReplies();
       disposed = true;
       for (const pending of pendingArtifactRequests.values()) {
         window.clearTimeout(pending.timer);

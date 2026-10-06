@@ -89,13 +89,25 @@ export interface TestudoFeatureCapability {
 export interface TestudoGeoAIRequest {
   requestId: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
-  context: TestudoFeatureContext & { scenarioId?: string };
+  context: TestudoFeatureContext & {
+    scenarioId?: string;
+    /** Bounded display metadata only; never package contents or map features. */
+    displayContext?: { tick?: number; camera?: TestudoCameraView };
+  };
 }
 
 export interface TestudoGeoAIReply {
   content?: string;
   error?: string;
+  /** Display-only suggestions. Consumers must validate before offering local actions. */
+  proposedActions?: TestudoGeoAIProposedAction[];
 }
+export type TestudoGeoAIProposedAction =
+  | { type: "plugin"; label: string; value: TestudoCapabilityKey }
+  | { type: "scenario"; label: string; value: string }
+  | { type: "seek"; label: string; value: number }
+  | { type: "mapControl"; label: string; controlId: "legend" | "esri-world-imagery"; value: boolean }
+  | { type: "camera"; label: string; value: TestudoCameraView };
 
 /** Optional capabilities are absent when that package/plugin does not provide them. */
 export interface TestudoFeatureSession {

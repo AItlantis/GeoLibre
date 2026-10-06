@@ -111,6 +111,7 @@ export class TestudoFeatureBridge {
   private activeTViewId: string | null = null;
   private readonly activeTViewListeners = new Set<(tviewId: string | null) => void>();
   private readonly geoAIListeners = new Set<(request: TestudoGeoAIRequest) => void>();
+  private readonly geoAIReplyListeners = new Set<(reply: TestudoGeoAIReply & { requestId: string; tviewId: string; generation: number }) => void>();
   private readonly playbackListeners = new Set<(tviewId: string, state: TestudoPlaybackState) => void>();
   private readonly playbackSubscriptions = new Map<string, () => void>();
   private readonly tviews = new Map<string, number>();
@@ -220,6 +221,11 @@ export class TestudoFeatureBridge {
   subscribeGeoAIRequests(listener: (request: TestudoGeoAIRequest) => void): () => void {
     this.geoAIListeners.add(listener);
     return () => this.geoAIListeners.delete(listener);
+  }
+
+  subscribeGeoAIReplies(listener: (reply: TestudoGeoAIReply & { requestId: string; tviewId: string; generation: number }) => void): () => void {
+    this.geoAIReplyListeners.add(listener);
+    return () => this.geoAIReplyListeners.delete(listener);
   }
 
   subscribePlayback(listener: (tviewId: string, state: TestudoPlaybackState) => void): () => void {
@@ -519,6 +525,7 @@ export class TestudoFeatureBridge {
     tviewId: string,
     question: string,
     activeScenarioId?: string,
+    messages?: Array<{ role: "user" | "assistant"; content: string }>,
   ): Promise<TestudoInvestigationAccepted> {
     const session = this.requireSession(tviewId);
     if (!session.requestGeoAI) throw new Error("GeoAI requests are unavailable for this package.");
@@ -528,10 +535,28 @@ export class TestudoFeatureBridge {
       throw new Error(`Scenario ${activeScenarioId} is not declared for TView ${tviewId}.`);
     }
     const requestId = `testudo-ai-${Date.now()}-${++this.sequence}`;
+    const transcript = messages ?? [{ role: "user" as const, content: normalized }];
+    if (!Array.isArray(transcript) || transcript.length < 1 || transcript.length > 22
+      || transcript.some((message) => !message || !["user", "assistant"].includes(message.role)
+        || typeof message.content !== "string" || message.content.length > 4_000)
+      || transcript[transcript.length - 1]?.role !== "user"
+      || transcript[transcript.length - 1]?.content.trim() !== normalized) {
+      throw new Error("Investigation transcript is invalid.");
+    }
+    const playback = session.playback?.getPlaybackState(tviewId, session.context.generation);
+    const camera = session.getCameraView?.();
+    const displayContext = {
+      ...(playback && Number.isFinite(playback.tick) && playback.tick >= 0 && playback.tick <= 1_000_000
+        ? { tick: playback.tick } : {}),
+      ...(camera ? { camera: validateTestudoCameraView(camera) } : {}),
+    };
     const request: TestudoGeoAIRequest = {
       requestId,
-      messages: [{ role: "user", content: normalized }],
-      context: { ...session.context, ...(activeScenarioId ? { scenarioId: activeScenarioId } : {}) },
+      messages: transcript.map(({ role, content }) => ({ role, content })),
+      context: {
+        ...session.context, ...(activeScenarioId ? { scenarioId: activeScenarioId } : {}),
+        ...(Object.keys(displayContext).length ? { displayContext } : {}),
+      },
     };
     this.pendingGeoAI.set(requestId, { request, session });
     try {
@@ -543,6 +568,11 @@ export class TestudoFeatureBridge {
     }
     this.assertCurrent(session);
     return { requestId, tviewId, generation: session.context.generation, accepted: true };
+  }
+
+  /** Invalidate a request so any later tuple-bound reply is ignored. */
+  cancelGeoAIRequest(requestId: string): boolean {
+    return this.pendingGeoAI.delete(requestId);
   }
 
   async respondGeoAIRequest(
@@ -561,6 +591,8 @@ export class TestudoFeatureBridge {
     }
     this.pendingGeoAI.delete(requestId);
     await pending.session.deliverGeoAIReply?.(requestId, reply);
+    const delivered = { ...reply, requestId, tviewId: context.tviewId, generation: context.generation };
+    for (const listener of this.geoAIReplyListeners) listener(delivered);
     return { requestId, accepted: true };
   }
 

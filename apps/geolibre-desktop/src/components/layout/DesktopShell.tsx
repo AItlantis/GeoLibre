@@ -93,6 +93,7 @@ import { StoryMapComposeBar } from "../storymap/StoryMapComposeBar";
 import { StoryMapPanel } from "../storymap/StoryMapPanel";
 import { StoryMapPresenter } from "../storymap/StoryMapPresenter";
 import { DiagnosticsDialog } from "./DiagnosticsDialog";
+import { TestudoGeoAIDialog } from "./TestudoGeoAIDialog";
 import { FileNamePromptDialog } from "./FileNamePromptDialog";
 import { ProjectPluginTrustDialog } from "./ProjectPluginTrustDialog";
 import { ProjectHistoryDialog } from "./ProjectHistoryDialog";
@@ -987,6 +988,7 @@ export function DesktopShell({
           </Suspense>
         </SectionErrorBoundary>
       ) : null}
+      {layoutOptions.testudo ? <TestudoGeoAIDialog /> : null}
       {layoutOptions.statusBarVisible ? (
         <SectionErrorBoundary label="Status bar" displayName={t("shell.section.statusBar")}>
           <StatusBar

@@ -148,3 +148,42 @@ that context before calling Gateway, then rechecks the current TView generation
 and package version before delivery. Its reply contains only
 `{ requestId, tviewId, generation, content? | error? }`; the child resolves
 that tuple against the exact pending request and its owning plugin session.
+The optional `context.displayContext` contains only a bounded playback tick and
+validated camera view when available; it never contains package artifacts,
+features, or raw map data. Older host builds may ignore it.
+
+### GeoAI dialog and suggested viewer actions
+
+In Testudo layout, the iframe's movable GeoAI dialog uses the in-page
+`testudo-geoai-command` seam to call the existing `TestudoFeatureBridge`.
+The dialog does not hold model credentials and does not call fetch, Ollaya,
+Ollama, Gateway, or an agent/tool endpoint. Every prompt still leaves through
+the existing `testudoGeoAIRequest` event to the embedding host. The host owns
+Gateway and model access and returns display text through
+`testudoRespondGeoAIRequest`.
+
+The compatible reply may include `proposedActions`, an optional array of up to
+eight display-only suggestions. Each suggestion has a short `label` and one
+of these typed forms:
+
+| `type` | Fields | Effect after explicit user click |
+| --- | --- | --- |
+| `plugin` | `value`: declared Testudo capability id | Select that plugin |
+| `scenario` | `value`: scenario id | Select that declared scenario |
+| `seek` | `value`: finite tick from 0 to 1,000,000 | Seek the current playback |
+| `mapControl` | `controlId`: `legend` or `esri-world-imagery`; boolean `value` | Toggle that existing map control |
+| `camera` | `value`: validated camera center/zoom and optional bearing/pitch | Set the current camera |
+
+The iframe and its local bridge validate the schema and bounds before showing
+or executing a chip. Clicks use only the existing TView-scoped
+`TestudoFeatureBridge` methods (`selectPlugin`, `selectScenario`, `playback`
+seek, `setMapControl`, `setCameraView`). Unknown or invalid action objects
+are discarded; explanatory prose remains ordinary assistant text. No
+suggestion executes automatically. These commands do not mutate package data,
+call a network service, invoke an agent/tool, or mint Gateway grants.
+
+The dialog keeps conversation messages in memory only. Session storage contains
+only its position and collapsed state and is treated as optional. Cancellation
+removes the request id from the iframe bridge's pending map; a later reply with
+that id is discarded. This is local invalidation and does not claim to abort an
+already-running Gateway inference.

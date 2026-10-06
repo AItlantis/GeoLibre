@@ -54,7 +54,10 @@ export interface TestudoTViewInfo { tviewId: string; generation: number; loaded:
 export interface TestudoGeoAIRequest {
   requestId: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
-  context: { tviewId: string; generation: number; packageId: string; versionId: string; pluginId: string; scenarioId?: string };
+  context: {
+    tviewId: string; generation: number; packageId: string; versionId: string; pluginId: string; scenarioId?: string;
+    displayContext?: { tick?: number; camera?: TestudoCameraView };
+  };
 }
 
 export interface TestudoScopedPayload { tviewId: string; generation?: number }
@@ -79,4 +82,12 @@ export interface TestudoGeoAIReplyPayload {
   generation: number;
   content?: string;
   error?: string;
+  /** Display-only suggestions. The iframe validates each item before exposing it as a chip. */
+  proposedActions?: TestudoGeoAIProposedAction[];
 }
+export type TestudoGeoAIProposedAction =
+  | { type: "plugin"; label: string; value: TestudoCapabilityId }
+  | { type: "scenario"; label: string; value: string }
+  | { type: "seek"; label: string; value: number }
+  | { type: "mapControl"; label: string; controlId: "legend" | "esri-world-imagery"; value: boolean }
+  | { type: "camera"; label: string; value: TestudoCameraView };
