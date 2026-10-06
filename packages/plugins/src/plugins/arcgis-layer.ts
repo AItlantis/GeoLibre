@@ -604,6 +604,9 @@ async function addArcGISFeatureLayerAsGeoJson(
   // Add the layer before downloading features. Large services must not hold the
   // Add Data dialog open while hundreds of thousands of records are fetched.
   const id = store.addGeoJsonLayer(name, initialData, refreshUrl, options.beforeLayerId ?? null);
+  // A viewport-loaded layer only ever holds the features in view, so Zoom to
+  // layer needs the service's extent stored on the layer to frame the data.
+  const bounds = arcgisExtentToBounds(layerInfo.extent);
 
   store.updateLayer(id, {
     source: {
@@ -623,6 +626,7 @@ async function addArcGISFeatureLayerAsGeoJson(
     metadata: {
       sourceKind: ARCGIS_FEATURE_SOURCE_KIND,
       viewportLoading: Boolean(map),
+      ...(bounds ? { bounds } : {}),
       arcgisEditBaseline: structuredClone(initialData),
       arcgisEditInfo: layerInfo,
     },
@@ -630,9 +634,29 @@ async function addArcGISFeatureLayerAsGeoJson(
 
   arcgisEditOptions.set(id, { ...options, onProgress: undefined });
   ensureArcGISFeatureLoaderCleanup();
-  const bounds = arcgisExtentToBounds(layerInfo.extent);
-  if (bounds && (options.zoomTo ?? shouldZoomToNewLayers())) app.fitBounds?.(bounds);
+  const zoomTo = options.zoomTo ?? shouldZoomToNewLayers();
+  if (bounds && zoomTo) app.fitBounds?.(bounds);
   if (map) startArcGISViewportLoader(id, map, queryUrl, options, () => Promise.resolve(layerInfo));
+  // Only a viewport-loaded layer reads its stored extent; one holding the
+  // complete download frames its features.
+  if (map && !bounds) {
+    // An extent in a local projected CRS is projected by the server. That is a
+    // round trip the layer does not wait on: the extent is patched in when it
+    // lands, if the layer is still there.
+    const viewAtAdd = viewportKey(map);
+    void fetchProjectedArcGISFeatureLayerBounds(queryUrl, options).then((projected) => {
+      const layer = useAppStore.getState().layers.find((item) => item.id === id);
+      if (!projected || !layer || layer.metadata.bounds) return;
+      useAppStore.getState().updateLayer(id, {
+        metadata: { ...layer.metadata, bounds: projected },
+      });
+      // A late fit must not pull the camera away from where the user went
+      // while the request was out.
+      // A map torn down meanwhile has no key, so it is never fitted.
+      const viewNow = viewportKey(map);
+      if (zoomTo && viewNow !== null && viewNow === viewAtAdd) app.fitBounds?.(projected);
+    });
+  }
   return id;
 }
 
@@ -722,10 +746,14 @@ function startArcGISViewportLoader(
       }
       const data = identifyArcGISFeatures(collect(), layerInfo.objectIdField);
       const current = useAppStore.getState().layers.find((l) => l.id === layerId)!;
+      // Backfill the extent Zoom to layer reads for a layer restored from a
+      // project saved before it was stored.
+      const bounds = current.metadata.bounds ?? arcgisExtentToBounds(layerInfo.extent);
       useAppStore.getState().updateLayer(layerId, {
         geojson: data,
         metadata: {
           ...current.metadata,
+          ...(bounds ? { bounds } : {}),
           arcgisEditBaseline: structuredClone(data),
           // Generalized shapes must never be written back over the originals.
           arcgisEditInfo: generalization ? { ...layerInfo, geometryGeneralized: true } : layerInfo,
@@ -1360,6 +1388,59 @@ async function addArcGISImageServiceLayer(
   useAppStore.getState().addLayer(layer, options.beforeLayerId ?? null);
   if (bounds && (options.zoomTo ?? shouldZoomToNewLayers())) app.fitBounds?.(bounds);
   return id;
+}
+
+/**
+ * The map's visible extent as a string, for telling whether the view moved.
+ *
+ * @returns The key, or null when the map can no longer answer (torn down).
+ */
+function viewportKey(map: maplibregl.Map): string | null {
+  try {
+    // engine-audit-allow: getMap-bounds — compared only against the same map's
+    // own earlier value; the caller holds a MapLibre map (viewport loading).
+    const bounds = map.getBounds();
+    return [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()].join(",");
+  } catch {
+    return null;
+  }
+}
+
+/** How long the server gets to project a feature layer's extent. */
+const ARCGIS_EXTENT_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask the server for a FeatureServer layer's extent in WGS84.
+ *
+ * For a layer published in a local projected CRS, whose metadata `extent`
+ * {@link arcgisExtentToBounds} cannot convert (see
+ * {@link resolveArcGISMapServiceBounds}). Failure, including a timeout, is not
+ * fatal: the layer simply has no stored extent.
+ *
+ * @param queryUrl - The layer's `/query` endpoint.
+ * @param options - The ArcGIS layer options, for the token.
+ * @returns `[west, south, east, north]`, or undefined when unknown.
+ */
+async function fetchProjectedArcGISFeatureLayerBounds(
+  queryUrl: string,
+  options: ArcGISLayerOptions,
+): Promise<[number, number, number, number] | undefined> {
+  try {
+    const result = await fetchArcGISJson<{ extent?: ArcGISExtent }>(
+      appendArcGISParams(queryUrl, {
+        f: "json",
+        outSR: "4326",
+        returnExtentOnly: "true",
+        where: "1=1",
+      }),
+      options,
+      undefined,
+      AbortSignal.timeout(ARCGIS_EXTENT_TIMEOUT_MS),
+    );
+    return arcgisExtentToBounds(result.extent);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -2549,6 +2630,26 @@ function arcgisPortalItemExtentToBounds(
   return isGeoBounds([west, south, east, north]) ? [west, south, east, north] : undefined;
 }
 
+/**
+ * Geographic CRSs numbered outside the ranges {@link isGeographicWkid} covers:
+ * JGD2011, GDA2020, NAD83(2011), NAD83(PA11) and NAD83(MA11).
+ */
+const ARCGIS_GEOGRAPHIC_WKIDS = new Set([6668, 7844, 6318, 6322, 6325]);
+
+/**
+ * Whether a WKID names a geographic (degree-based) CRS: the EPSG geographic
+ * block (4000-4999), Esri's geographic ranges, or a later EPSG geographic code.
+ * Any of them frames the map as-is, within metres of WGS84.
+ */
+function isGeographicWkid(wkid: number): boolean {
+  return (
+    (wkid >= 4000 && wkid <= 4999) ||
+    (wkid >= 37001 && wkid <= 37299) ||
+    (wkid >= 104000 && wkid <= 104999) ||
+    ARCGIS_GEOGRAPHIC_WKIDS.has(wkid)
+  );
+}
+
 function arcgisExtentToBounds(
   extent: ArcGISExtent | undefined,
 ): [number, number, number, number] | undefined {
@@ -2562,6 +2663,9 @@ function arcgisExtentToBounds(
       mercatorYToLatitude(extent.ymax),
     ];
   }
+  // A projected extent near its false origin can fall inside the degree range,
+  // so a known non-geographic WKID is never read as longitude and latitude.
+  if (wkid !== undefined && !isGeographicWkid(wkid)) return undefined;
 
   const bounds: [number, number, number, number] = [
     extent.xmin,
