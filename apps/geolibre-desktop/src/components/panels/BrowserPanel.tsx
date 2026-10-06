@@ -14,7 +14,10 @@ import { Search } from "lucide-react";
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { fetchMssqlBrowserTables, forgetMssqlBrowserConnection } from "../../lib/mssql-browser";
-import { fetchPostgresBrowserTables } from "../../lib/postgres-browser";
+import {
+  fetchPostgresBrowserTables,
+  confirmForgetPostgresBrowserConnection,
+} from "../../lib/postgres-browser";
 import {
   isLoadableFilePath,
   listDirectory,
@@ -160,6 +163,8 @@ export function BrowserPanel({
   // triggers) doesn't refetch. A failed fetch drops its entry so re-expanding
   // the connection retries (there is no separate refresh affordance).
   const connFetchedRef = useRef<Set<string>>(new Set());
+  // A successful forget invalidates pending PostgreSQL requests for that DSN.
+  const connGenRef = useRef<Map<string, number>>(new Map());
 
   // SQL Server introspection, keyed `mssql:<profile id>` so it merges with the
   // PostGIS loads without colliding; same retry-on-failure tracking.
@@ -173,7 +178,13 @@ export function BrowserPanel({
 
   const fetchConnectionTables = useCallback(
     (connectionString: string) =>
-      fetchPostgresBrowserTables(connectionString, connFetchedRef.current, setConnLoads, t),
+      fetchPostgresBrowserTables(
+        connectionString,
+        connFetchedRef.current,
+        connGenRef.current,
+        setConnLoads,
+        t,
+      ),
     [t],
   );
 
@@ -232,10 +243,15 @@ export function BrowserPanel({
       const entry = serviceById(serviceId);
       if (!entry || !isArcGISMapServiceEntry(entry)) return;
       arcgisFetchedRef.current.add(serviceId);
-      setArcgisLoads((prev) => ({ ...prev, [serviceId]: { status: "loading" } }));
+      setArcgisLoads((prev) => ({
+        ...prev,
+        [serviceId]: { status: "loading" },
+      }));
       // Saved services never carry a token, so this lists public services only,
       // matching what activating the entry can draw.
-      fetchArcGISMapServiceSublayers({ url: serviceFieldString(entry.fields, "url") })
+      fetchArcGISMapServiceSublayers({
+        url: serviceFieldString(entry.fields, "url"),
+      })
         .then((sublayers) => {
           // An empty listing may be a transient server answer, so re-expanding
           // retries it like an error does.
@@ -245,7 +261,10 @@ export function BrowserPanel({
             [serviceId]:
               sublayers.length > 0
                 ? { status: "loaded", sublayers }
-                : { status: "error", message: t("addData.arcgis.noSublayersFound") },
+                : {
+                    status: "error",
+                    message: t("addData.arcgis.noSublayersFound"),
+                  },
           }));
         })
         .catch((err: unknown) => {
@@ -270,7 +289,10 @@ export function BrowserPanel({
   const loadingLabel = t("browser.loadingTables");
   const foldersLoadingLabel = t("browser.loadingFolder");
   const arcgisLabels = useMemo(
-    () => ({ loading: t("browser.loadingSublayers"), allLayers: t("browser.allSublayers") }),
+    () => ({
+      loading: t("browser.loadingSublayers"),
+      allLayers: t("browser.allSublayers"),
+    }),
     [t],
   );
   const augmented = useMemo(
@@ -546,7 +568,9 @@ export function BrowserPanel({
         setError(t("browser.libraryLayerMissing"));
         return;
       }
-      const plan = planLayerLibraryAdd(entry, { id: createLayerLibraryEntryId() });
+      const plan = planLayerLibraryAdd(entry, {
+        id: createLayerLibraryEntryId(),
+      });
       if (plan.kind === "layer") {
         // Re-add exactly like a project load does: put the layer record in the
         // store so MapController.syncLayers builds its map output, then run the
@@ -569,7 +593,11 @@ export function BrowserPanel({
           addLayer(plan.layer);
           await restoreLibraryLayer(plan.layer, createAppAPI(mapControllerRef));
           if (unresolvedJoins.length > 0) {
-            setError(t("browser.libraryLayerJoinsUnresolved", { count: unresolvedJoins.length }));
+            setError(
+              t("browser.libraryLayerJoinsUnresolved", {
+                count: unresolvedJoins.length,
+              }),
+            );
           }
         } finally {
           endBusy();
@@ -623,7 +651,11 @@ export function BrowserPanel({
             // reported success while adding none. Both leave the entry's saved
             // configuration unapplied, so say so rather than letting the user
             // discover their styling silently did not return.
-            setError(t("browser.libraryLayerConfigNotApplied", { name: plan.config.name }));
+            setError(
+              t("browser.libraryLayerConfigNotApplied", {
+                name: plan.config.name,
+              }),
+            );
           }
         }
       } finally {
@@ -775,6 +807,22 @@ export function BrowserPanel({
     if (fallbackRowId) requestAnimationFrame(() => focusRow(fallbackRowId));
   };
 
+  const forgetPostgresConnectionNode = (node: BrowserNode) => {
+    if (
+      !confirmForgetPostgresBrowserConnection(
+        node,
+        connFetchedRef.current,
+        connGenRef.current,
+        setConnLoads,
+        setExpanded,
+        t,
+      )
+    )
+      return;
+    const fallbackRowId = visibleRows.find((row) => row.id === node.id)?.parentId;
+    if (fallbackRowId) requestAnimationFrame(() => focusRow(fallbackRowId));
+  };
+
   // Import/export the whole library as a JSON bundle, matching how the Style
   // Manager shares its presets. Ids collide on purpose so re-importing an
   // exported bundle updates entries instead of duplicating them.
@@ -894,6 +942,7 @@ export function BrowserPanel({
                 onDeleteLibraryLayer={deleteLibraryLayer}
                 onForgetMssqlConnection={forgetMssqlConnectionNode}
                 onImportLibrary={() => void importLibrary()}
+                onForgetPostgresConnection={forgetPostgresConnectionNode}
                 onExportLibrary={() => void exportLibrary()}
               />
             ))}
