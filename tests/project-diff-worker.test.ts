@@ -114,6 +114,11 @@ class FakeWorker {
   terminate(): void {
     this.terminated = true;
   }
+
+  /** Drop a cached project, as the worker's own LRU eviction would. */
+  forget(key: string): void {
+    this.engine.forget((cachedKey) => cachedKey === key);
+  }
 }
 
 describe("createProjectDiffClient", () => {
@@ -158,6 +163,56 @@ describe("createProjectDiffClient", () => {
         }),
       RangeError,
     );
+  });
+
+  it("re-sends a project in full when the worker no longer holds it", async () => {
+    const worker = new FakeWorker();
+    const client = createProjectDiffClient(() => worker as unknown as Worker);
+    await client.compare(source("snap", ["x"]), source("current:0", ["x"]));
+    // The worker drops "snap" behind the client's back (its own eviction).
+    worker.forget("snap");
+    const outcome = await client.compare(source("snap", ["x"]), source("current:1", ["x", "y"]));
+    assert.ok(outcome.ok, "answered after one full re-send");
+    assert.equal(outcome.diff.layers.added.length, 1);
+  });
+
+  it("names the side whose content cannot be re-read for a full re-send", async () => {
+    const worker = new FakeWorker();
+    const client = createProjectDiffClient(() => worker as unknown as Worker);
+    let snapshotReads = 0;
+    const snapshot = {
+      key: "snap",
+      content: () => {
+        snapshotReads += 1;
+        if (snapshotReads > 1) throw new Error("gone");
+        return projectJson(["x"]);
+      },
+    };
+    await client.compare(snapshot, source("current:0", ["x"]));
+    worker.forget("snap");
+    const outcome = await client.compare(snapshot, source("current:1", ["x"]));
+    assert.deepEqual(outcome, { ok: false, side: "before", reason: "parse" });
+  });
+
+  it("answers every pending request when the worker fails, even one whose content throws", async () => {
+    const worker = new FakeWorker(true);
+    const client = createProjectDiffClient(() => worker as unknown as Worker);
+    let reads = 0;
+    // Readable once (for the worker request), then too large (for the fallback).
+    const flaky = {
+      key: "current:0",
+      content: () => {
+        reads += 1;
+        if (reads > 1) throw new RangeError("Invalid string length");
+        return projectJson([]);
+      },
+    };
+    const [failed, ok] = await Promise.all([
+      client.compare(source("a", []), flaky),
+      client.compare(source("a", []), source("b", ["y"])),
+    ]);
+    assert.equal(failed.ok, false);
+    assert.ok(ok.ok, "the next pending request still resolves");
   });
 
   it("falls back to the main thread when the worker fails", async () => {

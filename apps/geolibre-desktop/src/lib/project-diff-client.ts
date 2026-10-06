@@ -60,6 +60,8 @@ export function createProjectDiffClient(
     before: ProjectDiffSource;
     after: ProjectDiffSource;
     resolve: (outcome: ProjectDiffOutcome) => void;
+    /** Already re-sent in full once after a "missing" reply. */
+    retried?: boolean;
   }
   const pending = new Map<number, Pending>();
   let fallback: ProjectDiffClient | null = null;
@@ -67,8 +69,32 @@ export function createProjectDiffClient(
   worker.onmessage = (event: MessageEvent<ProjectDiffWorkerResponse>) => {
     const { id, outcome } = event.data;
     cached = new Set(event.data.cached);
-    pending.get(id)?.resolve(outcome);
+    const request = pending.get(id);
     pending.delete(id);
+    if (!request) return;
+    if (!outcome.ok && outcome.reason === "missing" && worker && !request.retried) {
+      // The worker dropped a project the client thought it still held (a
+      // retain or its own eviction raced the request): send both in full.
+      // Read each side on its own so a failure names the side that failed.
+      const read = (side: "before" | "after"): ProjectDiffInput | null => {
+        const source = request[side];
+        try {
+          return { key: source.key, content: source.content() };
+        } catch {
+          request.resolve({ ok: false, side, reason: "parse" });
+          return null;
+        }
+      };
+      const before = read("before");
+      if (!before) return;
+      const after = read("after");
+      if (!after) return;
+      const retry: ProjectDiffWorkerRequest = { type: "compare", id: nextId++, before, after };
+      pending.set(retry.id, { ...request, retried: true });
+      worker.postMessage(retry);
+      return;
+    }
+    request.resolve(outcome);
   };
   // A worker that fails to load or crashes would leave its callers waiting:
   // switch to the in-thread engine and answer them from it.
@@ -78,10 +104,14 @@ export function createProjectDiffClient(
     worker?.terminate();
     worker = null;
     fallback ??= inThreadClient();
+    const engine = fallback;
     for (const [id, request] of pending) {
       pending.delete(id);
-      fallback
-        .compare(request.before, request.after)
+      // compare() throws synchronously when reading a side's content fails
+      // (a live project too large to serialize); answer that request with a
+      // failure rather than abandoning the rest of the queue.
+      Promise.resolve()
+        .then(() => engine.compare(request.before, request.after))
         .then(request.resolve, () =>
           request.resolve({ ok: false, side: "after", reason: "parse" }),
         );
