@@ -80,6 +80,8 @@ export type EmbedEventMap = {
   testudoActiveTViewChanged: TestudoActiveTView;
   testudoPlaybackChanged: TestudoPlaybackState & TestudoScopedPayload;
   testudoGeoAIRequest: TestudoGeoAIRequest;
+  /** The Testudo shell should show its local package folder picker. */
+  testudoOpenLocalPackageRequested: { challenge: string };
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack

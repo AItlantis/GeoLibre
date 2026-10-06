@@ -11,6 +11,11 @@ test("Testudo mode comes from layout=testudo and blocks GeoAgent", () => {
   assert.ok(TESTUDO_BLOCKED_PLUGIN_IDS.includes("maplibre-gl-geoagent"));
 });
 
+test("Testudo keeps the host playback bar as the only playback UI", () => {
+  assert.ok(TESTUDO_BLOCKED_PLUGIN_IDS.includes("maplibre-gl-time-slider"));
+  assert.ok(TESTUDO_BLOCKED_PLUGIN_IDS.includes("geolibre-timelapse"));
+});
+
 test("stock assistant model and the shared session/fast-path guard refuse Testudo mode", async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", {

@@ -161,6 +161,11 @@ export function useEmbedApi(
       }
     };
 
+    const onOpenLocalPackageRequest = () => {
+      emit("testudoOpenLocalPackageRequested", { challenge: testudoChallenge }, 2);
+    };
+    window.addEventListener("testudo:open-local-package", onOpenLocalPackageRequest);
+
     const ack = (
       requestId: string | null,
       version: 1 | 2,
@@ -703,6 +708,7 @@ export function useEmbedApi(
       }
       pendingArtifactRequests.clear();
       window.removeEventListener("message", handleMessage);
+      window.removeEventListener("testudo:open-local-package", onOpenLocalPackageRequest);
       unsubscribe();
       unsubscribeActiveTView();
       unsubscribeGeoAI();

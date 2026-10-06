@@ -86,6 +86,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
   const compact = mapOnly || viewer || testudo || COMPACT_LAYOUT_VALUES.has(layout);
   const panelsHidden =
     mapOnly ||
+    testudo ||
     HIDDEN_PANEL_VALUES.has(panels) ||
     normalizedParam(params.get("hidePanels")) === "true";
   const panelsCollapsed = !panelsHidden && panels === "collapsed";
@@ -106,10 +107,10 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
     panelsHidden,
     panelsCollapsed,
     showProjectInfo,
-    statusBarVisible: !mapOnly,
+    statusBarVisible: !mapOnly && !testudo,
     stylePanelVisible,
     toolbarLabels,
-    toolbarVisible: !mapOnly && !HIDDEN_TOOLBAR_VALUES.has(toolbar),
+    toolbarVisible: !mapOnly && !testudo && !HIDDEN_TOOLBAR_VALUES.has(toolbar),
     viewer,
     testudo,
   };

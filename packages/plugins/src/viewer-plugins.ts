@@ -50,5 +50,15 @@ export const VIEWER_BLOCKED_PLUGIN_IDS: readonly string[] = [
   GEOAGENT_PLUGIN_ID,
 ];
 
-/** Plugins that could open a provider backed AI control inside Testudo's iframe. */
-export const TESTUDO_BLOCKED_PLUGIN_IDS: readonly string[] = [TESTUDO_GEOAGENT_PLUGIN_ID];
+/** Generic desktop controls that must stay out of the Testudo map surface. */
+// These controls can be restored from saved project state. The Testudo host
+// owns its playback UI, so restored drawing, editing, or animation controls
+// would bypass the hidden React chrome or create competing map overlays.
+export const TESTUDO_BLOCKED_PLUGIN_IDS: readonly string[] = [
+  TESTUDO_GEOAGENT_PLUGIN_ID,
+  GEO_EDITOR_PLUGIN_ID,
+  ANNOTATIONS_PLUGIN_ID,
+  "maplibre-gl-time-slider",
+  "geolibre-timelapse",
+  "geolibre-route-animation",
+];

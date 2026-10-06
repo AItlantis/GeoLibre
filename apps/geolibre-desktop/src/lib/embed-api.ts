@@ -263,7 +263,8 @@ export type EmbedEventType =
   | "testudoStateChanged"
   | "testudoActiveTViewChanged"
   | "testudoPlaybackChanged"
-  | "testudoGeoAIRequest";
+  | "testudoGeoAIRequest"
+  | "testudoOpenLocalPackageRequested";
 
 /** An app → host message, ready to hand to `postMessage`. */
 export interface EmbedEvent {

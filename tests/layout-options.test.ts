@@ -141,4 +141,16 @@ describe("layoutOptionsFromLocation", () => {
     });
     assert.equal(options.layerPanelVisible, true);
   });
+
+  it("hides generic desktop chrome and leaves the map surface for Testudo", () => {
+    withSearch("?layout=testudo");
+    const options = layoutOptionsFromLocation(DEFAULT_DESKTOP_LAYOUT_SETTINGS);
+    assert.equal(options.testudo, true);
+    assert.equal(options.toolbarVisible, false);
+    assert.equal(options.statusBarVisible, false);
+    assert.equal(options.panelsHidden, true);
+    assert.equal(options.layerPanelVisible, false);
+    assert.equal(options.stylePanelVisible, false);
+    assert.equal(options.attributePanelVisible, false);
+  });
 });
