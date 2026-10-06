@@ -364,7 +364,7 @@ export class TestudoFeatureBridge {
       this.assertCurrent(session);
       session.context.pluginId = selected;
       const state = this.states.get(tviewId);
-      if (state) this.states.set(tviewId, { ...state, selectedPlugin: selected });
+      if (state) this.states.set(tviewId, { ...state, selectedPlugin: selected, capabilities: [...(session.capabilities ?? state.capabilities)] });
       return selected;
     }
     throw new Error("Plugin selection is unavailable for this package provider.");

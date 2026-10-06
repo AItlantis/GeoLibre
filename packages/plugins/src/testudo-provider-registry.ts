@@ -117,6 +117,7 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
       };
       await follow(lastState);
       const selectedSession = () => sessions.get(active)!;
+      await selectedSession().onActivate?.();
       const aggregate: TestudoFeatureSession = {
         ...selectedSession(),
         context: { ...context, pluginId: active },
@@ -126,13 +127,16 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
           return (packageBootstrap.capabilities ?? []).map((declared) => byId.get(declared.id) ?? {
             ...declared,
             available: false,
-            reason: declared.reason ?? "No Stage 1 data provider loaded this capability.",
+            reason: declared.reason ?? (declared.id === "emissions-h3"
+              ? "The package does not declare producer-backed H3 emissions data."
+              : "No provider loaded this declared capability."),
           });
         },
         async selectPlugin(id) {
           if (!sessions.has(id as TestudoCapabilityKey)) throw new Error(`Capability ${id} is not available for this package.`);
           active = id as TestudoCapabilityKey;
           aggregate.context.pluginId = active;
+          await selectedSession().onActivate?.();
           return id;
         },
         get scenarios() { return selectedSession().scenarios; },
@@ -140,6 +144,13 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
         selectScenario(id) { const current = selectedSession(); if (!current.selectScenario) throw new Error("Scenario selection is unavailable for this capability."); return current.selectScenario(id); },
         getPlaybackValues() { return selectedSession().getPlaybackValues?.() ?? { tick: lastState.tick, values: undefined }; },
         getComparisonAtTick(ids) { const current = sessions.get("scenario-comparison"); if (!current?.getComparisonAtTick) throw new Error("Scenario comparison values are unavailable."); return current.getComparisonAtTick(ids); },
+        async setKpiGeometry(geometry, visible) {
+          const selected = await selectedSession().setKpiGeometry?.(geometry, visible);
+          const network = sessions.get("vehicle-playback");
+          const networkState = await network?.setKpiGeometry?.(geometry, visible);
+          return networkState ?? selected ?? { showLanes: false, showSections: false };
+        },
+        getKpiGeometryState() { return sessions.get("vehicle-playback")?.getKpiGeometryState?.() ?? selectedSession().getKpiGeometryState?.() ?? { showLanes: false, showSections: false }; },
         playback: {
           getPlaybackState(tviewId, generation) {
             if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback state belongs to a stale Testudo package.");

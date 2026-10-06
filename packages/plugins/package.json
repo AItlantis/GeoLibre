@@ -47,6 +47,7 @@
     "a5-js": "^0.10.1",
     "cog-tiler-wasm": "^0.4.0",
     "dggal": "^0.0.6",
+    "fzstd": "0.1.1",
     "geotiff": "^3.0.5",
     "geotiff-geokeys-to-proj4": "^2026.8.16",
     "h3-js": "^4.5.0",

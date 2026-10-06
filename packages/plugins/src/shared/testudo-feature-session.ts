@@ -63,6 +63,7 @@ export interface TestudoMapHandle {
   getZoom?(): number;
   getBearing?(): number;
   getPitch?(): number;
+  getContainer?(): HTMLElement;
   jumpTo?(options: { center: [number, number]; zoom: number; bearing: number; pitch: number }): void;
   fitBounds?(bounds: [[number, number], [number, number]], options: { padding: number; maxZoom: number; bearing: number; pitch: number }): void;
   on?(type: "movestart", listener: (event?: { originalEvent?: unknown }) => void): void;
@@ -106,6 +107,8 @@ export interface TestudoFeatureSession {
   scenarios?: TestudoScenario[];
   selectedScenarioId?: string;
   selectPlugin?(pluginId: string): Promise<string> | string;
+  /** Load capability data only after the shell selects this capability. */
+  onActivate?(): Promise<void> | void;
   applyPreset?(presetId: string): Promise<string> | string;
   selectScenario?(scenarioId: string): Promise<string> | string;
   playback?: TestudoPlaybackFeature;

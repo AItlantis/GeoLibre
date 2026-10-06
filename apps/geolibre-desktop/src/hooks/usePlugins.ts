@@ -6,6 +6,7 @@ import {
 } from "@geolibre/core";
 import { buildProjectEgressSnapshot } from "../lib/build-project-snapshot";
 import { nativeWmsTileUrl } from "../lib/native-wms-url";
+import { loadSqlJs } from "../lib/gpkg-ogr-contents";
 import {
   addRasterToMap,
   readRasterWindow,
@@ -208,7 +209,7 @@ interface TauriRuntimeWindow extends Window {
 
 const manager = new PluginManager();
 registerTestudoVehiclePlaybackProvider();
-registerTestudoTimeSeriesProviders();
+registerTestudoTimeSeriesProviders(loadSqlJs);
 setGeoLensDefaultServerUrl(readDeploymentEnvValue("VITE_GEOLENS_DEFAULT_URL"));
 manager.registerAll([
   maplibreLayerControlPlugin,
