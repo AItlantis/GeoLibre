@@ -178,8 +178,14 @@ black, flickers, or 3D layers are missing:
 - **Look in Diagnostics** for `map` and `console` entries that name the failing
   layer or shader.
 
-GeoLibre does not detect a lost or missing WebGL context on its own, so a page
-reload is the way to recover after the graphics driver resets.
+When a map canvas loses its WebGL context (the graphics driver resets, or the
+GPU runs out of memory), GeoLibre shows a **The map lost its graphics context**
+warning with a **Reload** button. If the map does not recover on its own, reload
+the page. The warning goes away on its own if the context comes back.
+Save your project before reloading if you can. A recent autosave may also be in
+[project history](projects.md#project-history-and-crash-recovery), but autosave
+runs on a delay and skips projects above the snapshot size limit, so it may not
+have your latest changes.
 
 ### Linux desktop app
 
