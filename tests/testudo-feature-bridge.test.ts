@@ -298,3 +298,16 @@ test("measured progress is forwarded during provider loading and invalid counter
   bridge.createTView("bad");
   await assert.rejects(bridge.loadPackage("bad", { ...bootstrap, artifactEndpoint: "" }), /bootstrap is incomplete/);
 });
+
+test("GeoAI requests relay to a subscribed host even when the provider has no requestGeoAI hook", async () => {
+  const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => ({ ...provider(context), requestGeoAI: undefined }) });
+  bridge.createTView("main");
+  await bridge.loadPackage("main", bootstrap);
+  await assert.rejects(bridge.requestInvestigation("main", "What changed?"), /unavailable/);
+  const seen: string[] = [];
+  const unsubscribe = bridge.subscribeGeoAIRequests((request) => seen.push(request.messages[request.messages.length - 1]!.content));
+  const accepted = await bridge.requestInvestigation("main", "What changed?");
+  assert.equal(accepted.accepted, true);
+  assert.deepEqual(seen, ["What changed?"]);
+  unsubscribe();
+});

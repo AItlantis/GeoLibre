@@ -528,7 +528,8 @@ export class TestudoFeatureBridge {
     messages?: Array<{ role: "user" | "assistant"; content: string }>,
   ): Promise<TestudoInvestigationAccepted> {
     const session = this.requireSession(tviewId);
-    if (!session.requestGeoAI) throw new Error("GeoAI requests are unavailable for this package.");
+    // The bridge itself relays to the host through its listeners; a provider hook is optional.
+    if (!session.requestGeoAI && this.geoAIListeners.size === 0) throw new Error("GeoAI requests are unavailable for this package.");
     const normalized = question.trim();
     if (!normalized || normalized.length > 8_000) throw new Error("Investigation question must contain 1 to 8000 characters.");
     if (activeScenarioId && !session.scenarios?.some((scenario) => scenario.id === activeScenarioId)) {
@@ -561,7 +562,7 @@ export class TestudoFeatureBridge {
     this.pendingGeoAI.set(requestId, { request, session });
     try {
       for (const listener of this.geoAIListeners) listener(request);
-      await session.requestGeoAI(request);
+      await session.requestGeoAI?.(request);
     } catch (error) {
       this.pendingGeoAI.delete(requestId);
       throw error;
