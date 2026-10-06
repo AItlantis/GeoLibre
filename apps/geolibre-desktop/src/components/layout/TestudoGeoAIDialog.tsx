@@ -84,7 +84,7 @@ export function TestudoGeoAIDialog() {
       const actionChips = kind === "answered" && Array.isArray(reply.proposedActions)
         ? reply.proposedActions.slice(0, 8).map(validateGeoAIAction).filter((action): action is GeoAIAction => action !== null) : [];
       setMessages((items) => [...items, {
-        role: "assistant", content: kind === "answered" ? reply.content!.trim() : reply.error ?? "The request could not be completed.",
+        role: "assistant" as const, content: kind === "answered" ? reply.content!.trim() : reply.error ?? "The request could not be completed.",
         clarification: kind === "clarification-needed", ...(actionChips.length ? {
           actions: actionChips, actionContext: { tviewId: reply.tviewId, generation: reply.generation },
         } : {}),
@@ -155,7 +155,7 @@ export function TestudoGeoAIDialog() {
   const send = useCallback((text: string) => {
     const question = text.trim();
     if (!question || question.length > MAX_CHARS || dialog.state === "pending" || !viewer) return;
-    const nextMessages: Message[] = [...messages, { role: "user", content: question }].slice(-MAX_TURNS * 2);
+    const nextMessages: Message[] = [...messages, { role: "user" as const, content: question }].slice(-MAX_TURNS * 2);
     setMessages(nextMessages);
     setDraft("");
     setErrorMessage("");
