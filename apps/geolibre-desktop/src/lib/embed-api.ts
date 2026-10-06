@@ -747,3 +747,58 @@ export function buildEmbedLayer(spec: AddLayerSpec, layers: GeoLibreLayer[]): Ge
     ...(spec.beforeId ? { beforeId: spec.beforeId } : {}),
   };
 }
+
+/** Credential-bearing fields are forbidden anywhere in a Testudo iframe message. */
+export function containsCredentialField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsCredentialField);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, child]) => /authorization|token|credential|password|secret/i.test(key) || containsCredentialField(child));
+}
+
+export function isSafeArtifactReference(value: string): boolean {
+  if (!value.trim() || value.length > 2048 || /[?#\\\u0000-\u001f]/.test(value) || value.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  try { return !decodeURIComponent(value).split("/").some(part => part === ".."); } catch { return false; }
+}
+
+const TESTUDO_COMMANDS = new Set([
+  "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoLoadPackage", "testudoOpenLocalPackage",
+  "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState", "testudoSetScenario", "testudoSetPlaybackPlaying",
+  "testudoSetScenarioPair", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView",
+  "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility",
+  "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState",
+  "testudoRequestInvestigation", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo",
+  "testudoSetGuestCapability", "testudoOpenGeoAiChat",
+]);
+
+export interface TestudoEmbedRequest { type: string; requestId: string; payload: Record<string, unknown> }
+export interface TestudoArtifactResponse { requestId: string; tviewId: string; generation: number; artifactRef: string; bytes?: ArrayBuffer; error?: string }
+
+/** Validate the Testudo command namespace while preserving the website's legacy verbs. */
+export function parseTestudoEmbedRequest(data: unknown, challenge: string): TestudoEmbedRequest | null {
+  if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo" || typeof data.type !== "string" || !TESTUDO_COMMANDS.has(data.type)
+    || typeof data.requestId !== "string" || !data.requestId || data.requestId.length > 200 || !isRecord(data.payload)
+    || data.payload.challenge !== challenge || (data.type !== "testudoSetGuestCapability" && containsCredentialField(data.payload))) return null;
+  const { challenge: _challenge, ...payload } = data.payload;
+  if (data.type === "testudoOpenLocalPackage" && Object.keys(payload).length > 1) return null;
+  return { type: data.type, requestId: data.requestId, payload };
+}
+
+export function parseTestudoArtifactResponse(data: unknown, challenge: string): TestudoArtifactResponse | null {
+  if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo" || data.type !== "testudoArtifactResponse" || !isRecord(data.payload)) return null;
+  const payload = data.payload;
+  const { requestId, tviewId, generation, artifactRef, bytes, error } = payload;
+  if (payload.challenge !== challenge || containsCredentialField(payload) || typeof requestId !== "string" || !requestId || requestId.length > 200
+    || typeof tviewId !== "string" || !tviewId || tviewId.length > 120 || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1
+    || typeof artifactRef !== "string" || !isSafeArtifactReference(artifactRef) || (bytes !== undefined && !(bytes instanceof ArrayBuffer))
+    || (error !== undefined && (typeof error !== "string" || error.length > 1000)) || (bytes === undefined && !error)) return null;
+  return { requestId, tviewId, generation, artifactRef, ...(bytes ? { bytes } : {}), ...(error ? { error } : {}) };
+}
+
+/** Wrap event posting so a hostile/detached parent cannot break bridge cleanup. */
+export function createEmbedEventPoster(postMessage: (message: unknown, targetOrigin: string) => void, reportError: (error: unknown) => void): (message: unknown, targetOrigin: string) => void {
+  let reported = false;
+  return (message, targetOrigin) => {
+    try { postMessage(message, targetOrigin); }
+    catch (error) { if (!reported) { reported = true; try { reportError(error); } catch { /* Reporting cannot interrupt bridge work. */ } } }
+  };
+}

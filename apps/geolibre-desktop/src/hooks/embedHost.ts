@@ -86,6 +86,33 @@ export interface EmbedHost {
   note(event: MessageEvent): boolean;
 }
 
+/** Pick pre-handshake targets without broadcasting to unrelated configured hosts. */
+export function pickBroadcastTargets(hostOrigin: string | null, allowedOrigins: readonly string[], parentOriginHint: string | null): string[] {
+  if (hostOrigin) return [hostOrigin];
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(EMBED_ORIGIN_WILDCARD)) return [EMBED_ORIGIN_WILDCARD];
+  if (parentOriginHint && isEmbedOriginAllowed(parentOriginHint, [...allowedOrigins])) return [parentOriginHint];
+  return [...allowedOrigins];
+}
+
+/** Resolve the first valid origin hint supplied by the browser. */
+export function resolveEmbedParentOrigin(candidates: Array<string | null | undefined>, allowedOrigins: string[]): string | null {
+  for (const candidate of candidates) {
+    if (!candidate || candidate === "null") continue;
+    try {
+      const origin = new URL(candidate).origin;
+      if (origin !== "null" && (allowedOrigins.length === 0 || isEmbedOriginAllowed(origin, allowedOrigins))) return origin;
+    } catch { /* Ignore malformed browser hints. */ }
+  }
+  return null;
+}
+
+export function parentOriginHintFromBrowser(): string | null {
+  try {
+    const ancestor = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins?.[0];
+    return resolveEmbedParentOrigin([ancestor, document.referrer], readEmbedOrigins());
+  } catch { return null; }
+}
+
 /**
  * Create the shared host channel for a bridge. In a browser `window.parent` is
  * always defined; when the app is the top-level document (the `?embed=1`
@@ -112,10 +139,7 @@ export function createEmbedHost(): EmbedHost {
     targetOrigin: () => hostOrigin ?? "*",
     broadcastTargets: () => {
       if (hostOrigin) return [hostOrigin];
-      if (allowedOrigins.length === 0 || allowedOrigins.includes(EMBED_ORIGIN_WILDCARD)) {
-        return [EMBED_ORIGIN_WILDCARD];
-      }
-      return allowedOrigins;
+      return pickBroadcastTargets(hostOrigin, allowedOrigins, parentOriginHintFromBrowser());
     },
     note(event: MessageEvent): boolean {
       if (event.source !== host) return false;

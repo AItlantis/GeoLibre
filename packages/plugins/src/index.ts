@@ -1495,3 +1495,7 @@ export {
 
 export { readLocalNetworkKpiManifestJson } from "./plugins/network-kpi-data";
 export { getGeolibrePackage } from "./plugins/geolibre-package-loader";
+export { TestudoFeatureBridge } from "./testudo-feature-bridge";
+export type { TestudoFeatureProviderFactory, TestudoFeatureProviderResolver, TestudoPackageBootstrap, TestudoArtifactRequest, TestudoArtifactFetcher, TestudoFeatureViewerState, TestudoTViewInfo } from "./testudo-feature-bridge";
+export type { TestudoFeatureSession, TestudoPlaybackState, TestudoFeatureContext, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoNetworkFilter, TestudoCameraView } from "./shared/testudo-feature-session";
+export { createVehiclePlaybackAdapter, createNetworkKpiPlaybackAdapter, createScenarioComparisonPlaybackAdapter, createScenarioSelectionAdapters } from "./testudo-plugin-adapters";

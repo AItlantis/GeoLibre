@@ -2,7 +2,7 @@ import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@ge
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetViewMode", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -56,6 +56,7 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
   if (event.source !== parent || !allowedOrigins.includes(event.origin)
     || request?.v !== 2 || request.source !== "testudo" || typeof request.requestId !== "string"
     || request.requestId.length === 0 || request.requestId.length > 200 || !TESTUDO_COMMANDS.includes(request.type)) return false;
+  if (request.type !== "testudoSetGuestCapability" && containsCredentialField(request.payload)) return false;
   if (request.type === "testudoSetGuestCapability") {
     const payload = request.payload;
     return payload?.protocol === 1 && payload.challenge === challenge && TESTUDO_CHALLENGE_RE.test(challenge)
@@ -79,6 +80,12 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
       && typeof payload.question === "string" && payload.question.trim().length > 0 && payload.question.length <= 4000;
   }
   return request.payload?.challenge === challenge;
+}
+
+function containsCredentialField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsCredentialField);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, child]) => /authorization|token|credential|password|secret/i.test(key) || containsCredentialField(child));
 }
 
 /** Return only the four package-backed modes surfaced by the website demo. */

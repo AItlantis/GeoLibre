@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as plugins from "@geolibre/plugins";
-import type { GeoAiViewerContext, GeoLibreAppAPI } from "@geolibre/plugins";
+import type { GeoAiViewerContext, GeoLibreAppAPI, TestudoCameraView, TestudoFeatureSession } from "@geolibre/plugins";
 import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
-import { readEmbedOrigins } from "../../lib/embed-api";
+import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins } from "../../lib/embed-api";
+import { parentOriginHintFromBrowser, pickBroadcastTargets } from "../../hooks/embedHost";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
-import { createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
+import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
 import { acceptsTestudoMessage, availableTestudoModes, hasDeclaredPathIndex, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
@@ -16,6 +17,7 @@ import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
 export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
+const featureCapabilityIds: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
 const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai");
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectablePluginId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
@@ -61,12 +63,126 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let selectionGeneration = 0;
     let busy = false;
     let investigationBusy = false;
+    let bridgeInstalled = false;
+    let bridgePluginId: TestudoSelectablePluginId | null = null;
+    let comparisonDeclared = false;
+    const scenarioAdapters = plugins.createScenarioSelectionAdapters({ setNetworkKpiScenario: plugins.setNetworkKpiScenario,
+      setVehiclePlaybackScenario: plugins.setVehiclePlaybackScenario, setScenarioComparisonSettings: plugins.setScenarioComparisonSettings });
     let openingLocalPicker = false;
     let readyTimer: ReturnType<typeof setInterval> | undefined;
+    const featureBridge = new plugins.TestudoFeatureBridge((packageBootstrap) => ({
+      open: async (_bootstrap, context) => {
+        bridgePluginId = context.pluginId as TestudoSelectablePluginId | null;
+        const isCurrent = (tviewId: string, expectedGeneration: number) => tviewId === "main" && featureBridge.sessions.isCurrent({ tviewId, generation: expectedGeneration });
+        const vehiclePlayback = plugins.createVehiclePlaybackAdapter({ getStatus: plugins.getVehiclePlaybackStatus, getSettings: plugins.getVehiclePlaybackSnapshot,
+          setTick: plugins.setVehiclePlaybackTick, setSettings: plugins.setVehiclePlaybackSettings, setScenario: plugins.setVehiclePlaybackScenario,
+          subscribe: plugins.subscribeVehiclePlaybackStatus }, isCurrent, context);
+        const kpiPlayback = plugins.createNetworkKpiPlaybackAdapter({ getStatus: () => { const status = plugins.getNetworkKpiStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds }; }, getSettings: plugins.getNetworkKpiSnapshot,
+          setSettings: plugins.setNetworkKpiSettings, stepNetworkKpiInterval: plugins.stepNetworkKpiInterval, setScenario: plugins.setNetworkKpiScenario,
+          subscribe: plugins.subscribeNetworkKpiStatus }, isCurrent, context);
+        const emissionsPlayback = plugins.createNetworkKpiPlaybackAdapter({
+          getStatus: () => { const status = plugins.getEmissionsH3Status(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds }; },
+          getSettings: () => { const settings = plugins.getEmissionsH3Snapshot(); return { interval: settings.interval, intervalPlaying: settings.intervalPlaying, playbackSpeed: settings.playbackSpeed, loop: settings.loop }; },
+          setSettings: plugins.setEmissionsH3Settings, stepNetworkKpiInterval: plugins.stepEmissionsH3Interval,
+          setScenario: plugins.setEmissionsH3Scenario, subscribe: plugins.subscribeEmissionsH3Status,
+        }, isCurrent, context);
+        const pathPlayback = plugins.createNetworkKpiPlaybackAdapter({
+          getStatus: () => { const snapshot = plugins.getPathAnalysisSnapshot(); return { loading: snapshot.loading, intervals: snapshot.intervals, error: snapshot.error }; },
+          getSettings: () => { const settings = plugins.getPathAnalysisSnapshot().settings; return { interval: settings.interval, intervalPlaying: settings.intervalPlaying, playbackSpeed: settings.playbackSpeed, loop: settings.loop }; },
+          setSettings: plugins.setPathAnalysisSettings, stepNetworkKpiInterval: plugins.stepPathAnalysisInterval,
+          subscribe: plugins.subscribePathAnalysis,
+        }, isCurrent, context);
+        const comparisonPlayback = plugins.createScenarioComparisonPlaybackAdapter({ getStatus: () => { const status = plugins.getScenarioComparisonStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, matchedIntervals: status.matchedIntervals, dt: status.timelineA?.intervalDurationSeconds }; }, getSettings: plugins.getScenarioComparisonSnapshot,
+          setSettings: plugins.setScenarioComparisonSettings, stepScenarioComparisonInterval: plugins.stepScenarioComparisonInterval,
+          subscribe: plugins.subscribeScenarioComparisonStatus }, isCurrent, context);
+        const playback: NonNullable<TestudoFeatureSession["playback"]> = {
+          getPlaybackState: (id, gen) => activePlayback().getPlaybackState(id, gen), play: (id, gen) => activePlayback().play(id, gen),
+          pause: (id, gen) => activePlayback().pause(id, gen), restart: (id, gen) => activePlayback().restart(id, gen),
+          seek: (id, gen, tick) => activePlayback().seek(id, gen, tick), setSpeed: (id, gen, speed) => activePlayback().setSpeed(id, gen, speed),
+          subscribe: listener => {
+            const subscriptions = [
+              vehiclePlayback.subscribe?.((id, gen, state) => { if (bridgePluginId === "vehicle-playback") listener(id, gen, state); }),
+              kpiPlayback.subscribe?.((id, gen, state) => { if (bridgePluginId === "network-kpi") listener(id, gen, state); }),
+              emissionsPlayback.subscribe?.((id, gen, state) => { if (bridgePluginId === "emissions-h3") listener(id, gen, state); }),
+              pathPlayback.subscribe?.((id, gen, state) => { if (bridgePluginId === "path-analysis") listener(id, gen, state); }),
+              comparisonPlayback.subscribe?.((id, gen, state) => { if (bridgePluginId === "scenario-comparison") listener(id, gen, state); }),
+            ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
+            return () => subscriptions.forEach(unsubscribe => unsubscribe());
+          },
+        };
+        function activePlayback() {
+          return bridgePluginId === "vehicle-playback" ? vehiclePlayback : bridgePluginId === "scenario-comparison" ? comparisonPlayback
+            : bridgePluginId === "emissions-h3" ? emissionsPlayback : bridgePluginId === "path-analysis" ? pathPlayback : kpiPlayback;
+        }
+        const scenarios = () => {
+          if (bridgePluginId === "vehicle-playback") return plugins.getVehiclePlaybackStatus().scenarios.flatMap(row => row.scid === undefined || row.scid === null ? [] : [{ id: String(row.scid), label: String(row.label ?? row.scid) }]);
+          if (bridgePluginId === "scenario-comparison") return plugins.getScenarioComparisonStatus().scenarios.flatMap(row => row.scid === undefined || row.scid === null ? [] : [{ id: String(row.scid), label: String(row.label ?? row.scid) }]);
+          if (bridgePluginId === "emissions-h3") return plugins.getEmissionsH3Status().scenarios.map(row => ({ id: String(row.id), label: row.label }));
+          if (bridgePluginId === "path-analysis") return [];
+          return plugins.getNetworkKpiStatus().scenarios.flatMap(row => row.scid === undefined || row.scid === null ? [] : [{ id: String(row.scid), label: String(row.label ?? row.scid) }]);
+        };
+        const capabilities = (packageBootstrap.capabilities ?? []).filter(item => ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"].includes(item.id));
+        const session: TestudoFeatureSession = {
+          context, capabilities, availableModes: current.availableModes as TestudoFeatureSession["availableModes"], selectedMode: current.selectedMode as TestudoFeatureSession["selectedMode"],
+          scenarios: scenarios(), playback,
+          selectPlugin: async id => { bridgePluginId = id as TestudoSelectablePluginId; return id; },
+          applyPreset: id => id,
+          selectScenario: async id => {
+            const index = scenarios().findIndex(row => row.id === id);
+            if (index < 0) throw new Error(`Scenario ${id} is unavailable for ${bridgePluginId}.`);
+            if (bridgePluginId === "vehicle-playback") await scenarioAdapters.vehiclePlayback(index);
+            else if (bridgePluginId === "scenario-comparison") {
+              const prior = plugins.getScenarioComparisonSnapshot();
+              scenarioAdapters.comparison(index, prior.scenarioB);
+            } else if (bridgePluginId === "emissions-h3") await plugins.setEmissionsH3Scenario(index);
+            else if (bridgePluginId === "path-analysis") throw new Error("Scenario selection is unavailable for path analysis.");
+            else await scenarioAdapters.networkKpi(index);
+            return id;
+          },
+          setViewMode: mode => mode,
+          getCameraView: () => {
+            const center = app.getMap?.()?.getCenter?.(); const activeMap = app.getMap?.();
+            if (!center || !activeMap) return null;
+            return { center: [center.lng, center.lat], zoom: activeMap.getZoom?.() ?? 0, bearing: activeMap.getBearing?.() ?? 0, pitch: activeMap.getPitch?.() ?? 0 };
+          },
+          setCameraView: view => { app.getMap?.()?.jumpTo({ center: view.center, zoom: view.zoom, bearing: view.bearing ?? 0, pitch: view.pitch ?? 0 }); },
+          dispose: () => { bridgePluginId = null; },
+        };
+        return session;
+      },
+    }), (request, signal) => requestArtifactFromParent(request, signal));
+    featureBridge.createTView("main");
+    featureBridge.setActiveTView("main");
     const emit = (type: string, payload: unknown, target = parentOrigin) => {
       if (!disposed && target && allowed.includes(target)) window.parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
     };
-    const ready = () => { if (!disposed) window.parent.postMessage({ v: 2, source: "geolibre", type: "ready", payload: { version: "testudo-v1", challenge } }, "*"); };
+    const unsubscribeBridgeGeoAI = featureBridge.subscribeGeoAIRequests(request => emit("testudoGeoAIRequest", request));
+    const unsubscribeBridgeReplies = featureBridge.subscribeGeoAIReplies(reply => emit("testudoGeoAIReply", reply));
+    const readyTargets = pickBroadcastTargets(null, allowed, parentOriginHintFromBrowser()).filter(target => target !== "*");
+    const ready = () => { if (!disposed) for (const target of readyTargets) window.parent.postMessage({ v: 2, source: "geolibre", type: "ready", payload: { version: "testudo-v1", challenge } }, target); };
+    function requestArtifactFromParent(request: { requestId: string; tviewId: string; generation: number; artifactRef: string }, signal: AbortSignal): Promise<ArrayBuffer> {
+      const target = parentOrigin;
+      if (!target || !allowed.includes(target)) return Promise.reject(new Error("The Testudo host origin is not allowlisted."));
+      return new Promise((resolve, reject) => {
+        const finish = (error?: Error, bytes?: ArrayBuffer) => {
+          clearTimeout(timer); window.removeEventListener("message", onMessage); signal.removeEventListener("abort", onAbort);
+          if (error) reject(error); else resolve(bytes!);
+        };
+        const onAbort = () => finish(new Error("Artifact request was cancelled."));
+        const onMessage = (event: MessageEvent) => {
+          if (event.source !== window.parent || !allowed.includes(event.origin)) return;
+          const response = parseTestudoArtifactResponse(event.data, challenge);
+          if (!response || response.requestId !== request.requestId || response.tviewId !== request.tviewId
+            || response.generation !== request.generation || response.artifactRef !== request.artifactRef) return;
+          if (response.bytes) finish(undefined, response.bytes); else finish(new Error(response.error ?? "Host artifact fetch failed."));
+        };
+        const timer = setTimeout(() => finish(new Error("Timed out waiting for host package artifact.")), 60_000);
+        window.addEventListener("message", onMessage);
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) { onAbort(); return; }
+        window.parent.postMessage({ v: 2, source: "geolibre", type: "testudoArtifactRequest", payload: { ...request, challenge } }, target);
+      });
+    }
     const update = (patch: Partial<TestudoViewerState>) => {
       current = { ...current, ...patch };
       if (!disposed) setState(current);
@@ -154,7 +270,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     const select = async (id: TestudoSelectablePluginId) => {
       if (!selectableIds.includes(id)) throw new Error("Unknown map plugin");
       const capability = current.capabilities.find(item => item.id === id);
-      if (!capability?.available) throw new Error(capability?.reason ?? "This plugin is unavailable for this package.");
+      const comparisonProbe = id === "scenario-comparison" && comparisonDeclared && !capability?.available;
+      if (!capability?.available && !comparisonProbe) throw new Error(capability?.reason ?? "This plugin is unavailable for this package.");
       if (!directory) throw new Error("Select a package first.");
       const version = generation;
       const selection = ++selectionGeneration;
@@ -191,6 +308,24 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (disposed || generation !== version) throw new Error("Package selection changed");
       const status = handlers[id].status();
       if (status.error) throw new Error(status.error);
+      if (id === "scenario-comparison") {
+        const comparison = plugins.getScenarioComparisonStatus();
+        if (!comparison.timelineA || !comparison.timelineB || comparison.matchedIntervals.length === 0) {
+          handlers[id].close();
+          update({ selectedPlugin: null, selectedMode: undefined, status: "ready",
+            capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: false,
+              reason: "Scenario comparison is unavailable: this package has no matched simulation intervals." } : item) });
+          const activeSession = featureBridge.sessions.get("main");
+          if (activeSession) activeSession.capabilities = activeSession.capabilities?.map(item => item.id === "scenario-comparison" ? { ...item, available: false,
+            reason: "Scenario comparison is unavailable: this package has no matched simulation intervals." } : item);
+          throw new Error("Scenario comparison is unavailable: this package has no matched simulation intervals.");
+        }
+        update({ capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: true, reason: undefined } : item) });
+        const activeSession = featureBridge.sessions.get("main");
+        if (activeSession) activeSession.capabilities = activeSession.capabilities?.map(item => item.id === "scenario-comparison" ? { ...item, available: true, reason: undefined } : item);
+      }
+      bridgePluginId = id;
+      if (bridgeInstalled) await featureBridge.selectPlugin("main", id);
       return update({ status: "ready" });
     };
     const applyScenarioAnalysisAction = async (event: Event) => {
@@ -217,8 +352,14 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (!current.availableModes.includes(mode)) throw new Error("This mode is not available in this package.");
       const target = modes.find(item => item.id === mode)!;
       const result = await select(target.plugin);
+      if (mode === "animation") {
+        const playback = plugins.getVehiclePlaybackStatus();
+        if (playback.scenarioIndex < 0 && playback.scenarios.length > 0) await plugins.setVehiclePlaybackScenario(0);
+      }
       if (mode === "flow" || mode === "density") handlers["network-kpi"].settings({ metric: mode });
-      return update({ ...result, selectedMode: mode });
+      const updated = update({ ...result, selectedMode: mode });
+      if (bridgeInstalled) await featureBridge.setViewMode("main", mode);
+      return updated;
     };
     modeSelector.current = async mode => {
       if (busy) return current;
@@ -239,12 +380,41 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       }
       handlers[preset.plugin].settings(safe);
       if (preset.view) app.getMap?.()?.flyTo(preset.view);
+      if (bridgeInstalled) await featureBridge.applyPreset("main", id);
       return update({ presetId: id });
+    };
+    const installFeatureSession = async (candidate: TestudoBootstrap, selectedPlugin: TestudoSelectablePluginId | null, packageOrigin: "published" | "local", localReader?: (artifactRef: string) => Promise<ArrayBuffer>) => {
+      const comparisonUnavailable = comparisonDeclared && current.capabilities.some(item => item.id === "scenario-comparison" && item.available);
+      const capabilities = current.capabilities.filter(item => featureCapabilityIds.includes(item.id)).map(item =>
+        comparisonUnavailable && item.id === "scenario-comparison" ? { ...item, available: false, reason: "Scenario comparison is hidden until this package has matched scenario intervals." } : item);
+      const bridgeBootstrap = {
+        packageId: candidate.packageId,
+        versionId: candidate.versionId,
+        label: candidate.label,
+        artifactEndpoint: candidate.artifactEndpoint,
+        origin: packageOrigin,
+        capabilities,
+        presets: candidate.presets.map(item => ({ id: item.id, plugin: item.plugin, settings: item.settings })),
+        selectedPlugin: selectedPlugin ?? undefined,
+      } as Parameters<typeof featureBridge.loadPackage>[1];
+      const context = await featureBridge.loadPackage("main", bridgeBootstrap, () => {}, localReader);
+      bridgeInstalled = true;
+      bridgePluginId = selectedPlugin;
+      const visibleCapabilities = comparisonUnavailable
+        ? current.capabilities.map(item => item.id === "scenario-comparison" && item.available
+          ? { ...item, available: false, reason: "Scenario comparison is hidden until this package has matched scenario intervals." } : item)
+        : current.capabilities;
+      update({ tviewId: "main", generation: context.generation, capabilities: visibleCapabilities } as Partial<TestudoViewerState>);
+      return context;
     };
     const reset = () => {
       generation++;
       selectionGeneration++;
       abort.abort(); abort = new AbortController();
+      featureBridge.sessions.remove("main");
+      bridgeInstalled = false;
+      bridgePluginId = null;
+      comparisonDeclared = false;
       closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = [];
       plugins.resetGeoAiChat();
       plugins.resetGeoAiBuildings();
@@ -252,28 +422,30 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     };
     const load = async (payload: TestudoLoadPackage) => {
       const candidate = payload?.bootstrap && validateTestudoBootstrap(payload.bootstrap, !!guestCredential);
-      if (!candidate || (!payload.transport?.bearerToken && !guestCredential) || (payload.transport?.bearerToken && guestCredential)
-        || (guestCredential && payload.challenge !== challenge)) throw new Error("Invalid Testudo package bootstrap");
+      if (!candidate || containsCredentialField(payload) || (guestCredential && payload.challenge !== challenge)) throw new Error("Invalid Testudo package bootstrap");
       reset(); bootstrap = candidate;
-      const byteOrigins = (readDeploymentEnvValue("VITE_TESTUDO_BYTE_ORIGINS") ?? "").split(/[\s,]+/).filter(Boolean).map(value => new URL(value).origin);
-      if (!byteOrigins.length) throw new Error("Package byte origin is not configured");
+      comparisonDeclared = candidate.capabilities.some(item => item.id === "scenario-comparison" && item.available);
       const getGuestEmbedToken = guestCredential ? () => {
         if (!guestCredential || guestCredential.expiresAt <= Date.now()) throw new Error("Guest demo access expired; refresh the package to continue.");
         return guestCredential.token;
       } : undefined;
-      const source = createSignedPackageSource({ origin, artifactEndpoint: candidate.artifactEndpoint,
-        ...(getGuestEmbedToken ? { getGuestEmbedToken } : { bearerToken: payload.transport!.bearerToken }), byteOrigins, signal: abort.signal });
+      const byteOrigins = getGuestEmbedToken ? (readDeploymentEnvValue("VITE_TESTUDO_BYTE_ORIGINS") ?? "").split(/[\s,]+/).filter(Boolean).map(value => new URL(value).origin) : [];
+      if (getGuestEmbedToken && !byteOrigins.length) throw new Error("Package byte origin is not configured");
+      const source = getGuestEmbedToken
+        ? createSignedPackageSource({ origin, artifactEndpoint: candidate.artifactEndpoint, getGuestEmbedToken, byteOrigins, signal: abort.signal })
+        : createParentProxiedPackageSource({ parent: window.parent, allowedOrigins: allowed, targetOrigin: () => parentOrigin,
+          challenge, tviewId: "main", generation: () => generation, signal: abort.signal });
       directory = sourceDirectory(source, candidate.label);
-      plugins.initGeoAiChat({
-        origin,
-        bearerToken: payload.transport?.bearerToken,
-        packageId: candidate.packageId,
-        packageVersionId: candidate.versionId,
-        ...(getGuestEmbedToken ? { guest: { getGuestEmbedToken } } : {}),
-        getViewerContext: getGeoAiViewerContext,
-      });
-      plugins.initGeoAiBuildings({ origin, bearerToken: payload.transport?.bearerToken, packageId: candidate.packageId });
-      update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: candidate.capabilities, status: "loading" });
+      if (getGuestEmbedToken) plugins.initGeoAiChat({ origin, packageId: candidate.packageId, packageVersionId: candidate.versionId,
+        guest: { getGuestEmbedToken }, getViewerContext: getGeoAiViewerContext });
+      const safeCapabilities = candidate.capabilities.map(capability => capability.id === "geoai-buildings"
+        ? { ...capability, available: false, reason: "GeoAI building detection requires a host-authenticated API and is disabled in the iframe." }
+        : capability.id === "geoai" && !getGuestEmbedToken
+          ? { ...capability, available: false, reason: "GeoAI chat requires a host-authenticated API and is disabled in the iframe." }
+          : capability);
+      update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: safeCapabilities, status: "loading" });
+      const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai")?.id as TestudoSelectablePluginId | undefined ?? null;
+      await installFeatureSession(candidate, defaultPlugin, "published");
       const raw = await readLocalNetworkKpiManifestJson(directory);
       const pkg = getGeolibrePackage(raw);
       const packageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
@@ -285,13 +457,15 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       const knownColumns = Object.values(contracts).flatMap(value => value && typeof value === "object" && Array.isArray((value as { columns?: unknown }).columns) ? (value as { columns: unknown[] }).columns : []);
       const hasMetric = (metric: "flow" | "density") => Object.hasOwn(ramps, metric) || knownColumns.some(column => column === metric);
       const availableModes = availableTestudoModes({
-        animation: candidate.capabilities.some(item => item.id === "vehicle-playback" && item.available) && hasAnimation,
-        flow: candidate.capabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("flow"),
-        density: candidate.capabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("density"),
-        paths: candidate.capabilities.some(item => item.id === "path-analysis" && item.available)
+        animation: safeCapabilities.some(item => item.id === "vehicle-playback" && item.available) && hasAnimation,
+        flow: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("flow"),
+        density: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("density"),
+        paths: safeCapabilities.some(item => item.id === "path-analysis" && item.available)
           && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
       });
       update({ availableModes });
+      const installedSession = featureBridge.sessions.get("main");
+      if (installedSession) installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
       const initialMode = availableModes.includes("animation") ? "animation" : availableModes[0];
       const initialPlugin = payload.selectedPlugin ?? (initialMode ? modes.find(item => item.id === initialMode)!.plugin : undefined);
       if (!initialPlugin) throw new Error("This package has no supported viewer data");
@@ -323,6 +497,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             ? "GeoAI building detection is only available for packages loaded from Testudo, not local folders."
             : id === "emissions-h3"
             ? "No usable emissions data is declared for this package." : pkg.capabilities[aliases[id]]?.reason ?? "No compatible dataset declared." }));
+        comparisonDeclared = capabilities.some(item => item.id === "scenario-comparison" && item.available);
         const root = raw as Record<string, unknown>;
         const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
         const knownColumns = Object.values(pkg.dataContracts).flatMap(value => value && typeof value === "object" && Array.isArray((value as { columns?: unknown }).columns) ? (value as { columns: unknown[] }).columns : []);
@@ -333,6 +508,13 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           paths: capabilities.some(item => item.id === "path-analysis" && item.available) && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
         });
         update({ package: { packageId: crypto.randomUUID(), versionId: null, label: selected.name, origin: "local" }, capabilities, availableModes, status: "loading" });
+        const localBootstrap = { packageId: current.package!.packageId, versionId: "local", label: selected.name,
+          origin: "published" as const, manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
+          artifactEndpoint: "", capabilities: capabilities.filter(item => featureCapabilityIds.includes(item.id)), presets: [] };
+        const localReader = async (artifactRef: string) => (await (await directory!.getFileHandle(artifactRef)).getFile()).arrayBuffer();
+        await installFeatureSession(localBootstrap, null, "local", localReader);
+        const installedSession = featureBridge.sessions.get("main");
+        if (installedSession) installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
         const initial = availableModes[0];
         if (!initial) throw new Error("This folder declares no supported viewer datasets");
         await selectMode(initial);
@@ -419,13 +601,65 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         return;
       }
       const run = async () => {
-        if (request.type === "testudoGetState") return current;
+        if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+        if (request.type === "testudoGetState") return { ...current, tviewId: "main", generation: featureBridge.getTViews()[0]?.generation ?? 0 };
+        if (request.type === "testudoCreateTView") {
+          if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+          return featureBridge.getTViews()[0];
+        }
+        if (request.type === "testudoGetTView") {
+          if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+          return featureBridge.getTViews()[0];
+        }
+        if (request.type === "testudoGetTViews") return featureBridge.getTViews();
+        if (request.type === "testudoSetActiveTView") {
+          if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+          return featureBridge.setActiveTView("main");
+        }
+        if (request.type === "testudoGetActiveTView") return featureBridge.getActiveTView();
         if (busy) throw new Error("The viewer is loading a package. Please wait.");
         busy = true;
         try {
+          if (request.type === "testudoDestroyTView") {
+            if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+            reset();
+            featureBridge.close("main");
+            const tview = featureBridge.createTView("main");
+            featureBridge.setActiveTView("main");
+            return tview;
+          }
           if (request.type === "testudoLoadPackage") return await load(request.payload);
           if (request.type === "testudoSetPlugin") return await select(request.payload?.id);
           if (request.type === "testudoSetMode") return await selectMode(request.payload.mode);
+          if (request.type === "testudoSetScenario") return { scenarioId: await featureBridge.selectScenario("main", String(request.payload?.scenarioId), request.payload?.generation as number | undefined) };
+          if (request.type === "testudoSetScenarioPair") {
+            if (!current.capabilities.some(item => item.id === "scenario-comparison" && item.available)) throw new Error("Scenario comparison is unavailable for this package.");
+            const session = featureBridge.sessions.get("main");
+            if (!session || (request.payload?.generation !== undefined && request.payload.generation !== session.context.generation)) throw new Error("Scenario pair command belongs to a stale package generation.");
+            if (bridgePluginId !== "scenario-comparison") throw new Error("Select scenario comparison before changing its scenario pair.");
+            const scenarioA = Number(request.payload?.scenarioA); const scenarioB = Number(request.payload?.scenarioB);
+            const scenarioCount = plugins.getScenarioComparisonStatus().scenarios.length;
+            if (!Number.isSafeInteger(scenarioA) || scenarioA < 0 || scenarioA >= scenarioCount || !Number.isSafeInteger(scenarioB) || scenarioB < 0 || scenarioB >= scenarioCount) throw new Error("Comparison scenario indexes are invalid.");
+            scenarioAdapters.comparison(scenarioA, scenarioB);
+            return { scenarioA, scenarioB };
+          }
+          if (request.type === "testudoSetPlaybackPlaying") return featureBridge.playback("main", request.payload?.playing ? "play" : "pause", undefined, request.payload?.generation);
+          if (request.type === "testudoRestartPlayback") return featureBridge.playback("main", "restart", undefined, request.payload?.generation);
+          if (request.type === "testudoSeekPlayback") return featureBridge.playback("main", "seek", Number(request.payload?.tick), request.payload?.generation);
+          if (request.type === "testudoSetPlaybackSpeed") return featureBridge.playback("main", "speed", Number(request.payload?.speed), request.payload?.generation);
+          if (request.type === "testudoGetPlaybackState") return featureBridge.getPlaybackState("main", request.payload?.generation);
+          if (request.type === "testudoSetCameraView") {
+            const view = request.payload?.view as TestudoCameraView;
+            await featureBridge.setCameraView("main", view, request.payload?.generation);
+            return featureBridge.getCameraView("main", request.payload?.generation);
+          }
+          if (request.type === "testudoGetCameraView") return featureBridge.getCameraView("main", request.payload?.generation);
+          if (request.type === "testudoSetViewMode") return { mode: await featureBridge.setViewMode("main", request.payload?.mode) };
+          if (request.type === "testudoFeatureRequestInvestigation") return featureBridge.requestInvestigation("main", String(request.payload?.question ?? ""),
+            typeof request.payload?.activeScenarioId === "string" ? request.payload.activeScenarioId : undefined);
+          if (request.type === "testudoRespondGeoAIRequest") return featureBridge.respondGeoAIRequestTuple(String(request.payload?.requestId ?? ""), String(request.payload?.tviewId ?? "main"),
+            Number(request.payload?.generation), { content: typeof request.payload?.content === "string" ? request.payload.content : undefined,
+              error: typeof request.payload?.error === "string" ? request.payload.error : undefined });
           if (request.type === "testudoOpenGeoAiChat") {
             const open = request.payload.open as boolean;
             if (open) {
@@ -441,7 +675,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       };
       void run().then(result => emit("ack", { requestId: request.requestId, ok: true, result }), error => {
         const detail = error instanceof Error ? error.message : String(error);
-        update({ status: "error", error: detail });
+        if (request.type === "testudoLoadPackage" || request.type === "testudoOpenLocalPackage") update({ status: "error", error: detail });
+        else update({ status: current.package ? "ready" : "empty", error: undefined });
         emit("ack", { requestId: request.requestId, ok: false, error: detail });
       });
     };
@@ -452,7 +687,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));

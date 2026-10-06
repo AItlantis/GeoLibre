@@ -15,6 +15,8 @@ export interface TestudoBootstrap {
   presets: Array<{ id: string; label?: string; plugin: TestudoSelectablePluginId; settings?: Record<string, string | number | boolean>; view?: { center: [number, number]; zoom: number; pitch?: number; bearing?: number } }>;
 }
 export interface TestudoViewerState {
+  tviewId?: string;
+  generation?: number;
   package: { packageId: string; versionId: string | null; label: string; origin: "published" | "local" } | null;
   selectedPlugin: TestudoSelectablePluginId | null;
   /** Whether the independent GeoAI assistant panel is open. */
@@ -27,9 +29,9 @@ export interface TestudoViewerState {
   presetId?: string;
 }
 export interface TestudoLoadPackage {
+  /** Single Testudo shell view id. Defaults to `main` in the typed client. */
+  tviewId?: string;
   bootstrap: TestudoBootstrap;
-  /** Existing account transport; guest auth is injected from in-memory child state. */
-  transport?: { bearerToken?: string };
   challenge?: string;
   selectedPlugin?: TestudoSelectablePluginId;
   presetId?: string;
@@ -63,3 +65,19 @@ export interface TestudoGeoAiInvestigationUpdate {
   summary?: TestudoGeoAiInvestigationSummary;
   error?: string;
 }
+
+/** A credential-free artifact reference requested by a loaded Testudo package. */
+export interface TestudoArtifactRequest { requestId: string; tviewId: string; generation: number; artifactRef: string }
+export interface TestudoArtifactFetchRequest extends Omit<TestudoArtifactRequest, "requestId"> {}
+export type TestudoArtifactFetcher = (request: TestudoArtifactFetchRequest, signal: AbortSignal) => Promise<ArrayBuffer | Uint8Array | Blob>;
+export interface TestudoTViewInfo { tviewId: string; generation: number; loaded: boolean }
+export interface TestudoActiveTView { tviewId: string | null }
+export interface TestudoScopedPayload { tviewId: string; generation?: number }
+export interface TestudoCameraView { center: [number, number]; zoom: number; bearing?: number; pitch?: number }
+export interface TestudoPlaybackState { available: boolean; loading: boolean; playing: boolean; tick: number; maxTick: number; speed: number; dt: number; loop: boolean }
+export interface TestudoGeoAIRequest {
+  requestId: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  context: { tviewId: string; generation: number; packageId: string; versionId: string | null; pluginId: string | null; scenarioId?: string; displayContext?: { tick?: number; camera?: TestudoCameraView } };
+}
+export interface TestudoGeoAIReply { requestId: string; tviewId: string; generation: number; content?: string; error?: string }

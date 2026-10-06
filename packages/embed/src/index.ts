@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate, TestudoArtifactFetcher, TestudoArtifactRequest, TestudoTViewInfo, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -54,6 +54,9 @@ export interface AddDataOptions {
 export type EmbedEventMap = {
   ready: { version: string; challenge?: string };
   testudoStateChanged: TestudoViewerState;
+  testudoArtifactRequest: TestudoArtifactRequest & { challenge: string };
+  testudoGeoAIRequest: TestudoGeoAIRequest;
+  testudoGeoAIReply: TestudoGeoAIReply;
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack
@@ -79,9 +82,17 @@ export interface ConnectOptions {
   timeoutMs?: number;
   /** Time allowed for each command acknowledgement. Defaults to 15 seconds. */
   requestTimeoutMs?: number;
+  /** Resolve signed package artifacts in the host; credentials remain in this closure. */
+  fetchArtifact?: TestudoArtifactFetcher;
 }
 
 export interface GeoLibreEmbedClient {
+  testudoCreateTView(payload: { tviewId: string }): Promise<TestudoTViewInfo>;
+  testudoDestroyTView(payload: { tviewId: string }): Promise<TestudoTViewInfo>;
+  testudoGetTView(payload: { tviewId: string }): Promise<TestudoTViewInfo>;
+  testudoGetTViews(): Promise<TestudoTViewInfo[]>;
+  testudoSetActiveTView(payload: { tviewId: string }): Promise<{ tviewId: string }>;
+  testudoGetActiveTView(): Promise<{ tviewId: string | null }>;
   testudoSetGuestCapability(payload: Omit<TestudoSetGuestCapability, "challenge">): Promise<{ protocol: 1; challenge: string; expiresAt: number }>;
   testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
   testudoSetPlugin(payload: { id: TestudoSelectablePluginId }): Promise<TestudoViewerState>;
@@ -93,6 +104,17 @@ export interface GeoLibreEmbedClient {
   testudoRequestInvestigation(question: string): Promise<{ requestId: string; accepted: true }>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
   testudoGetState(): Promise<TestudoViewerState>;
+  testudoSetScenario(payload: { tviewId: string; scenarioId: string; generation?: number }): Promise<{ scenarioId: string }>;
+  testudoSetScenarioPair(payload: { tviewId: string; scenarioA: number; scenarioB: number; generation?: number }): Promise<{ scenarioA: number; scenarioB: number }>;
+  testudoSetPlaybackPlaying(payload: { tviewId: string; playing: boolean; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoRestartPlayback(payload: { tviewId: string; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoSeekPlayback(payload: { tviewId: string; tick: number; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoSetPlaybackSpeed(payload: { tviewId: string; speed: number; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoGetPlaybackState(payload: { tviewId: string; generation?: number }): Promise<TestudoPlaybackState>;
+  testudoSetCameraView(payload: { tviewId: string; view: TestudoCameraView; generation?: number }): Promise<TestudoCameraView | null>;
+  testudoGetCameraView(payload: { tviewId: string; generation?: number }): Promise<TestudoCameraView | null>;
+  testudoFeatureRequestInvestigation(payload: { tviewId: string; question: string; activeScenarioId?: string }): Promise<{ requestId: string; tviewId: string; generation: number; accepted: true }>;
+  testudoRespondGeoAIRequest(payload: { requestId: string; tviewId: string; generation: number; content?: string; error?: string }): Promise<{ requestId: string; accepted: boolean }>;
   loadProject(url: string): Promise<void>;
   setView(target: ViewTarget): Promise<void>;
   highlightFeature(payload: {
@@ -148,6 +170,8 @@ export function connect(
 
   let sequence = 0;
   let testudoChallenge: string | null = null;
+  const generations = new Map<string, number>();
+  const artifactRequests = new Map<string, { request: TestudoArtifactRequest; controller: AbortController }>();
   let disconnected = false;
   const pending = new Map<string, Pending>();
   const listeners = new Map<EventName, Set<(payload: never) => void>>();
@@ -182,8 +206,14 @@ export function connect(
   });
 
   const client: GeoLibreEmbedClient = {
+    testudoCreateTView: (payload) => sendTestudo<TestudoTViewInfo>("testudoCreateTView", payload),
+    testudoDestroyTView: (payload) => sendTestudo<TestudoTViewInfo>("testudoDestroyTView", payload).then((view) => { generations.set(view.tviewId, view.generation); return view; }),
+    testudoGetTView: (payload) => sendTestudo<TestudoTViewInfo>("testudoGetTView", payload).then((view) => { generations.set(view.tviewId, view.generation); return view; }),
+    testudoGetTViews: () => sendTestudo<TestudoTViewInfo[]>("testudoGetTViews").then((views) => { for (const view of views) generations.set(view.tviewId, view.generation); return views; }),
+    testudoSetActiveTView: (payload) => sendTestudo("testudoSetActiveTView", payload),
+    testudoGetActiveTView: () => sendTestudo("testudoGetActiveTView"),
     testudoSetGuestCapability: (payload) => sendTestudo("testudoSetGuestCapability", payload),
-    testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", { ...payload }),
+    testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", { ...payload, tviewId: payload.tviewId ?? "main" }),
     testudoOpenLocalPackage: () => sendTestudo<TestudoViewerState>("testudoOpenLocalPackage"),
     testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
@@ -196,6 +226,17 @@ export function connect(
     },
     testudoSetPreset: (payload) => sendTestudo<TestudoViewerState>("testudoSetPreset", payload),
     testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
+    testudoSetScenario: (payload) => sendTestudo("testudoSetScenario", payload as unknown as Record<string, unknown>),
+    testudoSetScenarioPair: (payload) => sendTestudo("testudoSetScenarioPair", payload as unknown as Record<string, unknown>),
+    testudoSetPlaybackPlaying: (payload) => sendTestudo("testudoSetPlaybackPlaying", payload as unknown as Record<string, unknown>),
+    testudoRestartPlayback: (payload) => sendTestudo("testudoRestartPlayback", payload as unknown as Record<string, unknown>),
+    testudoSeekPlayback: (payload) => sendTestudo("testudoSeekPlayback", payload as unknown as Record<string, unknown>),
+    testudoSetPlaybackSpeed: (payload) => sendTestudo("testudoSetPlaybackSpeed", payload as unknown as Record<string, unknown>),
+    testudoGetPlaybackState: (payload) => sendTestudo("testudoGetPlaybackState", payload as unknown as Record<string, unknown>),
+    testudoSetCameraView: (payload) => sendTestudo("testudoSetCameraView", payload as unknown as Record<string, unknown>),
+    testudoGetCameraView: (payload) => sendTestudo("testudoGetCameraView", payload as unknown as Record<string, unknown>),
+    testudoFeatureRequestInvestigation: (payload) => sendTestudo("testudoFeatureRequestInvestigation", payload as unknown as Record<string, unknown>),
+    testudoRespondGeoAIRequest: (payload) => sendTestudo("testudoRespondGeoAIRequest", payload as unknown as Record<string, unknown>),
     loadProject: (url) => send("loadProject", { url }),
     setView: (target) => send("setView", target as unknown as Record<string, unknown>),
     highlightFeature: (payload) =>
@@ -223,12 +264,16 @@ export function connect(
       for (const request of pending.values()) request.reject(new Error("Client disconnected"));
       pending.clear();
       listeners.clear();
+      for (const operation of artifactRequests.values()) operation.controller.abort();
+      artifactRequests.clear();
     },
   };
 
   const sendTestudo = <T>(type: string, payload: Record<string, unknown> = {}): Promise<T> => {
     if (disconnected) return Promise.reject(new Error("The GeoLibre client is disconnected"));
     if (!testudoChallenge || !/^[a-f0-9]{32}$/.test(testudoChallenge)) return Promise.reject(new Error("The Testudo viewer challenge is unavailable"));
+    if (type !== "testudoSetGuestCapability" && containsCredentialField(payload)) return Promise.reject(new Error("Embed messages cannot carry credentials."));
+    if (type === "testudoLoadPackage" && typeof payload.tviewId === "string") generations.set(payload.tviewId, (generations.get(payload.tviewId) ?? 0) + 1);
     const requestId = `testudo-${Date.now()}-${++sequence}`;
     target.postMessage({ v: EMBED_API_VERSION, source: "testudo", type, payload: { ...payload, challenge: testudoChallenge }, requestId }, origin);
     return new Promise<T>((resolve, reject) => {
@@ -249,6 +294,8 @@ export function connect(
     if (!data || data.source !== EMBED_API_SOURCE || data.v !== EMBED_API_VERSION) return;
     const type = data.type as EventName;
     const payload = (data.payload ?? {}) as Record<string, unknown>;
+    if (type === "testudoArtifactRequest") { void handleArtifactRequest(data); return; }
+    if (type === "testudoStateChanged" && typeof payload.tviewId === "string" && typeof payload.generation === "number") generations.set(payload.tviewId, payload.generation);
     if (type === "ack") {
       // Settling the command promise is the ack's job, but it stays an event
       // too: `ack` is a key of `EmbedEventMap`, so `on("ack", …)` type-checks
@@ -268,6 +315,29 @@ export function connect(
     }
     for (const listener of listeners.get(type) ?? []) listener(payload as never);
   };
+
+  const handleArtifactRequest = async (message: Record<string, unknown>) => {
+    const payload = message.payload;
+    if (!isRecord(payload) || !testudoChallenge || payload.challenge !== testudoChallenge || containsCredentialField(payload)) return;
+    const { requestId, tviewId, generation, artifactRef } = payload;
+    if (typeof requestId !== "string" || !requestId || requestId.length > 200 || typeof tviewId !== "string" || !tviewId || tviewId.length > 120
+      || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1 || typeof artifactRef !== "string" || !isSafeArtifactReference(artifactRef)
+      || generations.get(tviewId) !== generation || artifactRequests.has(requestId)) return;
+    const request: TestudoArtifactRequest = { requestId, tviewId, generation, artifactRef };
+    const operation = { request, controller: new AbortController() };
+    artifactRequests.set(requestId, operation);
+    let bytes: ArrayBuffer | undefined; let error: string | undefined;
+    try {
+      if (!options.fetchArtifact) throw new Error("The host has no artifact fetcher configured.");
+      const fetched = await options.fetchArtifact({ tviewId, generation, artifactRef }, operation.controller.signal);
+      if (operation.controller.signal.aborted || artifactRequests.get(requestId) !== operation || generations.get(tviewId) !== generation) return;
+      bytes = fetched instanceof ArrayBuffer ? fetched : fetched instanceof Blob ? await fetched.arrayBuffer() : fetched.buffer.slice(fetched.byteOffset, fetched.byteOffset + fetched.byteLength) as ArrayBuffer;
+    } catch (caught) { error = (caught instanceof Error ? caught.message : String(caught)).slice(0, 1000); }
+    if (operation.controller.signal.aborted || artifactRequests.get(requestId) !== operation || generations.get(tviewId) !== generation || !testudoChallenge) return;
+    artifactRequests.delete(requestId);
+    const response = { v: EMBED_API_VERSION, source: "testudo", type: "testudoArtifactResponse", payload: { ...request, challenge: testudoChallenge, ...(bytes ? { bytes } : { error: error ?? "Artifact fetch failed." }) } };
+    try { target.postMessage(response, origin, bytes ? [bytes] : []); } catch { target.postMessage(response, origin); }
+  };
   window.addEventListener("message", receive);
 
   const timer = window.setTimeout(() => {
@@ -275,4 +345,15 @@ export function connect(
     readyReject?.(new Error("Timed out waiting for GeoLibre"));
   }, options.timeoutMs ?? 15_000);
   return ready.finally(() => window.clearTimeout(timer));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
+function containsCredentialField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsCredentialField);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, child]) => /authorization|token|credential|password|secret/i.test(key) || containsCredentialField(child));
+}
+function isSafeArtifactReference(value: string): boolean {
+  if (!value.trim() || value.length > 2048 || /[?#\\\u0000-\u001f]/.test(value) || value.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  try { return !decodeURIComponent(value).split("/").some(part => part === ".."); } catch { return false; }
 }

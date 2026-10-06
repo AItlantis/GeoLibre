@@ -138,6 +138,7 @@ import { registerKmlSuperOverlayProtocol } from "../../lib/kml-super-overlay";
 import { registerMbtilesProtocol } from "../../lib/mbtiles";
 import { hasReverseGeocodeConsent } from "../../lib/reverse-geocode-consent";
 import { hasKnowledgeCardConsent, recordKnowledgeCardConsent } from "../../lib/knowledge-consent";
+import { isTestudoLayout, TESTUDO_BLOCKED_PLUGIN_IDS } from "../../lib/testudo-mode";
 import { wikipediaLang } from "../../lib/knowledge";
 import { registerXyzTileProtocol } from "../../lib/xyz-url";
 import { useEmbedBridge } from "../../hooks/useEmbedBridge";
@@ -858,9 +859,11 @@ export function DesktopShell({
   // own so the restore effect below can re-assert it *after* restoring, which
   // effect ordering alone would not guarantee.
   const enforceViewerPlugins = useCallback(() => {
-    if (!layoutOptions.viewer) return;
+    if (!layoutOptions.viewer && !isTestudoLayout()) return;
     const manager = getPluginManager();
-    for (const id of VIEWER_BLOCKED_PLUGIN_IDS) {
+    const blockedPluginIds = new Set<string>(VIEWER_BLOCKED_PLUGIN_IDS);
+    if (isTestudoLayout()) TESTUDO_BLOCKED_PLUGIN_IDS.forEach(id => blockedPluginIds.add(id));
+    for (const id of blockedPluginIds) {
       if (!manager.isActive(id)) continue;
       // `isActive` is true from the moment activation starts, so a plugin that
       // mounts behind a dynamic import (GeoAgent) is "active" with no control

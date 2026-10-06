@@ -195,6 +195,33 @@ it("Testudo commands reject when the ready event carries no valid challenge", as
   client.disconnect();
 });
 
+it("rejects credential fields from Testudo client payloads", async () => {
+  const { iframe, receive } = harness();
+  const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });
+  receive("ready", { challenge: "0123456789abcdef0123456789abcdef" });
+  const client = await pending;
+  await assert.rejects(client.testudoOpenGeoAiChat({ open: true, bearerToken: "secret" } as unknown as { open: boolean }), /cannot carry credentials/);
+  client.disconnect();
+});
+
+it("correlates host artifact fetches to the current TView generation", async () => {
+  const { iframe, receive, sent } = harness();
+  let fetched = "";
+  const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100, fetchArtifact: async request => { fetched = request.artifactRef; return new Uint8Array([1, 2]); } });
+  const challenge = "0123456789abcdef0123456789abcdef";
+  receive("ready", { challenge });
+  const client = await pending;
+  const views = client.testudoGetTViews();
+  const requestId = sent.at(-1)!.message.requestId as string;
+  receive("ack", { requestId, ok: true, result: [{ tviewId: "main", generation: 3, loaded: true }] });
+  await views;
+  receive("testudoArtifactRequest", { challenge, requestId: "artifact-1", tviewId: "main", generation: 3, artifactRef: "data/file.bin" });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(fetched, "data/file.bin");
+  assert.equal(sent.at(-1)?.message.type, "testudoArtifactResponse");
+  client.disconnect();
+});
+
 it("sends a correlated investigation request and exposes its later update event", async () => {
   const { iframe, receive, sent } = harness();
   const pending = connect(iframe, { origin: "https://app.test", timeoutMs: 100 });

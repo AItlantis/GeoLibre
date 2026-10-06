@@ -1,0 +1,1 @@
+import{a as o}from"./error-CgsyLo7K.js";var a=15e3,t=5e3;function n(r,e){if(!(r>=5e3))throw new o(`${e} must be at least ${t}ms (got ${r}); to run without memory sync, pass \`memorySyncIntervalMs: null\` to the worker instead`)}export{t as n,n as r,a as t};

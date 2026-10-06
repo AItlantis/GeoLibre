@@ -101,3 +101,61 @@ export function sourceDirectory(source: VehiclePackageSource, name: string, pref
     },
   };
 }
+
+/** Credential-free byte source whose parent resolves each artifact in its private auth closure. */
+export function createParentProxiedPackageSource(options: {
+  parent: Window;
+  allowedOrigins: string[];
+  targetOrigin: () => string | null;
+  challenge: string;
+  tviewId: string;
+  generation: () => number;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}): VehiclePackageSource {
+  let sequence = 0;
+  const pending = new Map<string, { generation: number; path: string; resolve: (bytes: ArrayBuffer) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const onMessage = (event: MessageEvent) => {
+    if (event.source !== options.parent || !options.allowedOrigins.includes(event.origin)) return;
+    const data = event.data;
+    if (!data || data.v !== 2 || data.source !== "testudo" || data.type !== "testudoArtifactResponse" || !data.payload) return;
+    const response = data.payload as Record<string, unknown>;
+    if (containsCredentialField(response) || response.challenge !== options.challenge || typeof response.requestId !== "string" || typeof response.tviewId !== "string"
+      || typeof response.generation !== "number" || typeof response.artifactRef !== "string") return;
+    const operation = pending.get(response.requestId);
+    if (!operation || operation.generation !== response.generation || operation.path !== response.artifactRef
+      || options.tviewId !== response.tviewId || options.generation() !== response.generation) return;
+    pending.delete(response.requestId); clearTimeout(operation.timer);
+    if (response.bytes instanceof ArrayBuffer) operation.resolve(response.bytes);
+    else operation.reject(new Error(typeof response.error === "string" ? response.error.slice(0, 1000) : "Artifact response was invalid."));
+  };
+  const abortPending = () => {
+    if (typeof window !== "undefined") window.removeEventListener("message", onMessage);
+    for (const operation of pending.values()) { clearTimeout(operation.timer); operation.reject(new Error("Package artifact request was cancelled.")); }
+    pending.clear();
+  };
+  if (typeof window !== "undefined") window.addEventListener("message", onMessage);
+  options.signal?.addEventListener("abort", abortPending, { once: true });
+  return {
+    baseUrl: null,
+    async read(path) {
+      const artifactRef = packagePath(path);
+      const targetOrigin = options.targetOrigin();
+      if (!targetOrigin || !options.allowedOrigins.includes(targetOrigin)) throw new Error("The Testudo host origin is not allowlisted.");
+      const generation = options.generation();
+      const requestId = `testudo-artifact-${Date.now()}-${++sequence}`;
+      if (options.signal?.aborted) throw new Error("Package artifact request was cancelled.");
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        const timer = setTimeout(() => { pending.delete(requestId); reject(new Error("Timed out waiting for host package artifact.")); }, options.timeoutMs ?? 60_000);
+        pending.set(requestId, { generation, path: artifactRef, resolve, reject, timer });
+        options.parent.postMessage({ v: 2, source: "geolibre", type: "testudoArtifactRequest", payload: { challenge: options.challenge, requestId, tviewId: options.tviewId, generation, artifactRef } }, targetOrigin);
+      });
+    },
+  };
+}
+
+function containsCredentialField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsCredentialField);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, child]) => /authorization|token|credential|password|secret/i.test(key) || containsCredentialField(child));
+}

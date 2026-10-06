@@ -9,6 +9,8 @@ import {
   EMBED_ORIGINS_ENV,
   buildEmbedEvent,
   buildEmbedLayer,
+  containsCredentialField,
+  createEmbedEventPoster,
   embedEventTargets,
   embedEventVersions,
   embedLayerSummaries,
@@ -16,6 +18,9 @@ import {
   isEmbedOriginAllowed,
   parseEmbedOrigins,
   parseEmbedRequest,
+  parseTestudoEmbedRequest,
+  parseTestudoArtifactResponse,
+  isSafeArtifactReference,
   readEmbedOrigins,
   requireEmbedLayer,
   resolveHighlightIds,
@@ -24,6 +29,29 @@ import {
 
 /** A tile template that satisfies the addLayer renderable-source check. */
 const XYZ_TILE_URL = "https://tiles.example.com/{z}/{x}/{y}.png";
+
+describe("Testudo embed protocol", () => {
+  const challenge = "0123456789abcdef0123456789abcdef";
+  it("accepts old website verbs while rejecting credentials recursively", () => {
+    const legacy = { v: EMBED_API_VERSION, source: "testudo", type: "testudoLoadPackage", requestId: "1", payload: { challenge, bootstrap: {} } };
+    assert.equal(parseTestudoEmbedRequest(legacy, challenge)?.type, "testudoLoadPackage");
+    assert.equal(parseTestudoEmbedRequest({ ...legacy, payload: { ...legacy.payload, bearerToken: "secret" } }, challenge), null);
+    assert.equal(containsCredentialField({ nested: [{ Authorization: "Bearer secret" }] }), true);
+  });
+  it("validates artifact paths and correlated responses", () => {
+    assert.equal(isSafeArtifactReference("data/results.parquet"), true);
+    for (const ref of ["../secret", "%2e%2e/secret", "/absolute", "https://host/file", "file.geojson?x=1"]) assert.equal(isSafeArtifactReference(ref), false);
+    const response = { v: EMBED_API_VERSION, source: "testudo", type: "testudoArtifactResponse", payload: { challenge, requestId: "r", tviewId: "main", generation: 2, artifactRef: "data/file.bin", bytes: new ArrayBuffer(2) } };
+    assert.equal(parseTestudoArtifactResponse(response, challenge)?.generation, 2);
+    assert.equal(parseTestudoArtifactResponse({ ...response, payload: { ...response.payload, token: "secret" } }, challenge), null);
+  });
+  it("contains postMessage failures and reports only once", () => {
+    let reported = 0;
+    const post = createEmbedEventPoster(() => { throw new Error("detached"); }, () => { reported++; });
+    post({}, "https://host"); post({}, "https://host");
+    assert.equal(reported, 1);
+  });
+});
 
 /** Build an inbound host message with the right envelope by default. */
 function message(type: string, payload?: unknown, extra: Record<string, unknown> = {}) {
