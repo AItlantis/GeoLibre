@@ -561,6 +561,7 @@
       "defaultName": "WMS Layer",
       "sampleLabel": "USGS NAIP imagery",
       "sampleLabelGebco": "GEBCO ocean bathymetry",
+      "sampleLabelNlcd": "NLCD 2021 land cover (with legend)",
       "errorUrl": "Enter a WMS service URL.",
       "errorLayers": "Enter one or more WMS layer names.",
       "urlPlaceholder": "https://example.com/geoserver/wms",
@@ -7405,6 +7406,24 @@
       "add": "Add"
     },
     "raster": {
+      "legend": {
+        "heading": "Legend",
+        "get": "Get legend",
+        "refresh": "Reload legend",
+        "loading": "Looking up legend…",
+        "failed": "The server did not return a legend for this layer.",
+        "alt": "Legend for {{layer}}",
+        "removeCustom": "Remove image",
+        "customHint": "No legend available from this service. Enter the URL of a legend image to use instead.",
+        "customLabel": "Legend image URL",
+        "customPlaceholder": "https://example.com/legend.png",
+        "customUse": "Use image",
+        "customInvalid": "Enter a full http(s) image URL.",
+        "addToMap": "Add to map",
+        "added": "Added to the map as an HTML control.",
+        "addFailed": "Could not add the legend to the map.",
+        "mapTitle": "{{layer}} legend"
+      },
       "greyscale": "Greyscale",
       "greyscaleHint": "Toggle a greyscale basemap (drives saturation to its minimum)",
       "reset": "Reset",
