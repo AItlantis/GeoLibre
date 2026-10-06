@@ -6,8 +6,8 @@ export interface TestudoLayerOwner {
   addGeoJson(id: string, data: FeatureCollection, kind: "line" | "circle", metricColorProperty?: string): void;
   setData(id: string, data: FeatureCollection): void;
   setVisible(id: string, visible: boolean): void;
-  setLegend(id: string, title: string, lowLabel: string, lowColor: string, highLabel: string, highColor: string): void;
-  setNetworkVisible(visible: boolean): void;
+  /** Keep metric legend publication typed; the session exposes the legend data to the shell. */
+  setLegend(id: string, title: string, low: string, lowColor: string, high: string, highColor: string): void;
   setEsriWorldImagery(visible: boolean): void;
   remove(): void;
 }
@@ -16,8 +16,10 @@ export interface TestudoLayerOwner {
 export function createTestudoLayerOwner(map: TestudoMapHandle, namespace: string): TestudoLayerOwner {
   const sourceIds: string[] = [];
   const layerIds: string[] = [];
-  const legends = new Map<string, HTMLElement>();
-  const ownedId = (id: string) => `${namespace}-${id}`;
+  const modeNamespace = namespace.replace(/-animation$/, "").replace(/^testudo-/, "");
+  const ownedId = (id: string) => id === "vehicle-positions"
+    ? `testudo-vehicle-${modeNamespace}-positions` : `${namespace}-${id}`;
+  const networkLineId = `rendering-outputs.${modeNamespace}.line`;
   const esriSourceId = ownedId("esri-world-imagery");
   const esriLayerId = `${esriSourceId}-layer`;
   const addGeoJson = (id: string, data: FeatureCollection, kind: "line" | "circle", metricColorProperty?: string) => {
@@ -38,32 +40,9 @@ export function createTestudoLayerOwner(map: TestudoMapHandle, namespace: string
     addGeoJson,
     setData(id, data) { map.getSource(ownedId(id))?.setData(data); },
     setVisible(id, visible) { const target = ownedId(id); if (map.getLayer(`${target}-layer`)) map.setLayoutProperty(`${target}-layer`, "visibility", visible ? "visible" : "none"); },
-    setLegend(id, title, lowLabel, lowColor, highLabel, highColor) {
-      if (typeof document === "undefined") return;
-      const container = map.getContainer?.();
-      if (!container) return;
-      const legendId = ownedId(`legend-${id}`);
-      let legend = legends.get(legendId);
-      if (!legend) {
-        legend = document.createElement("div");
-        legend.dataset.testudoLegend = legendId;
-        legend.style.cssText = "position:absolute;right:12px;bottom:12px;z-index:2;padding:8px 10px;border-radius:6px;background:rgba(255,255,255,.94);color:#172033;font:12px/1.4 sans-serif;box-shadow:0 1px 6px rgba(0,0,0,.22);pointer-events:none";
-        container.appendChild(legend);
-        legends.set(legendId, legend);
-      }
-      legend.replaceChildren();
-      const heading = document.createElement("strong"); heading.textContent = title; legend.appendChild(heading);
-      const row = document.createElement("div"); row.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:4px";
-      const low = document.createElement("span"); low.textContent = lowLabel;
-      const ramp = document.createElement("span"); ramp.style.cssText = `display:inline-block;width:70px;height:8px;border-radius:4px;background:linear-gradient(90deg,${lowColor},${highColor})`;
-      const high = document.createElement("span"); high.textContent = highLabel;
-      row.append(low, ramp, high); legend.appendChild(row);
-    },
-    setNetworkVisible(visible) {
-      for (const id of ["network-sections", "network-nodes", "network-centroids"]) {
-        const layer = `${ownedId(id)}-layer`;
-        if (map.getLayer(layer)) map.setLayoutProperty(layer, "visibility", visible ? "visible" : "none");
-      }
+    setLegend(_id, _title, _low, _lowColor, _high, _highColor) {
+      // Result legend values are exposed by the active session's
+      // getPlaybackValues(); do not create a competing map legend here.
     },
     setEsriWorldImagery(visible) {
       if (visible) {
@@ -75,7 +54,9 @@ export function createTestudoLayerOwner(map: TestudoMapHandle, namespace: string
           attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
         });
         sourceIds.push(esriSourceId);
-        map.addLayer({ id: esriLayerId, type: "raster", source: esriSourceId }, `${ownedId("network-sections")}-layer`);
+        const imagery = { id: esriLayerId, type: "raster", source: esriSourceId };
+        if (map.getLayer(networkLineId)) map.addLayer(imagery, networkLineId);
+        else map.addLayer(imagery);
         layerIds.push(esriLayerId);
         return;
       }
@@ -83,23 +64,11 @@ export function createTestudoLayerOwner(map: TestudoMapHandle, namespace: string
       if (map.getSource(esriSourceId)) map.removeSource(esriSourceId);
     },
     remove() {
-      for (const legend of legends.values()) legend.remove();
-      legends.clear();
       for (const id of [...layerIds].reverse()) if (map.getLayer(id)) map.removeLayer(id);
       for (const id of [...sourceIds].reverse()) if (map.getSource(id)) map.removeSource(id);
       layerIds.length = 0; sourceIds.length = 0;
     },
   };
-}
-
-export function drawNetwork(owner: TestudoLayerOwner, sections: FeatureCollection, nodes?: FeatureCollection, centroids?: FeatureCollection, lanes?: FeatureCollection): void {
-  owner.addGeoJson("network-sections", sections, "line");
-  if (nodes?.features?.length) owner.addGeoJson("network-nodes", nodes, "circle");
-  if (centroids?.features?.length) owner.addGeoJson("network-centroids", centroids, "circle");
-  if (lanes?.features?.length) {
-    owner.addGeoJson("network-lanes", lanes, "line");
-    owner.setVisible("network-lanes", false);
-  }
 }
 
 export function drawVehicles(owner: TestudoLayerOwner, points: TestudoVehiclePoint[]): void {

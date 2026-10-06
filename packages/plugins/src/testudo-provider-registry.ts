@@ -1,5 +1,6 @@
 import type { TestudoPackageBootstrap, TestudoFeatureProviderFactory } from "./testudo-feature-bridge";
 import type { TestudoCapabilityKey, TestudoFeatureSession, TestudoPlaybackState } from "./shared/testudo-feature-session";
+import { switchTestudoModeLayers, type TestudoOwnedMode } from "./testudo-layer-ownership";
 
 export interface TestudoPackageProviderRegistration {
   capability: TestudoCapabilityKey;
@@ -49,12 +50,7 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
     .map((item) => [item.id, getTestudoPackageProvider(item.id, bootstrap)] as const)
     .filter((entry): entry is readonly [TestudoCapabilityKey, TestudoFeatureProviderFactory] => entry[1] !== null);
   if (!entries.some(([id]) => id === selected)) return null;
-  // Vehicle playback also owns the package's base network layers. Open it as
-  // the session's infrastructure provider whenever another capability is
-  // selected, even when the host's capability declaration marks animation off.
-  const vehicleFactory = providers.get("vehicle-playback")?.factory;
-  if (vehicleFactory && !entries.some(([id]) => id === "vehicle-playback")) entries.unshift(["vehicle-playback", vehicleFactory] as const);
-  const primary = entries.find(([id]) => id === "vehicle-playback") ?? entries.find(([id]) => id === selected)!;
+  const primary = entries.find(([id]) => id === selected)!;
   return {
     async open(packageBootstrap, context, onProgress, fetchArtifact, map): Promise<TestudoFeatureSession> {
       const cache = new Map<string, Promise<ArrayBuffer>>();
@@ -64,7 +60,29 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
         return pending;
       };
       const sessions = new Map<TestudoCapabilityKey, TestudoFeatureSession>();
+      let network: import("./plugins/rendering-outputs").RenderingOutputsService | null = null;
+      let networkLegendVisible = true;
+      const namespace = `testudo-${context.tviewId}-${context.generation}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const modeFor = (id: TestudoCapabilityKey): TestudoOwnedMode => id === "vehicle-playback" ? "animation"
+        : id === "scenario-comparison" ? "comparison" : id === "path-analysis" ? "paths" : "results";
+      let activeMode: TestudoOwnedMode = modeFor(selected);
       try {
+        if (map) {
+          try {
+            const [manifestBytes, packageBytes] = await Promise.all([sharedFetch("manifest.json"), sharedFetch("geolibre/package.json")]);
+            const parse = (bytes: ArrayBuffer) => {
+              const value = JSON.parse(new TextDecoder().decode(bytes));
+              return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+            };
+            const renderer = await import("./plugins/rendering-outputs");
+            network = await renderer.mountRenderingOutputs({
+              map, context, manifest: parse(manifestBytes), packageInfo: parse(packageBytes), fetchArtifact: sharedFetch,
+              onProgress, cameraWasOverridden: () => false,
+            });
+          } catch (error) {
+            onProgress({ value: 0, loaded: 0, total: 0, label: `Network unavailable: ${error instanceof Error ? error.message : String(error)}` });
+          }
+        }
         for (const [id, factory] of entries) {
           sessions.set(id, await factory.open(packageBootstrap, { ...context, pluginId: id }, onProgress, sharedFetch, map));
         }
@@ -107,13 +125,16 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
         ...state, activeCapability: active,
         tickFollowers: entries.map(([capability]) => {
           const follower = sessions.get(capability)!;
-          return { capability, following: capability === primary[0] || Boolean(follower.onPlaybackTick), timeSeriesAvailable: follower.timeSeriesAvailable ?? capability === primary[0] };
+          const isActive = capability === active;
+          return { capability, following: capability === primary[0] || Boolean(follower.onPlaybackTick), timeSeriesAvailable: isActive && (follower.timeSeriesAvailable ?? capability === primary[0]) };
         }),
       });
       const follow = async (state: TestudoPlaybackState) => {
         lastState = decorate(state);
-        await Promise.all([...sessions.values()].map((session) => session === clockSession && session.playback
-          ? undefined : session.onPlaybackTick?.(context.tviewId, context.generation, lastState)));
+        await Promise.all([...sessions.entries()].map(async ([capability, follower]) => {
+          if (follower === clockSession && follower.playback && capability === primary[0]) return;
+          await follower.onPlaybackTick?.(context.tviewId, context.generation, lastState);
+        }));
       };
       await follow(lastState);
       const selectedSession = () => sessions.get(active)!;
@@ -134,9 +155,20 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
         },
         async selectPlugin(id) {
           if (!sessions.has(id as TestudoCapabilityKey)) throw new Error(`Capability ${id} is not available for this package.`);
-          active = id as TestudoCapabilityKey;
+          const next = id as TestudoCapabilityKey;
+          const nextMode = modeFor(next);
+          if (nextMode !== activeMode) {
+            await selectedSession().onDeactivate?.();
+            switchTestudoModeLayers(map ?? null, namespace, activeMode, nextMode);
+          }
+          activeMode = nextMode;
+          active = next;
           aggregate.context.pluginId = active;
-          await selectedSession().onActivate?.();
+          const nextSession = selectedSession();
+          await nextSession.onActivate?.();
+          // Activation can initialise a provider at tick zero. Reapply the
+          // shared clock snapshot so mode switches preserve the current tick.
+          await follow(clockPlayback.getPlaybackState(context.tviewId, context.generation));
           return id;
         },
         get scenarios() { return selectedSession().scenarios; },
@@ -145,12 +177,17 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
         getPlaybackValues() { return selectedSession().getPlaybackValues?.() ?? { tick: lastState.tick, values: undefined }; },
         getComparisonAtTick(ids) { const current = sessions.get("scenario-comparison"); if (!current?.getComparisonAtTick) throw new Error("Scenario comparison values are unavailable."); return current.getComparisonAtTick(ids); },
         async setKpiGeometry(geometry, visible) {
-          const selected = await selectedSession().setKpiGeometry?.(geometry, visible);
-          const network = sessions.get("vehicle-playback");
-          const networkState = await network?.setKpiGeometry?.(geometry, visible);
-          return networkState ?? selected ?? { showLanes: false, showSections: false };
+          const state = network?.setGeometry(geometry, visible);
+          return state ?? { showLanes: false, showSections: false };
         },
-        getKpiGeometryState() { return sessions.get("vehicle-playback")?.getKpiGeometryState?.() ?? selectedSession().getKpiGeometryState?.() ?? { showLanes: false, showSections: false }; },
+        getKpiGeometryState() { return { showLanes: network?.showLanes ?? false, showSections: network?.showSections ?? false }; },
+        async setMapControl(controlId, visible) {
+          if (["legend", "network-legend"].includes(controlId)) { networkLegendVisible = visible; return network?.setLegend(visible) ?? false; }
+          if (["network-lanes", "lanes"].includes(controlId)) { network?.setGeometry("lanes", visible); return Boolean(network?.available && network.hasLanes); }
+          if (["network-sections", "sections"].includes(controlId)) { network?.setGeometry("sections", visible); return Boolean(network?.available && network.hasSections); }
+          return selectedSession().setMapControl?.(controlId, visible) ?? false;
+        },
+        getMapControlState() { return { ...(selectedSession().getMapControlState?.() ?? { esriWorldImageryVisible: false, renderer: "maplibre" as const }), legendVisible: networkLegendVisible }; },
         playback: {
           getPlaybackState(tviewId, generation) {
             if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback state belongs to a stale Testudo package.");
@@ -168,7 +205,7 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
           await follow(state);
         },
         get timeSeriesAvailable() { return selectedSession().timeSeriesAvailable ?? false; },
-        async dispose() { if (fallbackTimer) clearInterval(fallbackTimer); fallbackListeners.clear(); await Promise.all([...sessions.values()].map((session) => session.dispose?.())); },
+        async dispose() { network?.dispose(); network = null; if (fallbackTimer) clearInterval(fallbackTimer); fallbackListeners.clear(); await Promise.all([...sessions.values()].map((session) => session.dispose?.())); },
       };
       return aggregate;
     },

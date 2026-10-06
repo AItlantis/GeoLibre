@@ -1,0 +1,20 @@
+.rendering-outputs-panel { font: 13px system-ui, sans-serif; padding: 8px; color: var(--text-primary, #222); }
+.rendering-outputs-panel label { display: block; margin: 6px 0 3px; font-weight: 600; }
+.rendering-outputs-panel select { box-sizing: border-box; width: 100%; padding: 4px; }
+.rendering-outputs-panel .ro-status { margin: 0 0 8px; white-space: pre-wrap; color: var(--text-secondary, #666); }
+.rendering-outputs-panel .ro-status-interval { font-size: 15px; font-weight: 700; color: var(--text-primary, #222); }
+.rendering-outputs-panel .ro-status-run { font-size: 11px; color: var(--text-secondary, #666); margin-top: 1px; }
+.rendering-outputs-panel .ro-error { color: #b42318; }
+.rendering-outputs-panel .ro-extrusion-toggle { display: flex; align-items: center; gap: 6px; font-weight: 400; margin: 0 0 8px; }
+.rendering-outputs-panel .ro-extrusion-toggle input { margin: 0; }
+.rendering-outputs-panel .ro-identify { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border-subtle, #ddd); white-space: pre-wrap; }
+.rendering-outputs-panel .ro-section { margin-top: 10px; }
+.rendering-outputs-panel .ro-section-header { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent; border: 0; padding: 4px 0; font: inherit; font-weight: 600; cursor: pointer; color: var(--text-primary, #222); }
+.rendering-outputs-panel .ro-section-caret { display: inline-block; transition: transform 0.15s ease; }
+.rendering-outputs-panel .ro-section.ro-collapsed .ro-section-caret { transform: rotate(-90deg); }
+.rendering-outputs-panel .ro-section.ro-collapsed .ro-section-body { display: none; }
+.rendering-outputs-panel .ro-playback { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rendering-outputs-panel .ro-playback button { font-size: 16px; line-height: 1; padding: 4px 8px; cursor: pointer; }
+.ro-toggle-ctrl button.ro-toggle { width: 29px; height: 29px; font: 700 11px system-ui, sans-serif; background: transparent; border: 0; cursor: pointer; color: var(--text-primary, #333); }
+.ro-toggle-ctrl button.ro-toggle-active { background: rgba(0, 122, 255, 0.15); color: #007aff; }
+/*$vite$:1*/

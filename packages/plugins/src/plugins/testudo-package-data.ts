@@ -9,6 +9,7 @@ export interface TestudoPackageStructure {
   packageInfo: Json;
   sectionsPath: string | null;
   lanesPath: string | null;
+  turnsPath: string | null;
   nodesPath: string | null;
   centroidPath: string | null;
   animationManifestPaths: string[];
@@ -21,6 +22,7 @@ export function parseTestudoPackageStructure(manifestValue: unknown, packageValu
   const manifest = object(manifestValue);
   const packageInfo = object(packageValue);
   const geometry = object(manifest.geometry);
+  const packageGeometry = object(packageInfo.geometry);
   const baseNetworks = object(geometry.base_networks);
   const metadata = object(manifest.metadata);
   const time = object(packageInfo.time);
@@ -32,11 +34,19 @@ export function parseTestudoPackageStructure(manifestValue: unknown, packageValu
   }).filter((value): value is string => Boolean(value));
   const tickCount = Number(metadata.n_ticks ?? manifest.n_ticks ?? manifest.tick_count ?? 1);
   const dt = Number(metadata.dt ?? manifest.dt ?? packageInfo.dt ?? time.dtSeconds ?? 1);
+  const sectionGeometry = object(geometry.section);
+  const laneGeometry = object(geometry.lane);
+  const packageSectionGeometry = object(packageGeometry.section);
+  const packageLaneGeometry = object(packageGeometry.lane);
+  const turns = object(geometry.turns);
+  const packageTurns = object(packageGeometry.turns);
+  const pathValueFrom = (...values: unknown[]) => values.map(pathValue).find((value): value is string => Boolean(value)) ?? null;
   return {
     manifest,
     packageInfo,
-    sectionsPath: pathValue(geometry.sections) ?? pathValue(baseNetworks.centerlines),
-    lanesPath: pathValue(geometry.lanes) ?? pathValue(baseNetworks.lanes),
+    sectionsPath: pathValueFrom(geometry.sections, sectionGeometry.path, packageGeometry.sections, packageSectionGeometry.path, baseNetworks.centerlines, manifest.networkPath, packageInfo.networkPath),
+    lanesPath: pathValueFrom(geometry.lanes, laneGeometry.path, packageGeometry.lanes, packageLaneGeometry.path, baseNetworks.lanes, manifest.laneGeometryPath, packageInfo.laneGeometryPath),
+    turnsPath: pathValueFrom(geometry.turns, turns.path, packageTurns.path, manifest.turnsPath, packageInfo.turnsPath),
     nodesPath: pathValue(baseNetworks.nodes),
     centroidPath: pathValue(object(object(manifest.model_inputs).centroids).path)
       ?? pathValue(object(manifest.inputs).centroids) ?? pathValue(object(manifest.scenario_inputs).centroids),

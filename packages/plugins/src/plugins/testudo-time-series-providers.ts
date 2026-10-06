@@ -137,6 +137,7 @@ function createProvider(capability: ResultCapability, loadSqlJs: TestudoLoadSqlJ
       let owner: import("./testudo-package-renderer").TestudoLayerOwner | null = null;
       let disposed = false;
       let activated = false;
+      let modeActive = false;
       const declaredCapability = bootstrap.capabilities?.find((item) => item.id === capability);
       let capabilityState = scopedCapability(capability, useInline || Boolean(path && declaredCapability?.available),
         useInline ? undefined : path && declaredCapability?.available
@@ -180,7 +181,7 @@ function createProvider(capability: ResultCapability, loadSqlJs: TestudoLoadSqlJ
         return sections;
       };
       const updateLayer = async () => {
-        if (!capabilityState.available || !map) return;
+        if (!modeActive || !capabilityState.available || !map) return;
         const target = await getOwner();
         if (!target || disposed) return;
         if (capability === "network-kpi" && sections) {
@@ -253,7 +254,12 @@ function createProvider(capability: ResultCapability, loadSqlJs: TestudoLoadSqlJ
         playbackRange: { maxTick, dt },
         get timeSeriesAvailable() { return capabilityState.available; },
         async onActivate() {
-          if (activated || disposed) return;
+          if (disposed) return;
+          modeActive = true;
+          if (activated) {
+            if (capabilityState.available && !useInline && (capability === "network-kpi" || capability === "scenario-comparison")) await updateLayer();
+            return;
+          }
           activated = true;
           try {
             onProgress({ value: 0, loaded: 0, total: 0, label: useInline ? "Opening manifest time-series" : "Opening packaged results database" });
@@ -270,6 +276,7 @@ function createProvider(capability: ResultCapability, loadSqlJs: TestudoLoadSqlJ
         async onPlaybackTick(tviewId: string, generation: number, playback: TestudoPlaybackState) {
           assertCurrent(tviewId, generation);
           currentTick = Math.max(0, Math.trunc(playback.tick));
+          if (useInline) { await updateData(currentTick); return; }
           if (!activated || !capabilityState.available) return;
           try {
             await updateData(currentTick);
@@ -316,6 +323,7 @@ function createProvider(capability: ResultCapability, loadSqlJs: TestudoLoadSqlJ
           return { showLanes: false, showSections: layerVisible };
         },
         getKpiGeometryState() { return { showLanes: false, showSections: layerVisible }; },
+        onDeactivate() { modeActive = false; owner?.remove(); owner = null; },
         async dispose() {
           if (disposed) return;
           disposed = true;

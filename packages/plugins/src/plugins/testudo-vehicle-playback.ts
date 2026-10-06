@@ -1,4 +1,3 @@
-import type { FeatureCollection } from "geojson";
 import type {
   TestudoFeatureContext, TestudoFeatureSession, TestudoPackageProgress,
   TestudoPlaybackState, TestudoScenario, TestudoRenderer,
@@ -6,7 +5,7 @@ import type {
 } from "../shared/testudo-feature-session";
 import type { TestudoPackageBootstrap, TestudoFeatureProviderFactory } from "../testudo-feature-bridge";
 import { registerTestudoPackageProvider } from "../testudo-provider-registry";
-import { declaredDefaultCamera, networkBounds, validateTestudoCameraView } from "./testudo-camera";
+import { validateTestudoCameraView } from "./testudo-camera";
 import {
   parseTestudoAnimationManifest, parseTestudoPackageStructure, vehiclesAtTick,
   type TestudoAnimationChunkDescriptor, type TestudoVehiclePoint,
@@ -21,10 +20,6 @@ const json = async (bytes: ArrayBuffer, label: string): Promise<Json> => {
 const capability = (id: NonNullable<TestudoFeatureSession["capabilities"]>[number]["id"], available: boolean, reason?: string) => ({
   id, available, ...(reason ? { reason } : {}),
 });
-const asFeatureCollection = (value: unknown): FeatureCollection | null => {
-  const data = record(value);
-  return data.type === "FeatureCollection" && Array.isArray(data.features) ? data as unknown as FeatureCollection : null;
-};
 function parseScenarios(raw: Json, packageInfo: Json): TestudoScenario[] {
   const source = Array.isArray(raw.scenarios) ? raw.scenarios : Array.isArray(packageInfo.scenarios) ? packageInfo.scenarios : [];
   return source.flatMap((value, index) => {
@@ -70,19 +65,16 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
     let scenarioIndex = 0;
     const maxTick = Math.max(0, ...chunksByAnimation.flatMap((chunks) => chunks.map((chunk) => chunk.endTick)), structure.maxTick);
     let state: TestudoPlaybackState = { available: true, loading: true, playing: false, tick: 0, maxTick, speed: 1, dt: structure.dt, loop: false };
-    const namespace = `testudo-${context.tviewId}-${context.generation}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const namespace = `testudo-${context.tviewId}-${context.generation}-animation`.replace(/[^a-zA-Z0-9_-]/g, "_");
     const map = mapHandle ?? null;
     const loadedChunks = new Map<string, Json>();
     const pendingChunks = new Map<string, Promise<Json>>();
     let owner: import("./testudo-package-renderer").TestudoLayerOwner | null = null;
     let currentPoints = new Map<string, TestudoVehiclePoint>();
-    let sectionsLoaded = false;
-    let lanesLoaded = false;
-    let nodesLoaded = false;
-    let centroidsLoaded = false;
     let disposed = false;
+    let modeActive = context.pluginId === "vehicle-playback";
     let legendVisible = true;
-    let kpiGeometry = { showLanes: false, showSections: true };
+    let kpiGeometry = { showLanes: false, showSections: false };
     let renderer: TestudoRenderer = "maplibre";
     let esriWorldImageryVisible = false;
     let cameraWasSetByHostOrUser = false;
@@ -109,60 +101,6 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
       }
       return owner;
     };
-    const renderNetwork = async () => {
-      if (!structure.sectionsPath) return;
-      const geometryBytes = await read(structure.sectionsPath, "Loading network geometry");
-      let sections: FeatureCollection | null;
-      if (structure.sectionsPath.endsWith(".gz")) {
-        const stream = new Blob([geometryBytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-        sections = asFeatureCollection(JSON.parse(new TextDecoder().decode(await new Response(stream).arrayBuffer())));
-      } else sections = asFeatureCollection(JSON.parse(new TextDecoder().decode(geometryBytes)));
-      if (!sections) throw new Error("The package network sections artifact is not a GeoJSON FeatureCollection.");
-      let lanes: FeatureCollection | undefined;
-      if (structure.lanesPath) {
-        try {
-          const laneBytes = await read(structure.lanesPath, "Loading lane geometry");
-          const laneData = structure.lanesPath.endsWith(".gz")
-            ? await new Response(new Blob([laneBytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()
-            : laneBytes;
-          lanes = asFeatureCollection(JSON.parse(new TextDecoder().decode(laneData))) ?? undefined;
-        } catch { lanes = undefined; }
-      }
-      let nodes: FeatureCollection | undefined;
-      if (structure.nodesPath) {
-        try { nodes = asFeatureCollection(JSON.parse(new TextDecoder().decode(await read(structure.nodesPath, "Loading network nodes")))) ?? undefined; }
-        catch { nodes = undefined; }
-      }
-      let centroids: FeatureCollection | undefined;
-      if (structure.centroidPath) {
-        try { centroids = asFeatureCollection(JSON.parse(new TextDecoder().decode(await read(structure.centroidPath, "Loading network centroids")))) ?? undefined; }
-        catch { centroids = undefined; }
-      }
-      const drawing = await getOwner();
-      // Layer owner scopes IDs, so pass stable local names through its adapter.
-      if (drawing && !disposed) {
-        const rendererModule = await import("./testudo-package-renderer");
-        rendererModule.drawNetwork(drawing, sections, nodes, centroids, lanes);
-      }
-      sectionsLoaded = true; lanesLoaded = Boolean(lanes?.features.length);
-      nodesLoaded = Boolean(nodes?.features.length); centroidsLoaded = Boolean(centroids?.features.length);
-      const bounds = networkBounds(sections, lanes, nodes, centroids);
-      if (map && bounds && !cameraWasSetByHostOrUser && !disposed) {
-        const declared = declaredDefaultCamera(root, packageInfo);
-        if (declared && !Array.isArray(declared)) {
-          map.jumpTo?.(declared);
-        } else if (declared) {
-          map.fitBounds?.(declared, { padding: 48, maxZoom: 16, bearing: 0, pitch: 0 });
-        } else {
-          map.fitBounds?.(bounds, { padding: 48, maxZoom: 16, bearing: 0, pitch: 0 });
-        }
-      }
-    };
-    // Ensure the initial geometry has been fetched even when the map is not
-    // available (unit fixtures and server-side consumers still get truthful flags).
-    try { await renderNetwork(); } catch (error) {
-      onProgress({ value: 0, loaded, total: loaded, label: `Network geometry unavailable: ${error instanceof Error ? error.message : String(error)}` });
-    }
     const activeChunks = () => chunksByAnimation[scenarioIndex] ?? [];
     const chunkFor = (tick: number, chunks: TestudoAnimationChunkDescriptor[]) => chunks.findIndex((chunk) => tick >= chunk.startTick && tick <= chunk.endTick);
     const loadChunk = async (index: number): Promise<Json> => {
@@ -200,8 +138,8 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
         if (disposed) throw new Error("Playback update belongs to a stale package generation.");
         vehiclesAtTick(chunk, i === target ? tick : chunks[i].endTick, currentPoints);
       }
-      const drawing = await getOwner();
-      if (drawing && !disposed) {
+      const drawing = modeActive ? await getOwner() : null;
+      if (drawing && !disposed && modeActive) {
         const rendererModule = await import("./testudo-package-renderer");
         rendererModule.drawVehicles(drawing, [...currentPoints.values()]);
       }
@@ -271,6 +209,17 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
           vehicleCapability.reason = `Animation chunk unavailable: ${error instanceof Error ? error.message : String(error)}`;
         }
       },
+      async onActivate() {
+        modeActive = true;
+        if (currentPoints.size) {
+          const drawing = await getOwner();
+          if (drawing && !disposed) {
+            const rendererModule = await import("./testudo-package-renderer");
+            rendererModule.drawVehicles(drawing, [...currentPoints.values()]);
+          }
+        }
+      },
+      onDeactivate() { modeActive = false; owner?.remove(); owner = null; },
       selectScenario(id) {
         const index = scenarios.findIndex((scenario) => scenario.id === id);
         if (index < 0) throw new Error(`Scenario ${id} is not declared in this package.`);
@@ -278,34 +227,19 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
         return id;
       },
       setMapControl(controlId, visible) {
-        if (controlId === "legend") {
-          if (!owner) throw new Error("The package network legend layers are unavailable until network geometry is loaded.");
-          legendVisible = visible; owner.setNetworkVisible(visible);
-          kpiGeometry = { ...kpiGeometry, showSections: visible };
-          return true;
-        }
+        if (controlId === "legend") { legendVisible = visible; return true; }
         if (controlId === "esri-world-imagery") {
           if (!owner || !map) throw new Error("Esri World Imagery requires an active MapLibre map.");
           owner.setEsriWorldImagery(visible); esriWorldImageryVisible = visible; return true;
         }
-        if (controlId === "network-sections" || controlId === "sections") { owner?.setVisible("network-sections", visible); return sectionsLoaded; }
-        if (controlId === "network-nodes" || controlId === "nodes") { owner?.setVisible("network-nodes", visible); return nodesLoaded; }
-        if (controlId === "network-centroids" || controlId === "centroids") { owner?.setVisible("network-centroids", visible); return centroidsLoaded; }
-        if (controlId === "network-lanes" || controlId === "lanes") { owner?.setVisible("network-lanes", visible); return lanesLoaded; }
+        if (["network-sections", "sections", "network-nodes", "nodes", "network-centroids", "centroids", "network-lanes", "lanes"].includes(controlId)) return false;
         return false;
       },
       getMapControlState() { return { legendVisible, esriWorldImageryVisible, renderer }; },
       setRenderer(next) { if (next === "cesium") throw new Error("Cesium rendering is unavailable in the GeoLibre Testudo iframe."); renderer = next; return renderer; },
       setKpiGeometry(geometry, visible) {
-        if (geometry === "lanes") {
-          if (!lanesLoaded || !owner) throw new Error("Lane geometry is unavailable in this package.");
-          owner.setVisible("network-lanes", visible);
-          kpiGeometry = { ...kpiGeometry, showLanes: visible };
-          return { ...kpiGeometry };
-        }
-        if (!sectionsLoaded || !owner) throw new Error("Section geometry is unavailable until the package network is loaded.");
-        owner.setVisible("network-sections", visible);
-        kpiGeometry = { ...kpiGeometry, showSections: visible };
+        if (geometry === "lanes") kpiGeometry = { ...kpiGeometry, showLanes: visible };
+        else kpiGeometry = { ...kpiGeometry, showSections: visible };
         return { ...kpiGeometry };
       },
       getKpiGeometryState() { return { ...kpiGeometry }; },

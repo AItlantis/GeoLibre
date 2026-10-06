@@ -121,6 +121,8 @@ export interface TestudoFeatureSession {
   selectPlugin?(pluginId: string): Promise<string> | string;
   /** Load capability data only after the shell selects this capability. */
   onActivate?(): Promise<void> | void;
+  /** Stop drawing mode-owned layers while this package capability is inactive. */
+  onDeactivate?(): Promise<void> | void;
   applyPreset?(presetId: string): Promise<string> | string;
   selectScenario?(scenarioId: string): Promise<string> | string;
   playback?: TestudoPlaybackFeature;

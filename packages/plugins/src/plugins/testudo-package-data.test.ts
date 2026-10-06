@@ -60,11 +60,24 @@ test("parses published package paths and sorted chunk ranges", () => {
     { animations: [{ manifestPath: "chunks/a/animation.json" }] });
   assert.equal(structure.sectionsPath, "geometry/sections.geojson");
   assert.equal(structure.lanesPath, null);
+  assert.equal(structure.turnsPath, null);
   assert.equal(structure.nodesPath, "geometry/nodes.geojson");
   assert.equal(structure.maxTick, 3);
   assert.deepEqual(parseTestudoAnimationManifest({ chunks: [
     { path: "b.json", start_tick: 2, end_tick: 3 }, { path: "a.json", start_tick: 0, end_tick: 1 },
   ] }).map((chunk) => chunk.path), ["a.json", "b.json"]);
+});
+
+test("package network artifact contract keeps section, lane and turn geometry paths distinct", () => {
+  const structure = parseTestudoPackageStructure({
+    geometry: { section: { path: "geometry/sections.geojson" }, lane: { path: "geometry/lanes.geojson" }, turns: { path: "geometry/turns.geojson" },
+      sectionResults: { path: "results/section-index.json" }, laneResults: { path: "results/lane-index.json" } },
+  }, {});
+  assert.equal(structure.sectionsPath, "geometry/sections.geojson");
+  assert.equal(structure.lanesPath, "geometry/lanes.geojson");
+  assert.equal(structure.turnsPath, "geometry/turns.geojson");
+  assert.equal(parseTestudoPackageStructure({ networkPath: "network.geojson", laneGeometryPath: "lanes.geojson", turnsPath: "turns.geojson" }, {}).sectionsPath, "network.geojson");
+  assert.equal(parseTestudoPackageStructure({ networkPath: "network.geojson", laneGeometryPath: "lanes.geojson", turnsPath: "turns.geojson" }, {}).lanesPath, "lanes.geojson");
 });
 
 test("layer owner removes only its generation's source and layers", () => {
@@ -81,7 +94,7 @@ test("layer owner removes only its generation's source and layers", () => {
   second.remove(); assert.equal(sources.size, 0); assert.equal(layers.size, 0);
 });
 
-test("provider loads network and animation chunks lazily in order and follows seek ticks", async () => {
+test("vehicle provider follows animation chunks and does not create or fetch package network layers", async () => {
   const reads: string[] = []; const sources = new Map<string, { data: any; setData(data: unknown): void }>(); const layers = new Map<string, unknown>();
   const map = {
     getSource: (id: string) => sources.get(id), addSource: (id: string, source: Record<string, unknown>) => sources.set(id, { data: source.data, setData(data) { this.data = data; } }), removeSource: (id: string) => { sources.delete(id); },
@@ -101,52 +114,48 @@ test("provider loads network and animation chunks lazily in order and follows se
     { tviewId: "main", packageId: "pkg", versionId: "v1", pluginId: "vehicle-playback", generation: 1 }, () => {}, async (path) => {
       reads.push(path); if (!(path in files)) throw new Error(`Missing fixture: ${path}`); return bytes(files[path]);
     }, map);
-  assert.deepEqual(reads.slice(-1), ["chunks/base/0.json"]);
+  assert.deepEqual(reads, ["manifest.json", "geolibre/package.json", "chunks/base/animation.json", "chunks/base/0.json"]);
   assert.equal(session.capabilities?.[0].available, true);
   assert.equal(session.capabilities?.find((item) => item.id === "network-kpi")?.available, false);
-  assert.throws(() => session.setKpiGeometry?.("lanes", true), /Lane geometry is unavailable/);
+  assert.deepEqual(session.setKpiGeometry?.("lanes", true), { showLanes: true, showSections: false });
   assert.equal(await session.setMapControl?.("legend", false), true);
   assert.equal(session.getMapControlState?.().legendVisible, false);
   await session.onPlaybackTick?.("main", 1, { available: true, loading: false, playing: false, tick: 2, maxTick: 3, speed: 1, dt: 0.5, loop: false });
   assert.deepEqual(reads.slice(-1), ["chunks/base/1.json"]);
-  const positions = sources.get("testudo-main-1-vehicle-positions")?.data;
+  const positions = sources.get("testudo-vehicle-main-1-positions")?.data;
   assert.equal(positions.features.length, 2);
   assert.deepEqual(positions.features.map((feature: any) => feature.geometry.coordinates), [[2, 3], [3, 4]]);
   await session.dispose?.(); assert.equal(sources.size, 0); assert.equal(layers.size, 0);
 });
 
-test("provider fits the combined package network bounds once and retains zero pitch and bearing", async () => {
+test("vehicle provider does not fit the camera or own base network layers", async () => {
   const map = fakeCameraMap();
   const session = await openFakePackage({ map,
     geometry: { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[1, 2], [2, 3]] }, properties: {} }] },
     nodes: { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [4, 5] }, properties: {} }] },
     centroids: { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [-2, 0] }, properties: {} }] },
   });
-  const fits = map.calls.filter((call) => call.kind === "fitBounds");
-  assert.equal(fits.length, 1);
-  assert.deepEqual((fits[0]!.value as { bounds: unknown }).bounds, [[-2, 0], [4, 5]]);
-  assert.deepEqual((fits[0]!.value as { options: unknown }).options, { padding: 48, maxZoom: 16, bearing: 0, pitch: 0 });
+  assert.equal(map.calls.length, 0);
+  assert.equal(map.layers.size, 0);
+  assert.equal(map.sources.size, 0);
   assert.equal(await session.setMapControl?.("legend", false), true);
-  // Hiding the legend also hides the network sections layer, so sections report hidden until re-enabled.
   assert.deepEqual(await session.setKpiGeometry?.("lanes", true), { showLanes: true, showSections: false });
-  assert.equal(map.layouts.get("testudo-main-1-network-lanes-layer:visibility"), "visible");
   assert.deepEqual(await session.setKpiGeometry?.("sections", false), { showLanes: true, showSections: false });
-  assert.equal(map.calls.filter((call) => call.kind === "fitBounds").length, 1);
+  assert.equal(map.calls.filter((call) => call.kind === "fitBounds").length, 0);
   assert.equal(map.listenerCount, 1);
   await session.dispose?.();
   assert.equal(map.listenerCount, 0);
 });
 
-test("provider honors a declared package camera and suppresses the initial fit after a user move", async () => {
+test("vehicle provider leaves declared package camera and network bounds to the permanent renderer", async () => {
   const declaredMap = fakeCameraMap();
   const declared = await openFakePackage({ map: declaredMap, metadata: { defaultView: { center: [-0.12, 51.5], zoom: 11, bearing: 20, pitch: 25 } } });
-  assert.deepEqual(declaredMap.calls.map((call) => call.kind), ["jumpTo"]);
-  assert.deepEqual(declaredMap.calls[0]!.value, { center: [-0.12, 51.5], zoom: 11, bearing: 20, pitch: 25 });
+  assert.deepEqual(declaredMap.calls, []);
   await declared.dispose?.();
 
   const bboxMap = fakeCameraMap();
   const bounded = await openFakePackage({ map: bboxMap, metadata: { defaultView: { bbox: [-2, 40, 2, 44] } } });
-  assert.deepEqual((bboxMap.calls[0]!.value as { bounds: unknown }).bounds, [[-2, 40], [2, 44]]);
+  assert.deepEqual(bboxMap.calls, []);
   await bounded.dispose?.();
 
   const userMap = fakeCameraMap();
@@ -155,7 +164,7 @@ test("provider honors a declared package camera and suppresses the initial fit a
   await moved.dispose?.();
 });
 
-test("provider does not move the camera when package network geometry has no valid coordinates", async () => {
+test("vehicle provider does not inspect empty package network geometry", async () => {
   const map = fakeCameraMap();
   const empty = { type: "FeatureCollection", features: [] };
   const session = await openFakePackage({ map, geometry: empty, lanes: empty, nodes: empty, centroids: empty });
@@ -175,18 +184,15 @@ test("camera getter and setter round-trip a validated live map view", async () =
   await session.dispose?.();
 });
 
-test("Camera panel controls mutate the real package layers or fail with an honest unavailable error", async () => {
+test("vehicle provider leaves package geometry controls to the permanent renderer", async () => {
   const map = fakeCameraMap(); const session = await openFakePackage({ map });
   assert.deepEqual(session.getMapControlState?.(), { legendVisible: true, esriWorldImageryVisible: false, renderer: "maplibre" });
   assert.equal(await session.setMapControl?.("legend", false), true);
-  assert.equal(map.layouts.get("testudo-main-1-network-sections-layer:visibility"), "none");
+  assert.equal(map.layouts.size, 0);
   assert.deepEqual(session.getMapControlState?.(), { legendVisible: false, esriWorldImageryVisible: false, renderer: "maplibre" });
-  await session.setMapControl?.("esri-world-imagery", true);
-  assert.equal(session.getMapControlState?.().esriWorldImageryVisible, true);
-  assert.equal(map.sources.get("testudo-main-1-esri-world-imagery")?.definition.type, "raster");
-  await session.setMapControl?.("esri-world-imagery", false);
+  // The playback provider does not install base network or imagery layers.
+  assert.throws(() => session.setMapControl?.("esri-world-imagery", true), /active MapLibre map/);
   assert.equal(session.getMapControlState?.().esriWorldImageryVisible, false);
-  assert.equal(map.sources.has("testudo-main-1-esri-world-imagery"), false);
   assert.deepEqual(await session.setKpiGeometry?.("sections", false), { showLanes: false, showSections: false });
   assert.deepEqual(await session.setKpiGeometry?.("lanes", true), { showLanes: true, showSections: false });
   assert.equal(session.setRenderer?.("maplibre"), "maplibre");
