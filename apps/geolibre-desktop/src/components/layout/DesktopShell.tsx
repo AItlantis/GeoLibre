@@ -1,9 +1,10 @@
 // @refresh reset
-import { useAppStore } from "@geolibre/core";
+import { shouldZoomToNewLayers, useAppStore } from "@geolibre/core";
 import type { MapDiagnosticEvent, MapEngine } from "@geolibre/map";
 import { MapCanvas, rendererCapabilities } from "@geolibre/map";
 import { useTranslation } from "react-i18next";
 import {
+  addLidarLayerFromBytes,
   addRasterToMap,
   getGeometryEditTargetLayerId,
   openRasterLayerPanel,
@@ -41,6 +42,7 @@ import {
 } from "../../hooks/usePlugins";
 import type { DataUrlLoadState } from "../../hooks/useDataUrlLoader";
 import { wikipediaLang } from "../../lib/knowledge";
+import { lidarOutputForMap } from "../../lib/lidar-export";
 import { useLineOfSightTool } from "../../lib/line-of-sight-store";
 import { projectUrlFromLocation } from "../../lib/project-url";
 import { useEmbedBridge } from "../../hooks/useEmbedBridge";
@@ -1209,6 +1211,26 @@ export function DesktopShell({
               await addRasterToMap(createAppAPI(mapControllerRef), file, {
                 name,
               });
+            }}
+            onAddLidar={async (bytes, name, fileName) => {
+              try {
+                const cloud = await lidarOutputForMap(bytes, fileName);
+                const id = await addLidarLayerFromBytes(
+                  createAppAPI(mapControllerRef),
+                  cloud.bytes,
+                  {
+                    name,
+                    fileName: cloud.fileName,
+                    fit: shouldZoomToNewLayers(),
+                  },
+                );
+                return id !== null;
+              } catch (error) {
+                // Too large to convert, or unreadable by the viewer: the dialog
+                // downloads the output instead.
+                console.warn("[lidar] could not add tool output to the map", error);
+                return false;
+              }
             }}
           />
         </Suspense>
