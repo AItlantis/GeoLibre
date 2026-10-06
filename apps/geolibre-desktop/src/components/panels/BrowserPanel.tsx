@@ -9,14 +9,12 @@ import {
 } from "@geolibre/core";
 import type { MapEngine } from "@geolibre/map";
 import { fetchArcGISMapServiceSublayers } from "@geolibre/plugins";
-import { fetchPostgisStatus, listPostgisTables } from "@geolibre/processing";
 import { Input, ScrollArea } from "@geolibre/ui";
 import { Search } from "lucide-react";
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { isDesktopRuntime } from "../../lib/is-mobile";
-import { ignoreSidecarStartError, startGeoLibreSidecar } from "../../lib/sidecar";
 import { fetchMssqlBrowserTables, forgetMssqlBrowserConnection } from "../../lib/mssql-browser";
+import { fetchPostgresBrowserTables } from "../../lib/postgres-browser";
 import {
   isLoadableFilePath,
   listDirectory,
@@ -38,7 +36,7 @@ import {
   filterBrowserTree,
   flattenVisibleTree,
   type BrowserNode,
-  type ConnectionLoad,
+  type ConnectionLoads,
   type FolderLoad,
 } from "../../lib/browser-tree";
 import { applyServiceEntry } from "../layout/add-data/apply-service";
@@ -78,7 +76,8 @@ const DEFAULT_EXPANDED = new Set([
   "section:services",
   "section:recent",
   "section:databases",
-  "section:sql-server",
+  "database-engine:postgres",
+  "database-engine:mssql",
   "section:files",
 ]);
 
@@ -156,7 +155,7 @@ export function BrowserPanel({
   // Lazy PostGIS introspection: keyed by connection string, populated the first
   // time a connection node is expanded so we never hit the sidecar for a
   // connection the user hasn't opened.
-  const [connLoads, setConnLoads] = useState<Record<string, ConnectionLoad>>({});
+  const [connLoads, setConnLoads] = useState<ConnectionLoads>({});
   // Tracks in-flight/settled fetches so a re-expand (or the expand-all a search
   // triggers) doesn't refetch. A failed fetch drops its entry so re-expanding
   // the connection retries (there is no separate refresh affordance).
@@ -164,7 +163,7 @@ export function BrowserPanel({
 
   // SQL Server introspection, keyed `mssql:<profile id>` so it merges with the
   // PostGIS loads without colliding; same retry-on-failure tracking.
-  const [mssqlLoads, setMssqlLoads] = useState<Record<string, ConnectionLoad>>({});
+  const [mssqlLoads, setMssqlLoads] = useState<ConnectionLoads>({});
   const mssqlFetchedRef = useRef<Set<string>>(new Set());
   const fetchMssqlTables = useCallback(
     (connectionId: string) =>
@@ -173,81 +172,8 @@ export function BrowserPanel({
   );
 
   const fetchConnectionTables = useCallback(
-    (connectionString: string) => {
-      if (connFetchedRef.current.has(connectionString)) return;
-      connFetchedRef.current.add(connectionString);
-      // PostGIS browsing needs the desktop sidecar/Martin, so outside the
-      // desktop shell show the same localized "requires GeoLibre Desktop"
-      // message the Add Data dialog gives rather than letting
-      // startGeoLibreSidecar/fetch fail with a raw network error. The gate is
-      // isDesktopRuntime(), not isTauri(): the packaged mobile apps are Tauri
-      // too and have no sidecar to reach (GeoLibre#2091). Dropped from the
-      // fetched set so it can retry on desktop.
-      if (!isDesktopRuntime()) {
-        connFetchedRef.current.delete(connectionString);
-        setConnLoads((prev) => ({
-          ...prev,
-          [connectionString]: {
-            status: "error",
-            message: t("addData.postgres.errorDesktopOnly"),
-          },
-        }));
-        return;
-      }
-      setConnLoads((prev) => ({
-        ...prev,
-        [connectionString]: { status: "loading" },
-      }));
-      // The desktop sidecar is spawned on demand and only authenticated after
-      // startGeoLibreSidecar runs, so ensure it is up before hitting /postgis —
-      // best-effort, mirroring PostgresSource.handleConnectEditable (a failed
-      // start still lets the status/list calls surface the real error, except a
-      // stale sidecar from an earlier session, which is surfaced directly).
-      void startGeoLibreSidecar()
-        .catch(ignoreSidecarStartError)
-        .then(() => fetchPostgisStatus())
-        .then((status) => {
-          // Same runtime gate as the Add Data dialog, so a missing postgis
-          // extra reads as the friendly "install the extra" message rather
-          // than a raw connection error from /postgis/tables.
-          if (!status.available) {
-            throw new Error(t("addData.postgres.errorRuntimeMissing"));
-          }
-          return listPostgisTables(connectionString);
-        })
-        .then((tables) => {
-          // geometry_columns returns one row per geometry column, so a table
-          // with several geometry columns appears several times; keep the first
-          // because the Browser tree represents tables, while the Add Data
-          // dialog provides the geometry-column picker after a table is chosen.
-          const seen = new Set<string>();
-          const deduped: { schema: string; table: string }[] = [];
-          for (const tbl of tables) {
-            const key = `${tbl.schema}.${tbl.table}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            deduped.push({ schema: tbl.schema, table: tbl.table });
-          }
-          setConnLoads((prev) => ({
-            ...prev,
-            [connectionString]: { status: "loaded", tables: deduped },
-          }));
-        })
-        .catch((err: unknown) => {
-          // Allow a retry: drop the fetched marker so collapsing and
-          // re-expanding the connection re-runs introspection rather than
-          // sticking on the error. Reuse the Add Data errorMessage helper for a
-          // translated fallback, matching the dialog's PostGIS entry point.
-          connFetchedRef.current.delete(connectionString);
-          setConnLoads((prev) => ({
-            ...prev,
-            [connectionString]: {
-              status: "error",
-              message: errorMessage(err, t("addData.postgres.errorConnect")),
-            },
-          }));
-        });
-    },
+    (connectionString: string) =>
+      fetchPostgresBrowserTables(connectionString, connFetchedRef.current, setConnLoads, t),
     [t],
   );
 
@@ -903,9 +829,8 @@ export function BrowserPanel({
     }
   };
 
-  // A section counts as content if it has children *or* an always-on ＋ action
-  // (Databases' "New connection" and Files' "Add folder" show even with zero
-  // entries, so a first-run user isn't stuck on the empty-state message).
+  // Databases always has engine-group children with their own ＋ actions;
+  // Files likewise keeps its Add-folder action available on an empty list.
   const hasContent = filtered.some(
     (section) =>
       section.children?.length ||

@@ -6,8 +6,8 @@ import {
   fetchMssqlBrowserTables,
   forgetMssqlBrowserConnection,
   type MssqlBrowserLoaderDependencies,
-  type MssqlBrowserLoads,
 } from "../apps/geolibre-desktop/src/lib/mssql-browser";
+import type { ConnectionLoads } from "../apps/geolibre-desktop/src/lib/browser-tree";
 import { MssqlReconnectRequiredError } from "../apps/geolibre-desktop/src/lib/mssql-sessions";
 import { StaleSidecarError } from "../apps/geolibre-desktop/src/lib/sidecar";
 
@@ -42,12 +42,12 @@ function dependencies(
   };
 }
 function loadState() {
-  let loads: MssqlBrowserLoads = {};
+  let loads: ConnectionLoads = {};
   return {
     get loads() {
       return loads;
     },
-    set: (update: (previous: MssqlBrowserLoads) => MssqlBrowserLoads) => {
+    set: (update: (previous: ConnectionLoads) => ConnectionLoads) => {
       loads = update(loads);
     },
   };

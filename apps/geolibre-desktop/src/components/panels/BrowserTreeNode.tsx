@@ -62,7 +62,7 @@ interface BrowserTreeNodeProps {
   onCancelRename: (id: string) => void;
   /** Delete a saved Layer Library entry (its trash icon). */
   onDeleteLibraryLayer: (node: BrowserNode) => void;
-  /** Forget a saved SQL Server profile (its trash icon). */
+  /** Forget a saved SQL Server connection (its trash icon). */
   onForgetMssqlConnection: (node: BrowserNode) => void;
   /** Import a Layer Library JSON bundle (the My Data section's ⬆). */
   onImportLibrary: () => void;
@@ -213,15 +213,9 @@ export function BrowserTreeNode({
   // so its non-undefined narrowing survives into the onClick closure — a
   // property access (node.newConnectionKind) would not, forcing a cast.
   const newConnectionKind = node.newConnectionKind;
-  // The Databases section's ＋ (which opens the "postgres" source) reads "New
-  // database connection"; a service-kind group's reads e.g. "New WMS
-  // connection" (distinguishable per group for screen-reader users). Keyed off
-  // the source it opens rather than node.kind, so a future section with a
-  // different ＋ source gets the right label.
-  const newConnectionLabel =
-    newConnectionKind === "postgres"
-      ? t("browser.newDatabaseConnection")
-      : t("browser.newConnection", { kind: node.label });
+  // Each service or database engine group names its ＋ after the displayed
+  // source, keeping the action specific for sighted and screen-reader users.
+  const newConnectionLabel = t("browser.newConnection", { kind: node.label });
   // The trailing ＋ affordance: a service/database group opens Add Data; the
   // Files section opens a folder picker. At most one applies per node.
   const plusAction = newConnectionKind
