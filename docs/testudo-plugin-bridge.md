@@ -63,12 +63,37 @@ scenario ids. The Testudo shell should call `String(scid)` before sending
 It hides the stock Strands assistant and blocks GeoAgent. The remaining GeoAI
 path is the correlated `testudoGeoAIRequest` relay to the embedding host.
 
-The built-in `vehicle-playback` provider registers through
-`registerTestudoPackageProvider`, loads the package manifest over the host
-artifact relay, and owns a generation-scoped timeline and scenario selection.
-The scenario-comparison, network-KPI, path-analysis, emissions, and dataset-query
-providers remain unregistered in this v3.1 branch; commands that require those
-capabilities continue to report unavailable until their providers are ported.
+The built-in `vehicle-playback`, `network-kpi`, `emissions-h3`, and
+`scenario-comparison` providers register through
+`registerTestudoPackageProvider`. The package resolver opens every registered,
+available capability declared by the package into one TView session. The
+provider suite owns the shared generation-scoped clock (using the vehicle
+provider's playback source when declared, or a suite clock derived from the
+capability manifest range otherwise); selecting another capability changes
+the active view without replacing that clock. Every clock
+change calls each provider's optional `onPlaybackTick(tviewId, generation,
+state)` hook. `testudoGetPlaybackState` adds optional `activeCapability` and
+`tickFollowers` fields so the host can see which capabilities follow the clock
+and which have time-series values. A capability with no time-series data
+reports `timeSeriesAvailable: false` in its follower entry.
+
+The v3.1 time-series adapters read package `manifest.json` fields
+`kpiTimeSeries`, `emissionsTimeSeries`, and `comparisonTimeSeries`. Each field
+maps a section/H3/scenario id to an array indexed by the shared zero-based tick.
+The network-KPI and emissions providers expose the current values through
+their session's `getPlaybackValues()` hook. The comparison provider exposes
+both requested scenario rows through `getComparisonAtTick([scenarioA,
+scenarioB])`; both rows use exactly the shared tick. Scenario identifiers stay
+strings at the bridge boundary. All follower calls validate the explicit TView
+id and package generation, and providers are disposed together when that
+package session is replaced.
+
+The older line's parquet readers, geometry preparation, and MapLibre rendering
+adapters cannot be carried over as v3.1 package providers without their older
+renderer/data-provider contract. This port covers the v3.1 session contract,
+manifest-backed tick values, capability switching, and comparison pairing; it
+does not reproduce those older spatial rendering paths. `path-analysis` and
+dataset-query remain unregistered in this branch.
 
 `testudoStateChanged`, `testudoPlaybackChanged`, and `testudoGeoAIRequest` are
 typed embed events. Progress is reported from real loader byte counters as

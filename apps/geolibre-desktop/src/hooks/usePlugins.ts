@@ -25,6 +25,7 @@ import {
   maplibreBasemapControlPlugin,
   maplibreComponentsPlugin,
   registerTestudoVehiclePlaybackProvider,
+  registerTestudoTimeSeriesProviders,
   maplibreDeckGlVizPlugin,
   maplibreDirectionsPlugin,
   maplibreElevationProfilePlugin,
@@ -207,6 +208,7 @@ interface TauriRuntimeWindow extends Window {
 
 const manager = new PluginManager();
 registerTestudoVehiclePlaybackProvider();
+registerTestudoTimeSeriesProviders();
 setGeoLensDefaultServerUrl(readDeploymentEnvValue("VITE_GEOLENS_DEFAULT_URL"));
 manager.registerAll([
   maplibreLayerControlPlugin,

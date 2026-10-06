@@ -66,7 +66,15 @@ it("round-trips commands through the exact built Testudo iframe and embed client
         return;
       }
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ dt: 0.5, n_ticks: 10, scenarios: [{ scid: 7, name: "Fixture" }] }));
+      response.end(JSON.stringify({
+        dt: 0.5, n_ticks: 10, scenarios: [{ scid: 7, name: "Fixture" }, { scid: 8, name: "Proposal" }],
+        kpiTimeSeries: { flow: Array.from({ length: 10 }, (_, tick) => 100 + tick) },
+        emissionsTimeSeries: { h3a: Array.from({ length: 10 }, (_, tick) => 20 + tick) },
+        comparisonTimeSeries: {
+          "7": Array.from({ length: 10 }, (_, tick) => ({ flow: 100 + tick })),
+          "8": Array.from({ length: 10 }, (_, tick) => ({ flow: 90 + tick })),
+        },
+      }));
       return;
     }
     if (pathname === `${manifest.base}geolibre-runtime-config.js`) {
@@ -138,7 +146,7 @@ it("round-trips commands through the exact built Testudo iframe and embed client
         manifestPath: "manifest.json",
         nativeManifestPath: "manifest.json",
         artifactEndpoint: "/package/fixture-v1/",
-        capabilities: [{ id: "vehicle-playback", available: true }],
+        capabilities: ["vehicle-playback", "network-kpi", "emissions-h3", "scenario-comparison"].map((id) => ({ id, available: true })),
         presets: [],
       },
       selectedPlugin: "vehicle-playback",
@@ -146,10 +154,25 @@ it("round-trips commands through the exact built Testudo iframe and embed client
     const generation = loaded.generation;
     const scenario = await client.testudoSetScenario({ tviewId: "built-smoke", scenarioId: "7" });
     const playing = await client.testudoSetPlaybackPlaying({ tviewId: "built-smoke", playing: true, generation });
-    const paused = await client.testudoSetPlaybackPlaying({ tviewId: "built-smoke", playing: false, generation });
+    await client.testudoSetPlaybackSpeed({ tviewId: "built-smoke", speed: 2, generation });
     const sought = await client.testudoSeekPlayback({ tviewId: "built-smoke", tick: 6, generation });
+    await client.testudoSetPlugin({ tviewId: "built-smoke", id: "network-kpi" });
+    const networkClock = await client.testudoGetPlaybackState({ tviewId: "built-smoke", generation });
+    await client.testudoSetPlugin({ tviewId: "built-smoke", id: "emissions-h3" });
+    const environmentClock = await client.testudoGetPlaybackState({ tviewId: "built-smoke", generation });
+    await client.testudoSetPlugin({ tviewId: "built-smoke", id: "scenario-comparison" });
+    const comparisonClock = await client.testudoGetPlaybackState({ tviewId: "built-smoke", generation });
+    let staleSeekError: string | undefined;
+    try {
+      await client.testudoSeekPlayback({ tviewId: "built-smoke", tick: 1, generation: generation + 1 });
+    } catch (error) {
+      staleSeekError = error instanceof Error ? error.message : String(error);
+    }
+    await client.testudoSetPlugin({ tviewId: "built-smoke", id: "vehicle-playback" });
+    const vehicleClock = await client.testudoGetPlaybackState({ tviewId: "built-smoke", generation });
+    const paused = await client.testudoSetPlaybackPlaying({ tviewId: "built-smoke", playing: false, generation });
     const playbackState = await client.testudoGetPlaybackState({ tviewId: "built-smoke", generation });
-    return { initialTViews, created, state, loaded, scenario, playing, paused, sought, playbackState, proxyMetrics, artifactRelays };
+    return { initialTViews, created, state, loaded, scenario, playing, paused, sought, networkClock, environmentClock, comparisonClock, vehicleClock, staleSeekError, playbackState, proxyMetrics, artifactRelays };
   });
 
   assert.deepEqual(output.initialTViews, []);
@@ -162,6 +185,19 @@ it("round-trips commands through the exact built Testudo iframe and embed client
   assert.equal(output.playing.playing, true);
   assert.equal(output.paused.playing, false);
   assert.equal(output.sought.tick, 6);
+  for (const [clock, capability] of [
+    [output.networkClock, "network-kpi"],
+    [output.environmentClock, "emissions-h3"],
+    [output.comparisonClock, "scenario-comparison"],
+    [output.vehicleClock, "vehicle-playback"],
+  ] as const) {
+    assert.equal(clock.tick, 6);
+    assert.equal(clock.playing, false); // seek pauses the shared clock; capability switches must preserve that state
+    assert.equal(clock.speed, 2);
+    assert.equal(clock.activeCapability, capability);
+    assert.equal(clock.tickFollowers?.length, 4);
+  }
+  assert.match(output.staleSeekError ?? "", /stale/i);
   assert.equal(output.playbackState.tick, 6);
   assert.equal(output.playbackState.maxTick, 9);
   assert.deepEqual(output.proxyMetrics, { fetchCount: 1, sawHostAuth: true });

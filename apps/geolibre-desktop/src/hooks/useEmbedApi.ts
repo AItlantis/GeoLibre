@@ -4,7 +4,7 @@ import { getLayerBounds, type MapEngine } from "@geolibre/map";
 import { imageBlobToDataUrl } from "@geolibre/map";
 import {
   TestudoFeatureBridge,
-  getTestudoPackageProvider,
+  getTestudoPackageProviderSuite,
   type TestudoArtifactRequest,
   type TestudoPackageBootstrap,
 } from "@geolibre/plugins";
@@ -143,11 +143,7 @@ export function useEmbedApi(
         settle(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     });
-    const testudo = new TestudoFeatureBridge((bootstrap) => {
-      const selected = bootstrap.selectedPlugin ?? bootstrap.capabilities?.find((item) => item.available)?.id;
-      if (!selected) return null;
-      return getTestudoPackageProvider(selected as "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison", bootstrap);
-    }, fetchArtifactFromHost);
+    const testudo = new TestudoFeatureBridge((bootstrap) => getTestudoPackageProviderSuite(bootstrap), fetchArtifactFromHost);
 
     const emit = (type: EmbedEventType, payload: Record<string, unknown>, version?: 1 | 2) => {
       if (disposed) return;

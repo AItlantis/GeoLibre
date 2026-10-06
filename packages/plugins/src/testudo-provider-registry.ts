@@ -1,5 +1,5 @@
 import type { TestudoPackageBootstrap, TestudoFeatureProviderFactory } from "./testudo-feature-bridge";
-import type { TestudoCapabilityKey } from "./shared/testudo-feature-session";
+import type { TestudoCapabilityKey, TestudoFeatureSession, TestudoPlaybackState } from "./shared/testudo-feature-session";
 
 export interface TestudoPackageProviderRegistration {
   capability: TestudoCapabilityKey;
@@ -38,6 +38,116 @@ export function getTestudoPackageProvider(
   const declared = bootstrap.capabilities?.find((item) => item.id === capability && item.available);
   if (!declared) return null;
   return providers.get(capability)?.factory ?? null;
+}
+
+/** Resolve all declared Testudo providers as one TView session with one clock. */
+export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstrap): TestudoFeatureProviderFactory | null {
+  const selectedId = bootstrap.selectedPlugin ?? bootstrap.capabilities?.find((item) => item.available)?.id;
+  if (!selectedId) return null;
+  const selected = selectedId as TestudoCapabilityKey;
+  const entries = (bootstrap.capabilities ?? []).filter((item) => item.available)
+    .map((item) => [item.id, getTestudoPackageProvider(item.id, bootstrap)] as const)
+    .filter((entry): entry is readonly [TestudoCapabilityKey, TestudoFeatureProviderFactory] => entry[1] !== null);
+  if (!entries.some(([id]) => id === selected)) return null;
+  const primary = entries.find(([id]) => id === "vehicle-playback") ?? entries.find(([id]) => id === selected)!;
+  return {
+    async open(packageBootstrap, context, onProgress, fetchArtifact): Promise<TestudoFeatureSession> {
+      const cache = new Map<string, Promise<ArrayBuffer>>();
+      const sharedFetch = (ref: string) => {
+        let pending = cache.get(ref);
+        if (!pending) { pending = fetchArtifact(ref); cache.set(ref, pending); }
+        return pending;
+      };
+      const sessions = new Map<TestudoCapabilityKey, TestudoFeatureSession>();
+      try {
+        for (const [id, factory] of entries) {
+          sessions.set(id, await factory.open(packageBootstrap, { ...context, pluginId: id }, onProgress, sharedFetch));
+        }
+      } catch (error) {
+        await Promise.all([...sessions.values()].map((session) => session.dispose?.()));
+        throw error;
+      }
+      const clockSession = sessions.get(primary[0])!;
+      let active = selected;
+      let fallbackState: TestudoPlaybackState = {
+        available: true, loading: false, playing: false, tick: 0,
+        maxTick: Math.max(0, ...[...sessions.values()].map((session) => session.playbackRange?.maxTick ?? 0)),
+        speed: 1, dt: clockSession.playbackRange?.dt ?? 1, loop: false,
+      };
+      const fallbackListeners = new Set<(tviewId: string, generation: number, state: TestudoPlaybackState) => void>();
+      let fallbackTimer: ReturnType<typeof setInterval> | undefined;
+      const fallbackEmit = () => { for (const listener of fallbackListeners) listener(context.tviewId, context.generation, { ...fallbackState }); };
+      const fallbackPlayback: TestudoFeatureSession["playback"] = {
+        getPlaybackState(tviewId, generation) { if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback state belongs to a stale Testudo package."); return { ...fallbackState }; },
+        play(tviewId, generation) {
+          if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback command belongs to a stale Testudo package.");
+          if (fallbackTimer) clearInterval(fallbackTimer);
+          fallbackState = { ...fallbackState, playing: fallbackState.tick < fallbackState.maxTick };
+          if (fallbackState.playing) fallbackTimer = setInterval(() => {
+            fallbackState = { ...fallbackState, tick: Math.min(fallbackState.maxTick, fallbackState.tick + 1) };
+            if (fallbackState.tick >= fallbackState.maxTick) { fallbackState.playing = false; if (fallbackTimer) clearInterval(fallbackTimer); fallbackTimer = undefined; }
+            fallbackEmit();
+          }, Math.max(16, Math.round(1000 * fallbackState.dt / fallbackState.speed)));
+          fallbackEmit(); return { ...fallbackState };
+        },
+        pause(tviewId, generation) { if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback command belongs to a stale Testudo package."); if (fallbackTimer) clearInterval(fallbackTimer); fallbackTimer = undefined; fallbackState = { ...fallbackState, playing: false }; fallbackEmit(); return { ...fallbackState }; },
+        restart(tviewId, generation) { this.pause(tviewId, generation); fallbackState = { ...fallbackState, tick: 0 }; fallbackEmit(); return { ...fallbackState }; },
+        seek(tviewId, generation, tick) { this.pause(tviewId, generation); fallbackState = { ...fallbackState, tick: Math.min(fallbackState.maxTick, Math.trunc(tick)) }; fallbackEmit(); return { ...fallbackState }; },
+        setSpeed(tviewId, generation, speed) { const wasPlaying = fallbackState.playing; this.pause(tviewId, generation); fallbackState = { ...fallbackState, speed }; return wasPlaying ? this.play(tviewId, generation) : (fallbackEmit(), { ...fallbackState }); },
+        subscribe(listener) { fallbackListeners.add(listener); return () => fallbackListeners.delete(listener); },
+      };
+      const clockPlayback = clockSession.playback ?? fallbackPlayback!;
+      let lastState: TestudoPlaybackState = clockPlayback.getPlaybackState(context.tviewId, context.generation);
+      const decorate = (state: TestudoPlaybackState): TestudoPlaybackState => ({
+        ...state, activeCapability: active,
+        tickFollowers: entries.map(([capability]) => {
+          const follower = sessions.get(capability)!;
+          return { capability, following: capability === primary[0] || Boolean(follower.onPlaybackTick), timeSeriesAvailable: follower.timeSeriesAvailable ?? capability === primary[0] };
+        }),
+      });
+      const follow = async (state: TestudoPlaybackState) => {
+        lastState = decorate(state);
+        await Promise.all([...sessions.values()].map((session) => session.onPlaybackTick?.(context.tviewId, context.generation, lastState)));
+      };
+      await follow(lastState);
+      const selectedSession = () => sessions.get(active)!;
+      const aggregate: TestudoFeatureSession = {
+        ...selectedSession(),
+        context: { ...context, pluginId: active },
+        capabilities: packageBootstrap.capabilities,
+        async selectPlugin(id) {
+          if (!sessions.has(id as TestudoCapabilityKey)) throw new Error(`Capability ${id} is not available for this package.`);
+          active = id as TestudoCapabilityKey;
+          aggregate.context.pluginId = active;
+          return id;
+        },
+        get scenarios() { return selectedSession().scenarios; },
+        get selectedScenarioId() { return selectedSession().selectedScenarioId; },
+        selectScenario(id) { const current = selectedSession(); if (!current.selectScenario) throw new Error("Scenario selection is unavailable for this capability."); return current.selectScenario(id); },
+        getPlaybackValues() { return selectedSession().getPlaybackValues?.() ?? { tick: lastState.tick, values: undefined }; },
+        getComparisonAtTick(ids) { const current = sessions.get("scenario-comparison"); if (!current?.getComparisonAtTick) throw new Error("Scenario comparison values are unavailable."); return current.getComparisonAtTick(ids); },
+        playback: {
+          getPlaybackState(tviewId, generation) {
+            if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback state belongs to a stale Testudo package.");
+            return decorate(clockPlayback.getPlaybackState(tviewId, generation));
+          },
+          async play(tviewId, generation) { await clockPlayback.play(tviewId, generation); await follow(clockPlayback.getPlaybackState(tviewId, generation)); return decorate(lastState); },
+          async pause(tviewId, generation) { await clockPlayback.pause(tviewId, generation); await follow(clockPlayback.getPlaybackState(tviewId, generation)); return decorate(lastState); },
+          async restart(tviewId, generation) { await clockPlayback.restart(tviewId, generation); await follow(clockPlayback.getPlaybackState(tviewId, generation)); return decorate(lastState); },
+          async seek(tviewId, generation, tick) { await clockPlayback.seek(tviewId, generation, tick); await follow(clockPlayback.getPlaybackState(tviewId, generation)); return decorate(lastState); },
+          async setSpeed(tviewId, generation, speed) { await clockPlayback.setSpeed(tviewId, generation, speed); await follow(clockPlayback.getPlaybackState(tviewId, generation)); return decorate(lastState); },
+          subscribe(listener) { return clockPlayback.subscribe?.((tviewId, generation, state) => { if (tviewId === context.tviewId && generation === context.generation) void follow(state).then(() => listener(tviewId, generation, decorate(state))); }) ?? (() => {}); },
+        },
+        async onPlaybackTick(tviewId, generation, state) {
+          if (tviewId !== context.tviewId || generation !== context.generation) throw new Error("Playback follower belongs to a stale Testudo package.");
+          await follow(state);
+        },
+        get timeSeriesAvailable() { return selectedSession().timeSeriesAvailable ?? false; },
+        async dispose() { if (fallbackTimer) clearInterval(fallbackTimer); fallbackListeners.clear(); await Promise.all([...sessions.values()].map((session) => session.dispose?.())); },
+      };
+      return aggregate;
+    },
+  };
 }
 
 export function clearTestudoPackageProvidersForOwner(owner: string): void {

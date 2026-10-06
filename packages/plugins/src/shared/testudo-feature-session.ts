@@ -12,6 +12,10 @@ export interface TestudoPlaybackState {
   speed: number;
   dt: number;
   loop: boolean;
+  /** Capability currently shown by the Testudo shell. */
+  activeCapability?: TestudoCapabilityKey;
+  /** Per-capability support for the shared timeline. */
+  tickFollowers?: Array<{ capability: TestudoCapabilityKey; following: boolean; timeSeriesAvailable: boolean }>;
 }
 
 export interface TestudoScenario {
@@ -86,6 +90,13 @@ export interface TestudoFeatureSession {
   applyPreset?(presetId: string): Promise<string> | string;
   selectScenario?(scenarioId: string): Promise<string> | string;
   playback?: TestudoPlaybackFeature;
+  /** Optional shared-clock follower. Called for every clock state change. */
+  onPlaybackTick?(tviewId: string, generation: number, state: TestudoPlaybackState): void | Promise<void>;
+  /** False means playback controls do not map to time-series values for this capability. */
+  timeSeriesAvailable?: boolean;
+  playbackRange?: { maxTick: number; dt: number };
+  getPlaybackValues?(): { tick: number; values: unknown };
+  getComparisonAtTick?(scenarioIds: [string, string]): { tick: number; scenarioIds: [string, string]; values: unknown[] };
   getCameraView?(): TestudoCameraView | null;
   setCameraView?(view: TestudoCameraView): Promise<void> | void;
   setMapControl?(controlId: string, visible: boolean): Promise<boolean> | boolean;

@@ -72,6 +72,7 @@ export { maplibreLayerControlPlugin } from "./plugins/layer-control";
 export * from "./shared/testudo-feature-session";
 export * from "./testudo-feature-bridge";
 export { registerTestudoVehiclePlaybackProvider, testudoVehiclePlaybackProvider } from "./plugins/testudo-vehicle-playback";
+export { registerTestudoTimeSeriesProviders, testudoNetworkKpiProvider, testudoEmissionsH3Provider, testudoScenarioComparisonProvider } from "./plugins/testudo-time-series-providers";
 export * from "./testudo-provider-registry";
 export { getStyleMap } from "./plugins/style-map";
 export {

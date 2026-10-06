@@ -40,6 +40,8 @@ export interface TestudoPlaybackState {
   speed: number;
   dt: number;
   loop: boolean;
+  activeCapability?: TestudoCapabilityId;
+  tickFollowers?: Array<{ capability: TestudoCapabilityId; following: boolean; timeSeriesAvailable: boolean }>;
 }
 export interface TestudoLoadPackage { tviewId: string; bootstrap: TestudoBootstrap; selectedPlugin?: TestudoCapabilityId; presetId?: string }
 export interface TestudoScenarioState { id: string; label: string; selected: boolean; replicationIds: number[] }
