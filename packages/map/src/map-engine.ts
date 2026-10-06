@@ -221,6 +221,10 @@ export interface MapEngine {
   getTerrainCogSource(): string | null;
   hasCustomTerrainSource(): boolean;
   setTerrainCogSource(source: string | Blob | null, band?: number): Promise<boolean>;
+  /** Cesium-only Ion terrain asset, or `null` when the normal global source is used. */
+  getTerrainIonAssetId?(): number | null;
+  /** Select or clear the Cesium-only Ion terrain source. */
+  setTerrainIonAssetId?(assetId: number | null): Promise<boolean>;
   /** Translated tooltip for the on-map terrain control. */
   setTerrainLabel(label: string): void;
 
@@ -321,6 +325,11 @@ export interface MapEngineCapabilities {
    */
   readonly terrainSource: boolean;
   /**
+   * {@link MapEngine.setTerrainIonAssetId} can use a Cesium Ion terrain asset
+   * as the elevation source, so the Terrain dialog offers the Ion asset field.
+   */
+  readonly ionTerrain: boolean;
+  /**
    * The engine draws Zarr layers itself from the store record, so the
    * `maplibre-gl-zarr` control is never mounted: Zarr layers are added through
    * the Add Data form and restored, styled, and time-stepped through the record
@@ -387,6 +396,7 @@ export const MAPLIBRE_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   screenOverlays: true,
   flatProjection: true,
   terrainSource: true,
+  ionTerrain: false,
   nativeZarr: false,
   nativeDataSources: false,
   deferredEngineReady: false,

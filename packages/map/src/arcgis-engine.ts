@@ -110,6 +110,7 @@ export const ARCGIS_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   screenOverlays: false,
   flatProjection: true,
   terrainSource: true,
+  ionTerrain: false,
   // The SDK draws Zarr from the record. The raster and PMTiles panels are
   // MapLibre controls this view does not host, so those formats go through the
   // Add Data forms; the measure control draws through the MapLibre/Mapbox style

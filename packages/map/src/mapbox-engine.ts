@@ -89,6 +89,7 @@ export const MAPBOX_CAPABILITIES: MapEngineCapabilities = Object.freeze({
   // mapbox-gl has no `raster-dem` source a COG can back, so the terrain
   // source controls stay hidden here (#2475).
   terrainSource: false,
+  ionTerrain: false,
   nativeZarr: false,
   nativeDataSources: false,
   // The engine is published after the initial style loads.
