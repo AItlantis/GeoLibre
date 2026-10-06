@@ -24,7 +24,7 @@ const seriesAt = (raw: unknown, tick: number): unknown => {
 
 function provider(capability: "network-kpi" | "emissions-h3" | "scenario-comparison"): TestudoFeatureProviderFactory {
   return {
-    async open(bootstrap: TestudoPackageBootstrap, context: TestudoFeatureContext, onProgress, fetchArtifact): Promise<TestudoFeatureSession> {
+    async open(_bootstrap: TestudoPackageBootstrap, context: TestudoFeatureContext, onProgress, fetchArtifact): Promise<TestudoFeatureSession> {
       const data = await manifest(fetchArtifact, onProgress);
       let packageInfo: Json = {};
       try { packageInfo = record(JSON.parse(new TextDecoder().decode(await fetchArtifact("geolibre/package.json")))); }
@@ -48,7 +48,8 @@ function provider(capability: "network-kpi" | "emissions-h3" | "scenario-compari
       let currentValues: unknown = undefined;
       const session: TestudoFeatureSession = {
         context,
-        capabilities: bootstrap.capabilities,
+        capabilities: [{ id: capability, available: hasSeries,
+          ...(!hasSeries ? { reason: `The package does not contain decoded ${capability} time-series data.` } : {}) }],
         scenarios,
         timeSeriesAvailable: hasSeries,
         playbackRange: { maxTick, dt },

@@ -58,6 +58,17 @@ export interface TestudoFeatureContext {
   generation: number;
 }
 
+export interface TestudoMapHandle {
+  getSource(id: string): { setData(data: unknown): void } | undefined;
+  addSource(id: string, source: { type: "geojson"; data: unknown }): void;
+  removeSource(id: string): void;
+  getLayer(id: string): unknown;
+  addLayer(layer: Record<string, unknown>): void;
+  removeLayer(id: string): void;
+  setLayoutProperty(id: string, name: string, value: unknown): void;
+  isStyleLoaded?(): boolean;
+}
+
 export interface TestudoFeatureCapability {
   id: TestudoCapabilityKey;
   available: boolean;

@@ -6,6 +6,7 @@ import {
   TestudoFeatureBridge,
   getTestudoPackageProviderSuite,
   type TestudoArtifactRequest,
+  type TestudoMapHandle,
   type TestudoPackageBootstrap,
 } from "@geolibre/plugins";
 import {
@@ -151,6 +152,7 @@ export function useEmbedApi(
       }
     });
     const testudo = new TestudoFeatureBridge((bootstrap) => getTestudoPackageProviderSuite(bootstrap), fetchArtifactFromHost);
+    testudo.setMapResolver(() => (mapControllerRef.current?.getMap() ?? null) as TestudoMapHandle | null);
     const postEmbedEvent = createEmbedEventPoster(
       (message, targetOrigin) => host.postMessage(message, targetOrigin),
       (error) => console.error("[GeoLibre] Failed to post embed event", error),

@@ -49,9 +49,14 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
     .map((item) => [item.id, getTestudoPackageProvider(item.id, bootstrap)] as const)
     .filter((entry): entry is readonly [TestudoCapabilityKey, TestudoFeatureProviderFactory] => entry[1] !== null);
   if (!entries.some(([id]) => id === selected)) return null;
+  // Vehicle playback also owns the package's base network layers. Open it as
+  // the session's infrastructure provider whenever another capability is
+  // selected, even when the host's capability declaration marks animation off.
+  const vehicleFactory = providers.get("vehicle-playback")?.factory;
+  if (vehicleFactory && !entries.some(([id]) => id === "vehicle-playback")) entries.unshift(["vehicle-playback", vehicleFactory] as const);
   const primary = entries.find(([id]) => id === "vehicle-playback") ?? entries.find(([id]) => id === selected)!;
   return {
-    async open(packageBootstrap, context, onProgress, fetchArtifact): Promise<TestudoFeatureSession> {
+    async open(packageBootstrap, context, onProgress, fetchArtifact, map): Promise<TestudoFeatureSession> {
       const cache = new Map<string, Promise<ArrayBuffer>>();
       const sharedFetch = (ref: string) => {
         let pending = cache.get(ref);
@@ -61,7 +66,7 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
       const sessions = new Map<TestudoCapabilityKey, TestudoFeatureSession>();
       try {
         for (const [id, factory] of entries) {
-          sessions.set(id, await factory.open(packageBootstrap, { ...context, pluginId: id }, onProgress, sharedFetch));
+          sessions.set(id, await factory.open(packageBootstrap, { ...context, pluginId: id }, onProgress, sharedFetch, map));
         }
       } catch (error) {
         await Promise.all([...sessions.values()].map((session) => session.dispose?.()));
@@ -107,14 +112,23 @@ export function getTestudoPackageProviderSuite(bootstrap: TestudoPackageBootstra
       });
       const follow = async (state: TestudoPlaybackState) => {
         lastState = decorate(state);
-        await Promise.all([...sessions.values()].map((session) => session.onPlaybackTick?.(context.tviewId, context.generation, lastState)));
+        await Promise.all([...sessions.values()].map((session) => session === clockSession && session.playback
+          ? undefined : session.onPlaybackTick?.(context.tviewId, context.generation, lastState)));
       };
       await follow(lastState);
       const selectedSession = () => sessions.get(active)!;
       const aggregate: TestudoFeatureSession = {
         ...selectedSession(),
         context: { ...context, pluginId: active },
-        capabilities: packageBootstrap.capabilities,
+        get capabilities() {
+          const byId = new Map<TestudoCapabilityKey, NonNullable<TestudoFeatureSession["capabilities"]>[number]>();
+          for (const session of sessions.values()) for (const item of session.capabilities ?? []) byId.set(item.id, item);
+          return (packageBootstrap.capabilities ?? []).map((declared) => byId.get(declared.id) ?? {
+            ...declared,
+            available: false,
+            reason: declared.reason ?? "No Stage 1 data provider loaded this capability.",
+          });
+        },
         async selectPlugin(id) {
           if (!sessions.has(id as TestudoCapabilityKey)) throw new Error(`Capability ${id} is not available for this package.`);
           active = id as TestudoCapabilityKey;

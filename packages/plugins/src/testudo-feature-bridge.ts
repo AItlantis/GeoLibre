@@ -10,6 +10,7 @@ import {
   type TestudoNetworkFilter,
   type TestudoPackageProgress,
   type TestudoPlaybackState,
+  type TestudoMapHandle,
   type TestudoViewMode,
 } from "./shared/testudo-feature-session";
 
@@ -31,6 +32,7 @@ export interface TestudoFeatureProviderFactory {
     context: TestudoFeatureContext,
     onProgress: (progress: TestudoPackageProgress) => void,
     fetchArtifact: (artifactRef: string) => Promise<ArrayBuffer>,
+    map?: TestudoMapHandle | null,
   ): Promise<TestudoFeatureSession>;
 }
 
@@ -115,6 +117,7 @@ export class TestudoFeatureBridge {
   private readonly states = new Map<string, TestudoFeatureViewerState>();
   private readonly pendingArtifacts = new Map<string, { request: TestudoArtifactRequest; controller: AbortController }>();
   private readonly localArtifactReaders = new Map<string, (artifactRef: string) => Promise<ArrayBuffer>>();
+  private mapResolver: (() => TestudoMapHandle | null) | null = null;
 
   constructor(
     factory: TestudoFeatureProviderFactory | TestudoFeatureProviderResolver,
@@ -124,6 +127,12 @@ export class TestudoFeatureBridge {
   ) {
     this.factory = factory;
     this.artifactFetcher = artifactFetcher;
+  }
+
+  /** Supply the iframe shell's current MapLibre map without giving providers
+   * access to host credentials or a second artifact path. */
+  setMapResolver(resolver: () => TestudoMapHandle | null): void {
+    this.mapResolver = resolver;
   }
 
   private cancelArtifactRequests(tviewId: string, keepGeneration?: number): void {
@@ -277,6 +286,7 @@ export class TestudoFeatureBridge {
         context,
         reportProgress,
         (artifactRef) => this.fetchArtifactFor(context, artifactRef),
+        this.mapResolver?.() ?? null,
       );
     } catch (error) {
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
