@@ -57,7 +57,7 @@ export interface TestudoGeoAIRequest {
   context: { tviewId: string; generation: number; packageId: string; versionId: string; pluginId: string; scenarioId?: string };
 }
 
-export interface TestudoScopedPayload { tviewId: string }
+export interface TestudoScopedPayload { tviewId: string; generation?: number }
 export interface TestudoInvestigationAccepted { requestId: string; tviewId: string; generation: number; accepted: true }
 /** Credential-free reference requested by a Testudo iframe from its embedding host. */
 export interface TestudoArtifactRequest {

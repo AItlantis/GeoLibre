@@ -13,6 +13,7 @@ import {
   type TestudoMapHandle,
   type TestudoViewMode,
 } from "./shared/testudo-feature-session";
+import { validateTestudoCameraView } from "./plugins/testudo-camera";
 
 export interface TestudoPackageBootstrap {
   packageId: string;
@@ -427,72 +428,70 @@ export class TestudoFeatureBridge {
     };
   }
 
-  getCameraView(tviewId: string): TestudoCameraView | null {
-    return this.requireSession(tviewId).getCameraView?.() ?? null;
+  getCameraView(tviewId: string, generation?: number): TestudoCameraView | null {
+    return this.requireSession(tviewId, generation).getCameraView?.() ?? null;
   }
 
-  async setCameraView(tviewId: string, view: TestudoCameraView): Promise<void> {
-    if (!Number.isFinite(view.zoom) || view.center.some((value) => !Number.isFinite(value))) {
-      throw new Error("Camera coordinates and zoom must be finite numbers.");
-    }
-    const session = this.requireSession(tviewId);
+  async setCameraView(tviewId: string, view: TestudoCameraView, generation?: number): Promise<void> {
+    const validated = validateTestudoCameraView(view);
+    const session = this.requireSession(tviewId, generation);
     if (!session.setCameraView) throw new Error("Camera control is unavailable for this package.");
-    await session.setCameraView(view);
+    await session.setCameraView(validated);
     this.assertCurrent(session);
   }
 
-  async setMapControl(tviewId: string, controlId: string, visible: boolean): Promise<boolean> {
+  async setMapControl(tviewId: string, controlId: string, visible: boolean, generation?: number): Promise<boolean> {
     if (!controlId || controlId.length > 100) throw new Error("Map control id is invalid.");
-    const session = this.requireSession(tviewId);
+    const session = this.requireSession(tviewId, generation);
     if (!session.setMapControl) throw new Error("Map controls are unavailable for this package.");
     const changed = await session.setMapControl(controlId, visible);
     this.assertCurrent(session);
     return changed;
   }
 
-  getMapControlState(tviewId: string) {
-    return this.requireSession(tviewId).getMapControlState?.() ?? {
+  getMapControlState(tviewId: string, generation?: number) {
+    return this.requireSession(tviewId, generation).getMapControlState?.() ?? {
       legendVisible: false, esriWorldImageryVisible: false, renderer: "maplibre" as const,
     };
   }
 
-  async setRenderer(tviewId: string, renderer: "maplibre" | "cesium") {
-    const session = this.requireSession(tviewId);
+  async setRenderer(tviewId: string, renderer: "maplibre" | "cesium", generation?: number) {
+    const session = this.requireSession(tviewId, generation);
     if (!session.setRenderer) throw new Error("Renderer control is unavailable for this package.");
     const selected = await session.setRenderer(renderer);
     this.assertCurrent(session);
     return selected;
   }
 
-  async setKpiGeometry(tviewId: string, geometry: "lanes" | "sections", visible: boolean) {
-    const session = this.requireSession(tviewId);
+  async setKpiGeometry(tviewId: string, geometry: "lanes" | "sections", visible: boolean, generation?: number) {
+    const session = this.requireSession(tviewId, generation);
     if (!session.setKpiGeometry) throw new Error("KPI geometry controls are unavailable for this package.");
     const state = await session.setKpiGeometry(geometry, visible);
     this.assertCurrent(session);
     return state;
   }
 
-  getKpiGeometryState(tviewId: string) {
-    return this.requireSession(tviewId).getKpiGeometryState?.() ?? { showLanes: false, showSections: false };
+  getKpiGeometryState(tviewId: string, generation?: number) {
+    return this.requireSession(tviewId, generation).getKpiGeometryState?.() ?? { showLanes: false, showSections: false };
   }
 
-  async openAnnotations(tviewId: string) {
-    const session = this.requireSession(tviewId);
+  async openAnnotations(tviewId: string, generation?: number) {
+    const session = this.requireSession(tviewId, generation);
     if (!session.openAnnotations) throw new Error("Annotations are unavailable for this package.");
     const active = await session.openAnnotations();
     this.assertCurrent(session);
     return active;
   }
 
-  async openRecordTour(tviewId: string) {
-    const session = this.requireSession(tviewId);
+  async openRecordTour(tviewId: string, generation?: number) {
+    const session = this.requireSession(tviewId, generation);
     if (!session.openRecordTour) throw new Error("Record tours are unavailable for this package.");
     await session.openRecordTour();
     this.assertCurrent(session);
   }
 
-  async openRecordVideo(tviewId: string) {
-    const session = this.requireSession(tviewId);
+  async openRecordVideo(tviewId: string, generation?: number) {
+    const session = this.requireSession(tviewId, generation);
     if (!session.openRecordVideo) throw new Error("Record video is unavailable for this package.");
     await session.openRecordVideo();
     this.assertCurrent(session);
@@ -603,9 +602,12 @@ export class TestudoFeatureBridge {
     }
   }
 
-  private requireSession(tviewId: string): TestudoFeatureSession {
+  private requireSession(tviewId: string, generation?: number): TestudoFeatureSession {
     const session = this.sessions.get(tviewId);
     if (!session) throw new Error(`No Testudo package is loaded for TView ${tviewId}.`);
+    if (generation !== undefined && generation !== session.context.generation) {
+      throw new Error("This command belongs to a stale Testudo package generation.");
+    }
     return session;
   }
 

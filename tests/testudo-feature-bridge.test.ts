@@ -13,6 +13,9 @@ const bootstrap: TestudoPackageBootstrap = {
 function provider(context: TestudoFeatureContext, delivered: string[] = []): TestudoFeatureSession {
   let selectedScenarioId = "baseline";
   let playbackState = { available: true, loading: false, playing: false, tick: 4, maxTick: 30, speed: 2, dt: 1, loop: false };
+  let camera = { center: [0, 0] as [number, number], zoom: 8, bearing: 0, pitch: 0 };
+  let mapControls = { legendVisible: true, esriWorldImageryVisible: false, renderer: "maplibre" as const };
+  let kpiGeometry = { showLanes: false, showSections: true };
   return {
     context,
     scenarios: [
@@ -29,9 +32,20 @@ function provider(context: TestudoFeatureContext, delivered: string[] = []): Tes
       seek: (_tviewId, _generation, tick) => (playbackState = { ...playbackState, tick }),
       setSpeed: (_tviewId, _generation, speed) => (playbackState = { ...playbackState, speed }),
     },
-    getCameraView: () => ({ center: [0, 0], zoom: 8 }),
-    setCameraView: () => {},
-    setMapControl: () => true,
+    getCameraView: () => ({ ...camera, center: [...camera.center] as [number, number] }),
+    setCameraView: (view) => { camera = { ...view, bearing: view.bearing ?? 0, pitch: view.pitch ?? 0, center: [...view.center] }; },
+    setMapControl: (controlId, visible) => {
+      if (controlId === "legend") mapControls = { ...mapControls, legendVisible: visible };
+      else if (controlId === "esri-world-imagery") mapControls = { ...mapControls, esriWorldImageryVisible: visible };
+      return true;
+    },
+    getMapControlState: () => ({ ...mapControls }),
+    setRenderer: (renderer) => { mapControls = { ...mapControls, renderer }; return renderer; },
+    setKpiGeometry: (geometry, visible) => {
+      kpiGeometry = geometry === "lanes" ? { ...kpiGeometry, showLanes: visible } : { ...kpiGeometry, showSections: visible };
+      return { ...kpiGeometry };
+    },
+    getKpiGeometryState: () => ({ ...kpiGeometry }),
     setViewMode: (mode) => mode,
     setNetworkFilter: () => {},
     requestGeoAI: () => {},
@@ -54,6 +68,43 @@ test("provider scenarios and playback are addressed to the requested TView", asy
   assert.equal((await bridge.playback("left", "seek", 9)).tick, 9);
   assert.equal((await bridge.playback("right", "play")).playing, true);
   assert.equal(bridge.getPlaybackState("left").playing, false);
+});
+
+test("camera and Camera-panel bridge controls return their contract state and reject stale generations", async () => {
+  const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => provider(context) });
+  const context = await createAndLoad(bridge, "main");
+  const view = { center: [-0.12, 51.5] as [number, number], zoom: 12, bearing: 10, pitch: 25 };
+  await bridge.setCameraView("main", view, context.generation);
+  assert.deepEqual(bridge.getCameraView("main", context.generation), view);
+  await assert.rejects(bridge.setCameraView("main", { center: [181, 0], zoom: 5 }, context.generation), /longitude/);
+  await assert.rejects(bridge.setCameraView("main", { center: [0, 0], zoom: 25 }, context.generation), /zoom/);
+
+  assert.equal(await bridge.setMapControl("main", "legend", false, context.generation), true);
+  assert.deepEqual(bridge.getMapControlState("main", context.generation), {
+    legendVisible: false, esriWorldImageryVisible: false, renderer: "maplibre",
+  });
+  assert.equal(await bridge.setMapControl("main", "esri-world-imagery", true, context.generation), true);
+  assert.deepEqual(bridge.getMapControlState("main", context.generation), {
+    legendVisible: false, esriWorldImageryVisible: true, renderer: "maplibre",
+  });
+  assert.deepEqual(await bridge.setKpiGeometry("main", "lanes", true, context.generation), { showLanes: true, showSections: true });
+  assert.deepEqual(await bridge.setKpiGeometry("main", "sections", false, context.generation), { showLanes: true, showSections: false });
+  assert.deepEqual(bridge.getKpiGeometryState("main", context.generation), { showLanes: true, showSections: false });
+  assert.deepEqual({ renderer: await bridge.setRenderer("main", "maplibre", context.generation) }, { renderer: "maplibre" });
+
+  assert.throws(() => bridge.getCameraView("main", context.generation - 1), /stale Testudo package generation/);
+  await assert.rejects(bridge.setCameraView("main", view, context.generation - 1), /stale Testudo package generation/);
+  await assert.rejects(bridge.setMapControl("main", "legend", true, context.generation - 1), /stale Testudo package generation/);
+  await assert.rejects(bridge.setKpiGeometry("main", "sections", true, context.generation - 1), /stale Testudo package generation/);
+  await assert.rejects(bridge.setRenderer("main", "maplibre", context.generation - 1), /stale Testudo package generation/);
+});
+
+test("recording and annotation commands report unavailable capabilities instead of false success", async () => {
+  const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => provider(context) });
+  const context = await createAndLoad(bridge, "main");
+  await assert.rejects(bridge.openAnnotations("main", context.generation), /Annotations are unavailable/);
+  await assert.rejects(bridge.openRecordTour("main", context.generation), /Record tours are unavailable/);
+  await assert.rejects(bridge.openRecordVideo("main", context.generation), /Record video is unavailable/);
 });
 
 test("host must create an explicit TView id before loading and can query its status", async () => {

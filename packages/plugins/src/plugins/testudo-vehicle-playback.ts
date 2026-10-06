@@ -6,6 +6,7 @@ import type {
 } from "../shared/testudo-feature-session";
 import type { TestudoPackageBootstrap, TestudoFeatureProviderFactory } from "../testudo-feature-bridge";
 import { registerTestudoPackageProvider } from "../testudo-provider-registry";
+import { declaredDefaultCamera, networkBounds, validateTestudoCameraView } from "./testudo-camera";
 import {
   parseTestudoAnimationManifest, parseTestudoPackageStructure, vehiclesAtTick,
   type TestudoAnimationChunkDescriptor, type TestudoVehiclePoint,
@@ -70,17 +71,25 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
     const maxTick = Math.max(0, ...chunksByAnimation.flatMap((chunks) => chunks.map((chunk) => chunk.endTick)), structure.maxTick);
     let state: TestudoPlaybackState = { available: true, loading: true, playing: false, tick: 0, maxTick, speed: 1, dt: structure.dt, loop: false };
     const namespace = `testudo-${context.tviewId}-${context.generation}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const map = mapHandle ?? null;
     const loadedChunks = new Map<string, Json>();
     const pendingChunks = new Map<string, Promise<Json>>();
     let owner: import("./testudo-package-renderer").TestudoLayerOwner | null = null;
     let currentPoints = new Map<string, TestudoVehiclePoint>();
     let sectionsLoaded = false;
+    let lanesLoaded = false;
     let nodesLoaded = false;
     let centroidsLoaded = false;
     let disposed = false;
     let legendVisible = true;
     let kpiGeometry = { showLanes: false, showSections: true };
     let renderer: TestudoRenderer = "maplibre";
+    let esriWorldImageryVisible = false;
+    let cameraWasSetByHostOrUser = false;
+    const onMapMoveStart = (event?: { originalEvent?: unknown }) => {
+      if (event?.originalEvent) cameraWasSetByHostOrUser = true;
+    };
+    map?.on?.("movestart", onMapMoveStart);
     let interval: ReturnType<typeof setInterval> | undefined;
     const playbackListeners = new Set<(tviewId: string, generation: number, playback: TestudoPlaybackState) => void>();
     const vehicleCapability = capability("vehicle-playback", false, "No readable animation chunk is declared for this package.");
@@ -90,7 +99,6 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
       return snapshot;
     };
     const stopPlayback = () => { if (interval !== undefined) clearInterval(interval); interval = undefined; };
-    const map = mapHandle ?? null;
     // Rendering code is split from the main plugin graph and only loaded for a live map.
     const getOwner = async () => {
       if (!map) return null;
@@ -110,6 +118,16 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
         sections = asFeatureCollection(JSON.parse(new TextDecoder().decode(await new Response(stream).arrayBuffer())));
       } else sections = asFeatureCollection(JSON.parse(new TextDecoder().decode(geometryBytes)));
       if (!sections) throw new Error("The package network sections artifact is not a GeoJSON FeatureCollection.");
+      let lanes: FeatureCollection | undefined;
+      if (structure.lanesPath) {
+        try {
+          const laneBytes = await read(structure.lanesPath, "Loading lane geometry");
+          const laneData = structure.lanesPath.endsWith(".gz")
+            ? await new Response(new Blob([laneBytes]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()
+            : laneBytes;
+          lanes = asFeatureCollection(JSON.parse(new TextDecoder().decode(laneData))) ?? undefined;
+        } catch { lanes = undefined; }
+      }
       let nodes: FeatureCollection | undefined;
       if (structure.nodesPath) {
         try { nodes = asFeatureCollection(JSON.parse(new TextDecoder().decode(await read(structure.nodesPath, "Loading network nodes")))) ?? undefined; }
@@ -124,9 +142,21 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
       // Layer owner scopes IDs, so pass stable local names through its adapter.
       if (drawing && !disposed) {
         const rendererModule = await import("./testudo-package-renderer");
-        rendererModule.drawNetwork(drawing, sections, nodes, centroids);
+        rendererModule.drawNetwork(drawing, sections, nodes, centroids, lanes);
       }
-      sectionsLoaded = true; nodesLoaded = Boolean(nodes?.features.length); centroidsLoaded = Boolean(centroids?.features.length);
+      sectionsLoaded = true; lanesLoaded = Boolean(lanes?.features.length);
+      nodesLoaded = Boolean(nodes?.features.length); centroidsLoaded = Boolean(centroids?.features.length);
+      const bounds = networkBounds(sections, lanes, nodes, centroids);
+      if (map && bounds && !cameraWasSetByHostOrUser && !disposed) {
+        const declared = declaredDefaultCamera(root, packageInfo);
+        if (declared && !Array.isArray(declared)) {
+          map.jumpTo?.(declared);
+        } else if (declared) {
+          map.fitBounds?.(declared, { padding: 48, maxZoom: 16, bearing: 0, pitch: 0 });
+        } else {
+          map.fitBounds?.(bounds, { padding: 48, maxZoom: 16, bearing: 0, pitch: 0 });
+        }
+      }
     };
     // Ensure the initial geometry has been fetched even when the map is not
     // available (unit fixtures and server-side consumers still get truthful flags).
@@ -248,25 +278,51 @@ export const testudoVehiclePlaybackProvider: TestudoFeatureProviderFactory = {
         return id;
       },
       setMapControl(controlId, visible) {
-        if (controlId === "legend") { legendVisible = visible; return true; }
-        if (controlId === "esri-world-imagery") return false;
+        if (controlId === "legend") {
+          if (!owner) throw new Error("The package network legend layers are unavailable until network geometry is loaded.");
+          legendVisible = visible; owner.setNetworkVisible(visible);
+          kpiGeometry = { ...kpiGeometry, showSections: visible };
+          return true;
+        }
+        if (controlId === "esri-world-imagery") {
+          if (!owner || !map) throw new Error("Esri World Imagery requires an active MapLibre map.");
+          owner.setEsriWorldImagery(visible); esriWorldImageryVisible = visible; return true;
+        }
         if (controlId === "network-sections" || controlId === "sections") { owner?.setVisible("network-sections", visible); return sectionsLoaded; }
         if (controlId === "network-nodes" || controlId === "nodes") { owner?.setVisible("network-nodes", visible); return nodesLoaded; }
         if (controlId === "network-centroids" || controlId === "centroids") { owner?.setVisible("network-centroids", visible); return centroidsLoaded; }
+        if (controlId === "network-lanes" || controlId === "lanes") { owner?.setVisible("network-lanes", visible); return lanesLoaded; }
         return false;
       },
-      getMapControlState() { return { legendVisible, esriWorldImageryVisible: false, renderer }; },
+      getMapControlState() { return { legendVisible, esriWorldImageryVisible, renderer }; },
       setRenderer(next) { if (next === "cesium") throw new Error("Cesium rendering is unavailable in the GeoLibre Testudo iframe."); renderer = next; return renderer; },
       setKpiGeometry(geometry, visible) {
-        if (geometry === "sections") kpiGeometry = { ...kpiGeometry, showSections: visible };
-        else kpiGeometry = { ...kpiGeometry, showLanes: visible };
-        owner?.setVisible(geometry === "sections" ? "network-sections" : "network-lanes", visible);
+        if (geometry === "lanes") {
+          if (!lanesLoaded || !owner) throw new Error("Lane geometry is unavailable in this package.");
+          owner.setVisible("network-lanes", visible);
+          kpiGeometry = { ...kpiGeometry, showLanes: visible };
+          return { ...kpiGeometry };
+        }
+        if (!sectionsLoaded || !owner) throw new Error("Section geometry is unavailable until the package network is loaded.");
+        owner.setVisible("network-sections", visible);
+        kpiGeometry = { ...kpiGeometry, showSections: visible };
         return { ...kpiGeometry };
       },
       getKpiGeometryState() { return { ...kpiGeometry }; },
-      getCameraView() { return null; },
-      setCameraView(view) { if (!map) throw new Error("Map camera is unavailable."); (map as unknown as { jumpTo(options: unknown): void }).jumpTo({ center: view.center, zoom: view.zoom, bearing: view.bearing ?? 0, pitch: view.pitch ?? 0 }); },
-      dispose() { disposed = true; stopPlayback(); playbackListeners.clear(); owner?.remove(); owner = null; loadedChunks.clear(); pendingChunks.clear(); currentPoints.clear(); },
+      getCameraView() {
+        if (!map?.getCenter || !map.getZoom) return null;
+        const center = map.getCenter(); const zoom = map.getZoom();
+        const bearing = map.getBearing?.() ?? 0; const pitch = map.getPitch?.() ?? 0;
+        if (![center.lng, center.lat, zoom, bearing, pitch].every(Number.isFinite)) return null;
+        return { center: [center.lng, center.lat], zoom, bearing, pitch };
+      },
+      setCameraView(view) {
+        if (!map?.jumpTo) throw new Error("Map camera is unavailable.");
+        const validated = validateTestudoCameraView(view);
+        cameraWasSetByHostOrUser = true;
+        map.jumpTo(validated);
+      },
+      dispose() { disposed = true; map?.off?.("movestart", onMapMoveStart); stopPlayback(); playbackListeners.clear(); owner?.remove(); owner = null; loadedChunks.clear(); pendingChunks.clear(); currentPoints.clear(); },
     };
   },
 };

@@ -59,11 +59,19 @@ export interface TestudoFeatureContext {
 }
 
 export interface TestudoMapHandle {
+  getCenter?(): { lng: number; lat: number };
+  getZoom?(): number;
+  getBearing?(): number;
+  getPitch?(): number;
+  jumpTo?(options: { center: [number, number]; zoom: number; bearing: number; pitch: number }): void;
+  fitBounds?(bounds: [[number, number], [number, number]], options: { padding: number; maxZoom: number; bearing: number; pitch: number }): void;
+  on?(type: "movestart", listener: (event?: { originalEvent?: unknown }) => void): void;
+  off?(type: "movestart", listener: (event?: { originalEvent?: unknown }) => void): void;
   getSource(id: string): { setData(data: unknown): void } | undefined;
-  addSource(id: string, source: { type: "geojson"; data: unknown }): void;
+  addSource(id: string, source: Record<string, unknown>): void;
   removeSource(id: string): void;
   getLayer(id: string): unknown;
-  addLayer(layer: Record<string, unknown>): void;
+  addLayer(layer: Record<string, unknown>, beforeId?: string): void;
   removeLayer(id: string): void;
   setLayoutProperty(id: string, name: string, value: unknown): void;
   isStyleLoaded?(): boolean;

@@ -331,12 +331,14 @@ export function useEmbedApi(
         case "testudoSetCameraView": {
           const tviewId = scopedId(payload); const view = payload.view as { center: [number, number]; zoom: number; bearing?: number; pitch?: number };
           if (!view || !Array.isArray(view.center)) throw new Error("view must contain a camera center and zoom.");
-          await testudo.setCameraView(tviewId, view); return view;
+          const generation = playbackGeneration(payload);
+          await testudo.setCameraView(tviewId, view, generation);
+          return testudo.getCameraView(tviewId, generation) ?? view;
         }
-        case "testudoGetCameraView": return testudo.getCameraView(scopedId(payload));
+        case "testudoGetCameraView": return testudo.getCameraView(scopedId(payload), playbackGeneration(payload));
         case "testudoSetMapControl": {
           const tviewId = scopedId(payload); if (typeof payload.visible !== "boolean") throw new Error("visible must be a boolean.");
-          return { visible: await testudo.setMapControl(tviewId, requiredText(payload, "controlId", 100), payload.visible) };
+          return { visible: await testudo.setMapControl(tviewId, requiredText(payload, "controlId", 100), payload.visible, playbackGeneration(payload)) };
         }
         case "testudoSetNetworkFilter": {
           const tviewId = scopedId(payload); const filter = payload.filter as { id?: unknown; enabled?: unknown; value?: unknown };
@@ -346,19 +348,22 @@ export function useEmbedApi(
         case "testudoSetLegendVisibility":
         case "testudoSetEsriWorldImagery": {
           const tviewId = scopedId(payload); if (typeof payload.visible !== "boolean") throw new Error("visible must be a boolean.");
+          const generation = playbackGeneration(payload);
           const controlId = type === "testudoSetLegendVisibility" ? "legend" : "esri-world-imagery";
-          return { visible: await testudo.setMapControl(tviewId, controlId, payload.visible) };
+          await testudo.setMapControl(tviewId, controlId, payload.visible, generation);
+          const state = testudo.getMapControlState(tviewId, generation);
+          return { visible: type === "testudoSetLegendVisibility" ? state.legendVisible : state.esriWorldImageryVisible };
         }
         case "testudoSetKpiGeometry": {
           const tviewId = scopedId(payload); if (typeof payload.visible !== "boolean" || (payload.geometry !== "lanes" && payload.geometry !== "sections")) throw new Error("geometry and visible are invalid.");
-          return testudo.setKpiGeometry(tviewId, payload.geometry, payload.visible);
+          return testudo.setKpiGeometry(tviewId, payload.geometry, payload.visible, playbackGeneration(payload));
         }
-        case "testudoGetKpiGeometryState": return testudo.getKpiGeometryState(scopedId(payload));
+        case "testudoGetKpiGeometryState": return testudo.getKpiGeometryState(scopedId(payload), playbackGeneration(payload));
         case "testudoSetRenderer": {
           const tviewId = scopedId(payload); if (payload.renderer !== "maplibre" && payload.renderer !== "cesium") throw new Error("renderer is invalid.");
-          return { renderer: await testudo.setRenderer(tviewId, payload.renderer) };
+          return { renderer: await testudo.setRenderer(tviewId, payload.renderer, playbackGeneration(payload)) };
         }
-        case "testudoGetMapControlState": return testudo.getMapControlState(scopedId(payload));
+        case "testudoGetMapControlState": return testudo.getMapControlState(scopedId(payload), playbackGeneration(payload));
         case "testudoRequestInvestigation": {
           const result = await testudo.requestInvestigation(scopedId(payload), requiredText(payload, "question", 8_000), typeof payload.activeScenarioId === "string" ? payload.activeScenarioId : undefined);
           return result;
@@ -375,9 +380,9 @@ export function useEmbedApi(
           };
           return testudo.respondGeoAIRequestTuple(requestId, tviewId, payload.generation, reply);
         }
-        case "testudoOpenAnnotations": return { active: await testudo.openAnnotations(scopedId(payload)) };
-        case "testudoOpenRecordTour": await testudo.openRecordTour(scopedId(payload)); return { opened: true };
-        case "testudoOpenRecordVideo": await testudo.openRecordVideo(scopedId(payload)); return { opened: true };
+        case "testudoOpenAnnotations": return { active: await testudo.openAnnotations(scopedId(payload), playbackGeneration(payload)) };
+        case "testudoOpenRecordTour": await testudo.openRecordTour(scopedId(payload), playbackGeneration(payload)); return { opened: true };
+        case "testudoOpenRecordVideo": await testudo.openRecordVideo(scopedId(payload), playbackGeneration(payload)); return { opened: true };
         default: throw new Error(`Unsupported Testudo command: ${type}`);
       }
     };

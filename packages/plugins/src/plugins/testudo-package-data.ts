@@ -8,6 +8,7 @@ export interface TestudoPackageStructure {
   manifest: Json;
   packageInfo: Json;
   sectionsPath: string | null;
+  lanesPath: string | null;
   nodesPath: string | null;
   centroidPath: string | null;
   animationManifestPaths: string[];
@@ -35,6 +36,7 @@ export function parseTestudoPackageStructure(manifestValue: unknown, packageValu
     manifest,
     packageInfo,
     sectionsPath: pathValue(geometry.sections) ?? pathValue(baseNetworks.centerlines),
+    lanesPath: pathValue(geometry.lanes) ?? pathValue(baseNetworks.lanes),
     nodesPath: pathValue(baseNetworks.nodes),
     centroidPath: pathValue(object(object(manifest.model_inputs).centroids).path)
       ?? pathValue(object(manifest.inputs).centroids) ?? pathValue(object(manifest.scenario_inputs).centroids),
