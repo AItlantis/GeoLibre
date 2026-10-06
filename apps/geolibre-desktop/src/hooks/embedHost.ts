@@ -85,6 +85,36 @@ export interface EmbedHost {
 }
 
 /**
+ * Pick the origins a pre-handshake broadcast may go to. The known host origin wins; otherwise, with an
+ * allowlist configured, only the framing parent's own origin (when it is allowlisted) so a page embedded by one
+ * allowed host does not also post to the other allowed hosts; otherwise every allowlisted origin or `["*"]`.
+ */
+export function pickBroadcastTargets(
+  hostOrigin: string | null,
+  allowedOrigins: readonly string[],
+  parentOriginHint: string | null,
+): string[] {
+  if (hostOrigin) return [hostOrigin];
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(EMBED_ORIGIN_WILDCARD)) {
+    return [EMBED_ORIGIN_WILDCARD];
+  }
+  if (parentOriginHint && isEmbedOriginAllowed(parentOriginHint, [...allowedOrigins])) return [parentOriginHint];
+  return [...allowedOrigins];
+}
+
+/** The framing parent's origin as the browser reports it (ancestorOrigins in Chromium, else the referrer). */
+function parentOriginHintFromBrowser(): string | null {
+  try {
+    const ancestor = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins?.[0];
+    if (ancestor && ancestor !== "null") return ancestor;
+    if (document.referrer) return new URL(document.referrer).origin;
+  } catch {
+    // No usable hint: callers fall back to the allowlist.
+  }
+  return null;
+}
+
+/**
  * Create the shared host channel for a bridge. In a browser `window.parent` is
  * always defined; when the app is the top-level document (the `?embed=1`
  * self-test) it is `window` itself, so the bridge naturally posts to and
@@ -108,13 +138,7 @@ export function createEmbedHost(): EmbedHost {
       return handshakeComplete;
     },
     targetOrigin: () => hostOrigin ?? "*",
-    broadcastTargets: () => {
-      if (hostOrigin) return [hostOrigin];
-      if (allowedOrigins.length === 0 || allowedOrigins.includes(EMBED_ORIGIN_WILDCARD)) {
-        return [EMBED_ORIGIN_WILDCARD];
-      }
-      return allowedOrigins;
-    },
+    broadcastTargets: () => pickBroadcastTargets(hostOrigin, allowedOrigins, parentOriginHintFromBrowser()),
     note(event: MessageEvent): boolean {
       if (event.source !== host) return false;
       if (allowedOrigins.length > 0 && !isEmbedOriginAllowed(event.origin, allowedOrigins)) {
