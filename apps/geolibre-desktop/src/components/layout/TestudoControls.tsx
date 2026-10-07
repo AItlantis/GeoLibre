@@ -15,7 +15,7 @@ import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 import { openLocalPackageFromActivation } from "../../lib/testudo-picker-flow";
-import { availableModesForScenario, comparisonStyleState, modeForScenarioChange, pluginForTestudoMode, validateTestudoStyle } from "../../lib/testudo-view-style";
+import { availableModesForScenario, comparisonStyleState, environmentAvailableForScenario, modeForScenarioChange, pluginForTestudoMode, testudoViewerStyleState, validateTestudoStyle } from "../../lib/testudo-view-style";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
@@ -89,6 +89,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let directory: VehicleDirectoryHandle | null = null;
     let bootstrap: TestudoBootstrap | null = null;
     let declaredScenarioIds: Array<string | number> = [];
+    let environmentScenarioPairs: Array<{ scid: string | number; did: string | number }> = [];
     let preferredMode: TestudoDemoMode | undefined;
     let declaredAvailableModes: TestudoDemoMode[] = [];
     let abort = new AbortController();
@@ -253,6 +254,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     }
     const update = (patch: Partial<TestudoViewerState>) => {
       current = { ...current, ...patch };
+      if (current.style) current = { ...current, style: testudoViewerStyleState(current.style, current.scenarios ?? []) };
       if (!disposed) setState(current);
       emit("testudoStateChanged", current);
       return current;
@@ -482,8 +484,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       const style = viewMode || mode === "comparison" ? {
         display: viewMode?.style.type ?? "ramp", metric: defaultMetric, interval: comparisonSettings?.interval ?? 0,
         maxHeightM: viewMode?.style.max ?? comparisonSettings?.maxHeightM ?? 100,
-        ...(pairA >= 0 ? { scenarioA: pair[pairA]?.scid ?? pairA } : {}),
-        ...(pairB >= 0 ? { scenarioB: pair[pairB]?.scid ?? pairB } : {}),
+        ...(pairA >= 0 ? { scenarioA: String(pair[pairA]?.scid ?? pairA) } : {}),
+        ...(pairB >= 0 ? { scenarioB: String(pair[pairB]?.scid ?? pairB) } : {}),
         ...(mode === "comparison" ? { showDifference: comparisonSettings?.mode === "diff" } : {}),
       } : current.style;
       const updated = update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
@@ -551,7 +553,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       comparisonDeclared = false;
       preferredMode = undefined;
       declaredAvailableModes = [];
-      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = [];
+      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; environmentScenarioPairs = [];
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
       plugins.resetGeoAiBuildings();
@@ -610,6 +612,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       await persistentNetwork.mount(featureContext, directory, raw, app.getMap?.() as any,
         context => featureBridge.sessions.isCurrent(context));
       const pkg = getGeolibrePackage(raw);
+      environmentScenarioPairs = pkg?.viewModes.environment?.scenarioDidPair ?? [];
       const packageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
       declaredScenarioIds = packageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined);
       let hasMatchedComparison = false;
@@ -677,7 +680,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         declaredScenarioIds = listVehicleManifestScenarios(raw, { includeAnimationVariants: true })
           .map(item => item.scid).filter((id): id is string | number => id !== undefined);
         if (!pkg) throw new Error("Choose a built Testudo package containing manifest.json and geolibre/package.json. Raw models must be built first.");
-        reset(); directory = selected;
+        reset(); directory = selected; environmentScenarioPairs = pkg.viewModes.environment?.scenarioDidPair ?? [];
         // Local folder loads have no Testudo session (no origin or chat credential), so GeoAI
         // cannot reach the Testudo chat routes here — the alias intentionally never matches a
         // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
@@ -908,7 +911,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
               const emissionsStatus = plugins.getEmissionsH3Status();
               const emissionsIndex = emissionsStatus.scenarios.findIndex(row => String(row.id) === scenarioId);
               if (emissionsIndex >= 0 && bridgePluginId !== "emissions-h3") await plugins.setEmissionsH3Scenario(emissionsIndex);
-              const hasEmissions = emissionsIndex >= 0 && plugins.getEmissionsH3Status().hasEmissions;
+              const hasEmissions = environmentAvailableForScenario(environmentScenarioPairs, scenarioId);
               const reason = "Environment mode is unavailable for this scenario because it has no usable emissions rows.";
               const scenarioModeState = modeForScenarioChange(declaredAvailableModes, hasEmissions && Boolean(current.viewModes?.environment), preferredMode, current.selectedMode);
               const availableModes = scenarioModeState.availableModes;
@@ -942,7 +945,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             else handlers["network-kpi"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setNetworkKpiSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
             const echoedStyle = current.selectedMode === "comparison"
               ? comparisonStyleState({ ...style, ...(scenarioA !== undefined ? { scenarioA } : {}), ...(scenarioB !== undefined ? { scenarioB } : {}) }, plugins.getScenarioComparisonStatus().scenarios, showDifference)
-              : style;
+              : testudoViewerStyleState(style, current.scenarios ?? []);
             return update({ style: echoedStyle });
           }
           if (request.type === "testudoSetScenarioPair") {

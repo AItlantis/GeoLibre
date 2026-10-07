@@ -17,13 +17,13 @@ test("comparison style echo reports scenario ids and preserves the pair when dif
   const incoming = validateTestudoStyle({ display: "ramp", metric: "flow_delta", interval: 3, maxHeightM: 100, scenarioA: 0, scenarioB: 1, showDifference: false }, "comparison", 2, scenarios);
   assert.deepEqual(comparisonStyleState(incoming, scenarios, false), {
     display: "ramp", metric: "flow_delta", interval: 3, maxHeightM: 100,
-    scenarioA: 49320, scenarioB: 49414, showDifference: false,
+    scenarioA: "49320", scenarioB: "49414", showDifference: false,
   });
   const idsAccepted = validateTestudoStyle({ ...incoming, scenarioA: 49320, scenarioB: "49414", showDifference: true }, "comparison", 2, scenarios);
   assert.equal(idsAccepted.scenarioA, 0);
   assert.equal(idsAccepted.scenarioB, 1);
   assert.deepEqual(comparisonStyleState(idsAccepted, scenarios, true), {
     display: "ramp", metric: "flow_delta", interval: 3, maxHeightM: 100,
-    scenarioA: 49320, scenarioB: 49414, showDifference: true,
+    scenarioA: "49320", scenarioB: "49414", showDifference: true,
   });
 });

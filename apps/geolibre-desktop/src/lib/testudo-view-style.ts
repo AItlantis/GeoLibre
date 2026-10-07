@@ -40,22 +40,47 @@ export function modeForScenarioChange(
 }
 
 export function comparisonStyleState(
-  style: TestudoStyle,
+  style: Omit<TestudoStyle, "scenarioA" | "scenarioB"> & { scenarioA?: string | number; scenarioB?: string | number },
   scenarios: readonly { id?: string | number; scid?: string | number }[],
   showDifference: boolean,
 ): TestudoStyle {
-  const toId = (value: string | number | undefined): string | number | undefined => {
+  const toId = (value: string | number | undefined): string | undefined => {
     if (value === undefined) return undefined;
     const index = resolveComparisonScenarioIndex(value, scenarios);
     const scenario = scenarios[index!];
-    return scenario.id ?? scenario.scid ?? value;
+    return String(scenario.id ?? scenario.scid ?? value);
   };
-  return {
-    ...style,
-    ...(style.scenarioA !== undefined ? { scenarioA: toId(style.scenarioA) } : {}),
-    ...(style.scenarioB !== undefined ? { scenarioB: toId(style.scenarioB) } : {}),
-    showDifference,
+  const state: TestudoStyle = { display: style.display, metric: style.metric, interval: style.interval, maxHeightM: style.maxHeightM, showDifference };
+  const scenarioA = toId(style.scenarioA), scenarioB = toId(style.scenarioB);
+  if (scenarioA !== undefined) state.scenarioA = scenarioA;
+  if (scenarioB !== undefined) state.scenarioB = scenarioB;
+  return state;
+}
+
+/** Project plugin style data onto the shell's exact ViewerStyle contract. */
+export function testudoViewerStyleState(
+  style: Omit<TestudoStyle, "scenarioA" | "scenarioB"> & { scenarioA?: string | number; scenarioB?: string | number },
+  scenarios: readonly { id?: string | number; scid?: string | number }[] = [],
+): TestudoStyle {
+  const state: TestudoStyle = {
+    display: style.display,
+    metric: style.metric,
+    interval: style.interval,
+    maxHeightM: style.maxHeightM,
   };
+  const toId = (value: string | number | undefined): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < scenarios.length) {
+      return String(scenarios[value].id ?? scenarios[value].scid ?? value);
+    }
+    return String(value);
+  };
+  const scenarioA = toId(style.scenarioA);
+  const scenarioB = toId(style.scenarioB);
+  if (scenarioA !== undefined) state.scenarioA = scenarioA;
+  if (scenarioB !== undefined) state.scenarioB = scenarioB;
+  if (style.showDifference !== undefined) state.showDifference = style.showDifference;
+  return state;
 }
 
 export type ValidatedTestudoStyle = Omit<TestudoStyle, "scenarioA" | "scenarioB"> & { scenarioA?: number; scenarioB?: number };
@@ -66,11 +91,12 @@ export function validateTestudoStyle(candidate: unknown, mode: TestudoDemoMode |
   const { display, metric, interval, maxHeightM, scenarioA, scenarioB, showDifference } = style;
   if ((display !== "ramp" && display !== "extrusion") || typeof metric !== "string" || !metric.trim() || metric.length > 64
     || !Number.isSafeInteger(interval) || Number(interval) < 0 || !Number.isFinite(maxHeightM) || Number(maxHeightM) <= 0 || Number(maxHeightM) > 10000) throw new Error("Style settings are invalid.");
-  const aliases: Record<string, string> = { dtime: "delay", nstops: "noise" };
+  const aliases: Record<string, string> = { dtime: "delay", nstops: "noise", volume: "trips" };
   const normalizedMetric = metric.endsWith("_delta")
     ? `${aliases[metric.slice(0, -6)] ?? metric.slice(0, -6)}_delta`
     : aliases[metric] ?? metric;
-  const metrics = mode === "comparison" ? ["flow", "speed", "density", "delay", "flow_delta", "speed_delta", "density_delta", "delay_delta"]
+  const metrics = mode === "paths" ? ["percentage", "trips"]
+    : mode === "comparison" ? ["flow", "speed", "density", "delay", "flow_delta", "speed_delta", "density_delta", "delay_delta"]
     : mode === "environment" ? ["co2", "nox", "noise"] : ["flow", "speed", "density", "delay"];
   const comparisonBase = normalizedMetric.endsWith("_delta") ? normalizedMetric.slice(0, -6) : null;
   if (!metrics.includes(normalizedMetric) && !(mode === "comparison" && ["flow", "speed", "density", "delay"].includes(comparisonBase ?? ""))) {
@@ -83,4 +109,8 @@ export function validateTestudoStyle(candidate: unknown, mode: TestudoDemoMode |
   const resolvedA = resolve(scenarioA);
   const resolvedB = resolve(scenarioB);
   return { display, metric: normalizedMetric, interval: Number(interval), maxHeightM: Number(maxHeightM), ...(resolvedA !== undefined ? { scenarioA: resolvedA } : {}), ...(resolvedB !== undefined ? { scenarioB: resolvedB } : {}), ...(showDifference !== undefined ? { showDifference } : {}) };
+}
+
+export function environmentAvailableForScenario(pairs: readonly { scid: string | number; did: string | number }[] | undefined, scenarioId: string | number): boolean {
+  return Boolean(pairs?.some(pair => String(pair.scid) === String(scenarioId) && Number.isFinite(Number(pair.did))));
 }

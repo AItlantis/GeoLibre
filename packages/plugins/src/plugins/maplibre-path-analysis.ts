@@ -45,6 +45,27 @@ export async function setPathAnalysisScenario(scenarioId:string|number):Promise<
 export{canLoadLocalPathAnalysisPackage};export function reattachPathAnalysis(app:GeoLibreAppAPI){appRef=app;if(visible){registerPathAnalysisStoreLayer();if(!engine){const map=app.getMap?.();if(map)engine=new PathAnalysisEngine(app,map)}}}export function setPathAnalysisSettings(p:Partial<PathAnalysisSettings>){const previous=snapshot.settings;snapshot={...snapshot,settings:{...snapshot.settings,...p}};const queryChanged=previous.interval!==snapshot.settings.interval||previous.rule!==snapshot.settings.rule;if(queryChanged)void engine?.refresh();else void engine?.render();if(previous.intervalPlaying!==snapshot.settings.intervalPlaying||previous.playbackSpeed!==snapshot.settings.playbackSpeed||previous.loop!==snapshot.settings.loop)syncPathAnalysisTimer();notify()}export function clearPathAnalysisSelection(){void engine?.clearSelection()}
 function stopPathAnalysisTimer(){if(intervalTimer){clearInterval(intervalTimer);intervalTimer=null}}
 function syncPathAnalysisTimer(){stopPathAnalysisTimer();if(snapshot.settings.intervalPlaying&&snapshot.intervals.filter((value)=>value!==0).length>0)intervalTimer=setInterval(()=>{if(!snapshot.selectionLoading)stepPathAnalysisInterval(1)},Math.max(100,1000/Math.max(0.1,snapshot.settings.playbackSpeed||1)))}
+type PathMapObject = { id: string; type: string; source?: string; [key: string]: unknown };
+type PathMapDouble = { getSource(id: string): any; addSource(id: string, source: any): void; getLayer(id: string): any; addLayer(layer: PathMapObject): void };
+function addSourceIfMissing(map: PathMapDouble, id: string, data: unknown) {
+  if (map.getSource(id)) return;
+  try { map.addSource(id, { type: "geojson", data }); }
+  catch (error) { if (!map.getSource(id)) throw error; }
+}
+function addLayerIfMissing(map: PathMapDouble, layer: PathMapObject) {
+  if (map.getLayer(layer.id)) return;
+  try { map.addLayer(layer); }
+  catch (error) { if (!map.getLayer(layer.id)) throw error; }
+}
+export function ensurePathAnalysisMapObjects(map: PathMapDouble, testudoLayout = isTestudoLayout()) {
+  const empty = { type: "FeatureCollection", features: [] };
+  const sourceIds = testudoLayout ? [PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE] : [SECTION_SOURCE, PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE];
+  for (const id of sourceIds) addSourceIfMissing(map, id, empty);
+  if (!testudoLayout) addLayerIfMissing(map, { id: SECTION_SOURCE, type: "line", source: SECTION_SOURCE, paint: { "line-color": "#64748b", "line-width": 3, "line-opacity": 0.75 * pathLayerOpacity } });
+  addLayerIfMissing(map, { id: PATH_SOURCE, type: "line", source: PATH_SOURCE, paint: { "line-color": ["get", "color"], "line-width": 7, "line-offset": ["get", "offset"], "line-opacity": ["*", ["get", "opacity"], pathLayerOpacity] } });
+  addLayerIfMissing(map, { id: LABEL_SOURCE, type: "symbol", source: LABEL_SOURCE, layout: { ...MAPLIBRE_LABEL_LAYOUT, "text-field": ["get", "label"], "text-size": snapshot.settings.labelSize }, paint: { ...MAPLIBRE_LABEL_PAINT, "text-opacity": pathLayerOpacity } });
+  addLayerIfMissing(map, { id: SELECTED_LAYER, type: "line", source: SELECTED_SOURCE, paint: { "line-color": "#ef4444", "line-width": 9, "line-opacity": pathLayerOpacity } });
+}
 export function togglePathAnalysisIntervalPlaying(){setPathAnalysisSettings({intervalPlaying:!snapshot.settings.intervalPlaying})}
 export function stepPathAnalysisInterval(direction:1|-1){const values=snapshot.intervals.filter((value)=>value!==0);if(values.length===0)return;const index=values.indexOf(snapshot.settings.interval);const next=index<0?(direction===1?0:values.length-1):index+direction;if(!snapshot.settings.loop&&(next<0||next>=values.length)){setPathAnalysisSettings({intervalPlaying:false});return}setPathAnalysisSettings({interval:values[(next+values.length)%values.length]})}
 // Per-chip removal for the multi-select list, distinct from clearSelection()'s
@@ -116,15 +137,7 @@ class PathAnalysisEngine {
   }
 
   private ensureLayerSources() {
-    const empty = { type: "FeatureCollection", features: [] };
-    const sourceIds = isTestudoLayout() ? [PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE] : [SECTION_SOURCE, PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE];
-    for (const id of sourceIds) {
-      if (!this.map.getSource(id)) this.map.addSource(id, { type: "geojson", data: empty as any });
-    }
-    if (!isTestudoLayout() && !this.map.getLayer(SECTION_SOURCE)) this.map.addLayer({ id: SECTION_SOURCE, type: "line", source: SECTION_SOURCE, paint: { "line-color": "#64748b", "line-width": 3, "line-opacity": 0.75 * pathLayerOpacity } });
-    if (!this.map.getLayer(PATH_SOURCE)) this.map.addLayer({ id: PATH_SOURCE, type: "line", source: PATH_SOURCE, paint: { "line-color": ["get", "color"], "line-width": 7, "line-offset": ["get", "offset"], "line-opacity": ["*", ["get", "opacity"], pathLayerOpacity] } });
-    if (!this.map.getLayer(LABEL_SOURCE)) this.map.addLayer({ id: LABEL_SOURCE, type: "symbol", source: LABEL_SOURCE, layout: { ...MAPLIBRE_LABEL_LAYOUT, "text-field": ["get", "label"], "text-size": snapshot.settings.labelSize }, paint: { ...MAPLIBRE_LABEL_PAINT, "text-opacity": pathLayerOpacity } });
-    if (!this.map.getLayer(SELECTED_LAYER)) this.map.addLayer({ id: SELECTED_LAYER, type: "line", source: SELECTED_SOURCE, paint: { "line-color": "#ef4444", "line-width": 9, "line-opacity": pathLayerOpacity } });
+    ensurePathAnalysisMapObjects(this.map as any);
   }
 
   private sectionFeature(id: number) {
@@ -234,7 +247,14 @@ class PathAnalysisEngine {
       labels.push({ type: "Feature", properties: { priority: labelPriority, label: snapshot.settings.metric === "trips" ? `${tripsLabel} trips` : (percentage > 0 && percentage < 1 ? "<1%" : `${percentage.toFixed(1)}%`) }, geometry: { type: "Point", coordinates: coords[Math.floor(coords.length / 2)] } });
     }
     labels.sort((a, b) => b.properties.priority - a.properties.priority);
-    const set = (id: string, data: any) => (this.map.getSource(id) as any)?.setData(data);
+    const set = (id: string, data: any) => {
+      const source = this.map.getSource(id) as any;
+      if (source) source.setData(data);
+      else {
+        addSourceIfMissing(this.map as any, id, data);
+        (this.map.getSource(id) as any)?.setData(data);
+      }
+    };
     set(PATH_SOURCE, { type: "FeatureCollection", features: pathFeatures });
     set(LABEL_SOURCE, { type: "FeatureCollection", features: labels });
     this.setSelectedFeature(snapshot.selectedSection);
