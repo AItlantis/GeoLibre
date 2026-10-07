@@ -401,8 +401,8 @@ See the [Plugin API](plugin-api.md) to build your own.
   [container route enforcement](self-hosting.md#container-policy-enforcement).
 - `GEOLIBRE_NO_EXTERNAL_CDN=1` build for deployments that cannot load from untrusted third-party hosts: it strips the GeoLibre-controlled CDN references, vendors the PGlite and CereusDB engines into the build rather than dropping them, and makes the few features that genuinely need a remote host (GDAL export, ONNX object detection and Segment Everything, story map HTML export, Pyodide without a configured mirror) report that up front instead of failing at the end of a run. See [Self-hosting](self-hosting.md)
 - Versioned `postMessage` API for a host page that frames the app. See [Talking to the map at runtime](user-guide/embedding.md#talking-to-the-map-at-runtime)
-    - **Commands**: load a project, move the camera, highlight features, open a processing tool, toggle and list layers, apply filters, read the viewport, add a layer, and export the map as a PNG at runtime
-    - **Events back out**: `ready`, `ack`, `projectLoaded`, `selectionChanged`, `viewChanged`, `toolCompleted`, and `serverFileWritten`
+    - **Commands**: load a project, move the camera, highlight features, open a processing tool, toggle and list layers, apply filters, read the viewport, add a layer, export the map as a PNG, and read features back with `getLayerFeatures` and `getDrawnFeatures` (mirroring the plugin API and the Python widget's `get_features` / `get_drawn_features`) at runtime
+    - **Events back out**: `ready`, `ack`, `projectLoaded`, `selectionChanged`, `viewChanged`, `toolCompleted`, `serverFileWritten`, and `featuresChanged` (debounced, so a host can save what the user draws or edits)
     - Protocol v2 is current, and v1 hosts stay supported
     - Off unless the deployment names its trusted origins (`GEOLIBRE_EMBED_ORIGINS`), which are enforced in both directions
     - The origin allowlist decides who may send commands; [deployment capabilities](deployment-capabilities.md) decide which commands exist, so a trusted host page can be granted a narrow slice rather than the whole API
