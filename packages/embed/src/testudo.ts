@@ -11,6 +11,10 @@ export interface TestudoViewModeMetadata {
   scenarioDidPair?: Array<{ scid: number; did: number }>;
 }
 export interface TestudoStyle { display: "ramp" | "extrusion"; metric: string; interval: number; maxHeightM: number; scenarioA?: number; scenarioB?: number }
+export type TestudoKpiGeometry = "sections" | "lanes" | "turns" | "nodes";
+export interface TestudoKpiGeometryState { showSections: boolean; showLanes: boolean; showTurns: boolean; showNodes: boolean }
+export interface TestudoMapControlState { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: "maplibre" | "cesium" }
+export interface TestudoNetworkFilter { id: string; enabled: boolean; value?: string | number | boolean }
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
 export interface TestudoBootstrap {
   packageId: string;

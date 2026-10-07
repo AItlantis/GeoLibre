@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { TestudoGenerationMount, TestudoGenerationResourceCache } from "../packages/plugins/src/shared/testudo-generation-resources";
+import { TestudoPersistentNetwork } from "../packages/plugins/src/shared/testudo-persistent-network";
 import { selectScenarioPathIndex } from "../packages/plugins/src/shared/scenario-path-index";
 import {
   __resetDuckDbLayerRegistryForTests,
@@ -28,6 +29,21 @@ test("persistent network rejects a late mount from an old package generation", a
   resolveMount();
   assert.equal(await pending, false);
   assert.equal(mount.isMounted(1), false);
+});
+
+test("persistent network geometry toggles update the owned layer visibility", () => {
+  const network = new TestudoPersistentNetwork();
+  const changed: Array<[string, string, unknown]> = [];
+  const map = { getLayer: () => ({}), setLayoutProperty: (id: string, key: string, value: unknown) => changed.push([id, key, value]) };
+  (network as unknown as { map: typeof map }).map = map;
+  assert.deepEqual(network.setVisible("sections", false), { showSections: false, showLanes: true, showTurns: true, showNodes: true });
+  assert.deepEqual(network.setVisible("lanes", false), { showSections: false, showLanes: false, showTurns: true, showNodes: true });
+  assert.deepEqual(network.setVisible("turns", false), { showSections: false, showLanes: false, showTurns: false, showNodes: true });
+  assert.deepEqual(network.setVisible("nodes", false), { showSections: false, showLanes: false, showTurns: false, showNodes: false });
+  assert.deepEqual(changed.map(([id, key, value]) => [id, key, value]), [
+    ["testudo-network-sections", "visibility", "none"], ["testudo-network-lanes", "visibility", "none"],
+    ["testudo-network-turns", "visibility", "none"], ["testudo-network-nodes", "visibility", "none"],
+  ]);
 });
 
 test("results resource cache reuses one database resource per package generation", async () => {

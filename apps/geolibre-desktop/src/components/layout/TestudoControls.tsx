@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as plugins from "@geolibre/plugins";
+import { useAppStore } from "@geolibre/core";
 import type { GeoAiViewerContext, GeoLibreAppAPI, TestudoCameraView, TestudoFeatureSession } from "@geolibre/plugins";
 import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
-import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins } from "../../lib/embed-api";
+import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins, unsupportedTestudoCommand } from "../../lib/embed-api";
 import { parentOriginHintFromBrowser, pickBroadcastTargets } from "../../hooks/embedHost";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
@@ -14,7 +15,7 @@ import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 import { openLocalPackageFromActivation } from "../../lib/testudo-picker-flow";
-import { pluginForTestudoMode, validateTestudoStyle } from "../../lib/testudo-view-style";
+import { availableModesForScenario, pluginForTestudoMode, validateTestudoStyle } from "../../lib/testudo-view-style";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
@@ -88,6 +89,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let directory: VehicleDirectoryHandle | null = null;
     let bootstrap: TestudoBootstrap | null = null;
     let declaredScenarioIds: Array<string | number> = [];
+    let preferredMode: TestudoDemoMode | undefined;
+    let declaredAvailableModes: TestudoDemoMode[] = [];
     let abort = new AbortController();
     let disposed = false;
     let generation = 0;
@@ -172,6 +175,26 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             return id;
           },
           setViewMode: mode => mode,
+          setKpiGeometry: (geometry, visible) => persistentNetwork.setVisible(geometry, visible),
+          getKpiGeometryState: () => persistentNetwork.getVisibility(),
+          setMapControl: (controlId, visible) => {
+            if (controlId === "legend") {
+              if (visible) plugins.openLegendPanel(app); else plugins.closeLegendPanel(app);
+              return plugins.isLegendPanelVisible() === visible;
+            }
+            if (controlId === "esri-world-imagery") return persistentNetwork.setEsriWorldImagery(visible);
+            throw new Error(`Map control ${controlId} is unavailable.`);
+          },
+          getMapControlState: () => ({
+            legendVisible: plugins.isLegendPanelVisible(),
+            esriWorldImageryVisible: persistentNetwork.isEsriWorldImageryVisible(),
+            renderer: useAppStore.getState().primaryRenderer === "cesium" ? "cesium" : "maplibre",
+          }),
+          setRenderer: renderer => {
+            useAppStore.getState().setPrimaryRenderer(renderer);
+            return renderer;
+          },
+          setNetworkFilter: () => { throw new Error("Network filters are unavailable: the original network plugins expose no Testudo filter control."); },
           getCameraView: () => {
             const center = app.getMap?.()?.getCenter?.(); const activeMap = app.getMap?.();
             if (!center || !activeMap) return null;
@@ -190,6 +213,12 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (!disposed && target && allowed.includes(target)) window.parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
     };
     const unsubscribeBridgeGeoAI = featureBridge.subscribeGeoAIRequests(request => emit("testudoGeoAIRequest", request));
+    const unsubscribePlayback = featureBridge.subscribePlayback((tviewId, playback) => {
+      const session = featureBridge.sessions.get(tviewId);
+      if (session && featureBridge.sessions.isCurrent({ tviewId, generation: session.context.generation })) {
+        emit("testudoPlaybackChanged", { ...playback, tviewId });
+      }
+    });
     const relayReplies = new Map<string, (reply: plugins.TestudoGeoAIReply & { requestId: string; tviewId: string; generation: number }) => void>();
     const unsubscribeBridgeReplies = featureBridge.subscribeGeoAIReplies(reply => {
       relayReplies.get(reply.requestId)?.(reply);
@@ -409,6 +438,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           : mode === "animation" ? "Animation requires at least one playable scenario."
           : mode === "paths" ? "Path analysis requires a scenario path index." : "Results mode requires a supported network KPI."));
       }
+      preferredMode = mode;
       const target = modes.find(item => item.id === mode) ?? { id: mode, plugin: pluginForTestudoMode(mode) };
       const result = current.status === "ready" && current.selectedPlugin === target.plugin ? current : await select(target.plugin);
       if (mode === "animation") {
@@ -450,6 +480,10 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       const style = viewMode ? { display: viewMode.style.type, metric: defaultMetric, interval: 0, maxHeightM: viewMode.style.max ?? 100, ...(pairA >= 0 && pairB >= 0 ? { scenarioA: pairA, scenarioB: pairB } : {}) } : current.style;
       const updated = update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
       if (bridgeInstalled) await featureBridge.setViewMode("main", mode);
+      if (bridgeInstalled) {
+        const session = featureBridge.sessions.get("main");
+        if (session) emit("testudoPlaybackChanged", { ...featureBridge.getPlaybackState("main", session.context.generation), tviewId: "main" });
+      }
       return updated;
     };
     modeSelector.current = async mode => {
@@ -507,6 +541,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       bridgeInstalled = false;
       bridgePluginId = null;
       comparisonDeclared = false;
+      preferredMode = undefined;
+      declaredAvailableModes = [];
       closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = [];
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
@@ -599,6 +635,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         paths: safeCapabilities.some(item => item.id === "path-analysis" && item.available)
           && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
       });
+      declaredAvailableModes = [...availableModes];
       const matchedReason = "Scenario comparison is unavailable: this package has no matched simulation intervals.";
       comparisonDeclared = hasMatchedComparison;
       update({ availableModes, viewModes: pkg?.viewModes, timeAxis: pkg?.timeAxis ?? undefined, scenarios: declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` })), selectedScenarioId: declaredScenarioIds.length ? String(declaredScenarioIds[0]) : undefined,
@@ -660,6 +697,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           environment: capabilities.some(item => item.id === "emissions-h3" && item.available) && emissions?.status === "available" && Boolean(pkg.viewModes.environment),
           paths: capabilities.some(item => item.id === "path-analysis" && item.available) && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
         });
+        declaredAvailableModes = [...availableModes];
         update({ package: { packageId: crypto.randomUUID(), versionId: null, label: selected.name, origin: "local" }, capabilities, availableModes, viewModes: pkg.viewModes, timeAxis: pkg.timeAxis ?? undefined, scenarios: declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` })), selectedScenarioId: declaredScenarioIds.length ? String(declaredScenarioIds[0]) : undefined, status: "loading" });
         const localBootstrap = { packageId: current.package!.packageId, versionId: "local", label: selected.name,
           origin: "published" as const, manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
@@ -858,29 +896,51 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Scenario command targets an unsupported TView.");
             if (generationExpected !== undefined && generationExpected !== generation) throw new Error("Scenario command belongs to a stale package generation.");
             const scenarioId = await featureBridge.selectScenario("main", String(request.payload?.scenarioId), generationExpected as number | undefined);
-            if (bridgePluginId === "emissions-h3") {
-              const hasEmissions = plugins.getEmissionsH3Status().hasEmissions;
+            if (current.viewModes?.environment) {
+              const emissionsStatus = plugins.getEmissionsH3Status();
+              const emissionsIndex = emissionsStatus.scenarios.findIndex(row => String(row.id) === scenarioId);
+              if (emissionsIndex >= 0 && bridgePluginId !== "emissions-h3") await plugins.setEmissionsH3Scenario(emissionsIndex);
+              const hasEmissions = emissionsIndex >= 0 && plugins.getEmissionsH3Status().hasEmissions;
               const reason = "Environment mode is unavailable for this scenario because it has no usable emissions rows.";
-              const availableModes = hasEmissions && current.viewModes?.environment
-                ? [...new Set([...current.availableModes, "environment" as TestudoDemoMode])]
-                : current.availableModes.filter(mode => mode !== "environment");
+              const availableModes = availableModesForScenario(declaredAvailableModes, hasEmissions && Boolean(current.viewModes?.environment));
               const capabilities = current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions, reason: hasEmissions ? undefined : reason } : item);
               const activeSession = featureBridge.sessions.get("main");
               if (activeSession) { activeSession.availableModes = availableModes; activeSession.capabilities = capabilities.filter(item => featureCapabilityIds.includes(item.id)) as TestudoFeatureSession["capabilities"]; }
-              update({ selectedScenarioId: scenarioId, availableModes, capabilities, ...(hasEmissions ? {} : { selectedMode: undefined }) });
-              if (!hasEmissions) throw new Error(reason);
+              const selectedMode = current.selectedMode;
+              update({ selectedScenarioId: scenarioId, availableModes, capabilities });
+              if (!hasEmissions && selectedMode === "environment") {
+                const fallback = ["results", "flow", "animation", "paths", "comparison", "density"].find(mode => availableModes.includes(mode as TestudoDemoMode)) as TestudoDemoMode | undefined;
+                if (!fallback) throw new Error(reason);
+                const restorePreferred = preferredMode;
+                await selectMode(fallback);
+                preferredMode = restorePreferred;
+              } else if (hasEmissions && preferredMode === "environment" && selectedMode !== "environment") {
+                await selectMode("environment");
+              }
             } else update({ selectedScenarioId: scenarioId });
             return { scenarioId };
           }
           if (request.type === "testudoSetStyle") {
             if (request.payload?.tviewId !== "main" || request.payload?.generation !== generation) throw new Error("Style command belongs to a stale package generation.");
-            const style = validateTestudoStyle(request.payload?.style, current.selectedMode, declaredScenarioIds.length);
+            const comparisonScenarios = current.selectedMode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : undefined;
+            const style = validateTestudoStyle(request.payload?.style, current.selectedMode, declaredScenarioIds.length, comparisonScenarios);
+            const incomingStyle = request.payload?.style as Record<string, unknown>;
             const { display, metric, interval, maxHeightM, scenarioA, scenarioB } = style;
             const extruded = display === "extrusion";
-            if (current.selectedMode === "comparison") handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), ...(scenarioA !== undefined ? { scenarioA: Number(scenarioA) } : {}), ...(scenarioB !== undefined ? { scenarioB: Number(scenarioB) } : {}) });
+            if (current.selectedMode === "comparison") {
+              const pair = scenarioA === undefined && scenarioB === undefined ? {} : {
+                ...(scenarioA !== undefined ? { scenarioA } : {}),
+                ...(scenarioB !== undefined ? { scenarioB } : {}),
+              };
+              handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), mode: scenarioA === undefined && scenarioB === undefined ? "side-by-side" : "diff", ...pair });
+            }
             else if (current.selectedMode === "environment") handlers["emissions-h3"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setEmissionsH3Settings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
             else handlers["network-kpi"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setNetworkKpiSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
-            return update({ style });
+            return update({ style: current.selectedMode === "comparison" ? {
+              ...style,
+              ...(typeof incomingStyle.scenarioA === "number" ? { scenarioA: incomingStyle.scenarioA } : { scenarioA: undefined }),
+              ...(typeof incomingStyle.scenarioB === "number" ? { scenarioB: incomingStyle.scenarioB } : { scenarioB: undefined }),
+            } : style });
           }
           if (request.type === "testudoSetScenarioPair") {
             if (!current.capabilities.some(item => item.id === "scenario-comparison" && item.available)) throw new Error("Scenario comparison is unavailable for this package.");
@@ -893,6 +953,42 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             scenarioAdapters.comparison(scenarioA, scenarioB);
             return { scenarioA, scenarioB };
           }
+          if (request.type === "testudoSetLegendVisibility" || request.type === "testudoSetEsriWorldImagery") {
+            if (typeof request.payload?.visible !== "boolean") throw new Error("visible must be a boolean.");
+            const controlId = request.type === "testudoSetLegendVisibility" ? "legend" : "esri-world-imagery";
+            await featureBridge.setMapControl("main", controlId, request.payload.visible, request.payload?.generation);
+            const state = featureBridge.getMapControlState("main", request.payload?.generation);
+            return { visible: controlId === "legend" ? state.legendVisible : state.esriWorldImageryVisible };
+          }
+          if (request.type === "testudoSetMapControl") {
+            const controlId = request.payload?.controlId;
+            if (typeof controlId !== "string" || typeof request.payload?.visible !== "boolean") throw new Error("controlId and boolean visible are required.");
+            return { visible: await featureBridge.setMapControl("main", controlId, request.payload.visible, request.payload?.generation) };
+          }
+          if (request.type === "testudoGetMapControlState") return featureBridge.getMapControlState("main", request.payload?.generation);
+          if (request.type === "testudoSetKpiGeometry") {
+            const geometry = request.payload?.geometry;
+            if (!["sections", "lanes", "turns", "nodes"].includes(String(geometry)) || typeof request.payload?.visible !== "boolean") {
+              throw new Error("geometry must be sections, lanes, turns, or nodes, and visible must be boolean.");
+            }
+            return featureBridge.setKpiGeometry("main", geometry as "sections" | "lanes" | "turns" | "nodes", request.payload.visible, request.payload?.generation);
+          }
+          if (request.type === "testudoGetKpiGeometryState") return featureBridge.getKpiGeometryState("main", request.payload?.generation);
+          if (request.type === "testudoSetRenderer") {
+            const renderer = request.payload?.renderer;
+            if (renderer !== "maplibre" && renderer !== "cesium") throw new Error("renderer must be maplibre or cesium.");
+            return { renderer: await featureBridge.setRenderer("main", renderer, request.payload?.generation) };
+          }
+          if (request.type === "testudoSetNetworkFilter") {
+            const filter = request.payload?.filter;
+            if (!filter || typeof filter !== "object" || typeof filter.id !== "string" || !filter.id.trim() || typeof filter.enabled !== "boolean"
+              || (filter.value !== undefined && !["string", "number", "boolean"].includes(typeof filter.value))) throw new Error("filter must contain an id, enabled flag, and optional scalar value.");
+            await featureBridge.setNetworkFilter("main", filter, request.payload?.generation);
+            return { applied: true as const };
+          }
+          if (request.type === "testudoOpenAnnotations") return { active: await featureBridge.openAnnotations("main", request.payload?.generation) };
+          if (request.type === "testudoOpenRecordTour" || request.type === "testudoRecordTour") { await featureBridge.openRecordTour("main", request.payload?.generation); return { opened: true }; }
+          if (request.type === "testudoOpenRecordVideo" || request.type === "testudoRecordVideo") { await featureBridge.openRecordVideo("main", request.payload?.generation); return { opened: true }; }
           if (request.type === "testudoSetPlaybackPlaying") return featureBridge.playback("main", request.payload?.playing ? "play" : "pause", undefined, request.payload?.generation);
           if (request.type === "testudoRestartPlayback") return featureBridge.playback("main", "restart", undefined, request.payload?.generation);
           if (request.type === "testudoSeekPlayback") return featureBridge.playback("main", "seek", Number(request.payload?.tick), request.payload?.generation);
@@ -924,7 +1020,8 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             } else handlers.geoai.close(app);
             return update({ assistantOpen: plugins.isGeoAiChatPanelVisible() });
           }
-          return await applyPreset(request.payload?.id);
+          if (request.type === "testudoSetPreset") return await applyPreset(request.payload?.id);
+          throw unsupportedTestudoCommand(request.type);
         } finally { busy = false; }
       };
       void run().then(result => emit("ack", { requestId: request.requestId, ok: true, result }), error => {
@@ -941,7 +1038,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-local-package-picker", onLocalPickerActivation); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-local-package-picker", onLocalPickerActivation); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));

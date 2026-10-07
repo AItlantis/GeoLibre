@@ -470,7 +470,7 @@ export class TestudoFeatureBridge {
     return selected;
   }
 
-  async setKpiGeometry(tviewId: string, geometry: "lanes" | "sections", visible: boolean, generation?: number) {
+  async setKpiGeometry(tviewId: string, geometry: "lanes" | "sections" | "turns" | "nodes", visible: boolean, generation?: number) {
     const session = this.requireSession(tviewId, generation);
     if (!session.setKpiGeometry) throw new Error("KPI geometry controls are unavailable for this package.");
     const state = await session.setKpiGeometry(geometry, visible);
@@ -479,7 +479,7 @@ export class TestudoFeatureBridge {
   }
 
   getKpiGeometryState(tviewId: string, generation?: number) {
-    return this.requireSession(tviewId, generation).getKpiGeometryState?.() ?? { showLanes: false, showSections: false };
+    return this.requireSession(tviewId, generation).getKpiGeometryState?.() ?? { showLanes: false, showSections: false, showTurns: false, showNodes: false };
   }
 
   async openAnnotations(tviewId: string, generation?: number) {
@@ -515,8 +515,8 @@ export class TestudoFeatureBridge {
     return selected;
   }
 
-  async setNetworkFilter(tviewId: string, filter: TestudoNetworkFilter): Promise<void> {
-    const session = this.requireSession(tviewId);
+  async setNetworkFilter(tviewId: string, filter: TestudoNetworkFilter, generation?: number): Promise<void> {
+    const session = this.requireSession(tviewId, generation);
     if (!session.setNetworkFilter) throw new Error("Network filters are unavailable for this package.");
     await session.setNetworkFilter(filter);
     this.assertCurrent(session);

@@ -20,6 +20,7 @@ import {
   parseEmbedRequest,
   parseTestudoEmbedRequest,
   parseTestudoArtifactResponse,
+  unsupportedTestudoCommand,
   isSafeArtifactReference,
   readEmbedOrigins,
   requireEmbedLayer,
@@ -35,6 +36,8 @@ describe("Testudo embed protocol", () => {
   it("accepts old website verbs while rejecting credentials recursively", () => {
     const legacy = { v: EMBED_API_VERSION, source: "testudo", type: "testudoLoadPackage", requestId: "1", payload: { challenge, bootstrap: {} } };
     assert.equal(parseTestudoEmbedRequest(legacy, challenge)?.type, "testudoLoadPackage");
+    assert.equal(parseTestudoEmbedRequest({ ...legacy, type: "unknownTestudoCommand" }, challenge)?.type, "unknownTestudoCommand");
+    assert.throws(() => { throw unsupportedTestudoCommand("unknownTestudoCommand"); }, /Unsupported Testudo command: unknownTestudoCommand/);
     assert.equal(parseTestudoEmbedRequest({ ...legacy, payload: { ...legacy.payload, bearerToken: "secret" } }, challenge), null);
     assert.equal(containsCredentialField({ nested: [{ Authorization: "Bearer secret" }] }), true);
   });

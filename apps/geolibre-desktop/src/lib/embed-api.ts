@@ -760,22 +760,16 @@ export function isSafeArtifactReference(value: string): boolean {
   try { return !decodeURIComponent(value).split("/").some(part => part === ".."); } catch { return false; }
 }
 
-const TESTUDO_COMMANDS = new Set([
-  "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoLoadPackage", "testudoOpenLocalPackage",
-  "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState", "testudoSetScenario", "testudoSetStyle", "testudoSetPlaybackPlaying",
-  "testudoSetScenarioPair", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView",
-  "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility",
-  "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState",
-  "testudoRequestInvestigation", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo",
-  "testudoSetGuestCapability", "testudoOpenGeoAiChat",
-]);
-
 export interface TestudoEmbedRequest { type: string; requestId: string; payload: Record<string, unknown> }
 export interface TestudoArtifactResponse { requestId: string; tviewId: string; generation: number; artifactRef: string; bytes?: ArrayBuffer; error?: string }
 
-/** Validate the Testudo command namespace while preserving the website's legacy verbs. */
+export function unsupportedTestudoCommand(type: string): Error {
+  return new Error(`Unsupported Testudo command: ${type}`);
+}
+
+/** Validate the Testudo envelope while allowing the handler to acknowledge unknown verbs explicitly. */
 export function parseTestudoEmbedRequest(data: unknown, challenge: string): TestudoEmbedRequest | null {
-  if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo" || typeof data.type !== "string" || !TESTUDO_COMMANDS.has(data.type)
+  if (!isRecord(data) || data.v !== EMBED_API_VERSION || data.source !== "testudo" || typeof data.type !== "string" || !data.type || data.type.length > 100
     || typeof data.requestId !== "string" || !data.requestId || data.requestId.length > 200 || !isRecord(data.payload)
     || data.payload.challenge !== challenge || (data.type !== "testudoSetGuestCapability" && containsCredentialField(data.payload))) return null;
   const { challenge: _challenge, ...payload } = data.payload;

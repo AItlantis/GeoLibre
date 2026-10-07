@@ -172,6 +172,9 @@ it("Testudo commands use existing origin-checked acknowledgement and state event
   const challenge = "0123456789abcdef0123456789abcdef";
   receive("ready", { challenge });
   const client = await pending;
+  for (const method of ["testudoGetMapControlState", "testudoGetKpiGeometryState", "testudoSetKpiGeometry", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetRenderer", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoSetViewMode", "testudoSetNetworkFilter"]) {
+    assert.equal(typeof client[method as keyof typeof client], "function", `${method} is part of the typed embed client`);
+  }
   const state = { package: null, selectedPlugin: null, capabilities: [], status: "empty" };
   const result = client.testudoSetPlugin({ id: "network-kpi" });
   const request = sent.at(-1)!.message;

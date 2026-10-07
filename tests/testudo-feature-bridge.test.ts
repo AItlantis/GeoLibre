@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TestudoFeatureBridge, type TestudoPackageBootstrap } from "../packages/plugins/src/testudo-feature-bridge";
-import type { TestudoFeatureContext, TestudoFeatureSession } from "../packages/plugins/src/shared/testudo-feature-session";
+import type { TestudoFeatureContext, TestudoFeatureSession, TestudoPlaybackState } from "../packages/plugins/src/shared/testudo-feature-session";
 
 const bootstrap: TestudoPackageBootstrap = {
   packageId: "London/demo",
@@ -15,7 +15,7 @@ function provider(context: TestudoFeatureContext, delivered: string[] = []): Tes
   let playbackState = { available: true, loading: false, playing: false, tick: 4, maxTick: 30, speed: 2, dt: 1, loop: false };
   let camera = { center: [0, 0] as [number, number], zoom: 8, bearing: 0, pitch: 0 };
   let mapControls = { legendVisible: true, esriWorldImageryVisible: false, renderer: "maplibre" as const };
-  let kpiGeometry = { showLanes: false, showSections: true };
+  let kpiGeometry = { showLanes: false, showSections: true, showTurns: true, showNodes: true };
   return {
     context,
     scenarios: [
@@ -42,7 +42,9 @@ function provider(context: TestudoFeatureContext, delivered: string[] = []): Tes
     getMapControlState: () => ({ ...mapControls }),
     setRenderer: (renderer) => { mapControls = { ...mapControls, renderer }; return renderer; },
     setKpiGeometry: (geometry, visible) => {
-      kpiGeometry = geometry === "lanes" ? { ...kpiGeometry, showLanes: visible } : { ...kpiGeometry, showSections: visible };
+      kpiGeometry = geometry === "lanes" ? { ...kpiGeometry, showLanes: visible }
+        : geometry === "sections" ? { ...kpiGeometry, showSections: visible }
+          : geometry === "turns" ? { ...kpiGeometry, showTurns: visible } : { ...kpiGeometry, showNodes: visible };
       return { ...kpiGeometry };
     },
     getKpiGeometryState: () => ({ ...kpiGeometry }),
@@ -99,9 +101,11 @@ test("camera and Camera-panel bridge controls return their contract state and re
   assert.deepEqual(bridge.getMapControlState("main", context.generation), {
     legendVisible: false, esriWorldImageryVisible: true, renderer: "maplibre",
   });
-  assert.deepEqual(await bridge.setKpiGeometry("main", "lanes", true, context.generation), { showLanes: true, showSections: true });
-  assert.deepEqual(await bridge.setKpiGeometry("main", "sections", false, context.generation), { showLanes: true, showSections: false });
-  assert.deepEqual(bridge.getKpiGeometryState("main", context.generation), { showLanes: true, showSections: false });
+  assert.deepEqual(await bridge.setKpiGeometry("main", "lanes", true, context.generation), { showLanes: true, showSections: true, showTurns: true, showNodes: true });
+  assert.deepEqual(await bridge.setKpiGeometry("main", "sections", false, context.generation), { showLanes: true, showSections: false, showTurns: true, showNodes: true });
+  assert.deepEqual(await bridge.setKpiGeometry("main", "turns", false, context.generation), { showLanes: true, showSections: false, showTurns: false, showNodes: true });
+  assert.deepEqual(await bridge.setKpiGeometry("main", "nodes", false, context.generation), { showLanes: true, showSections: false, showTurns: false, showNodes: false });
+  assert.deepEqual(bridge.getKpiGeometryState("main", context.generation), { showLanes: true, showSections: false, showTurns: false, showNodes: false });
   assert.deepEqual({ renderer: await bridge.setRenderer("main", "maplibre", context.generation) }, { renderer: "maplibre" });
 
   assert.throws(() => bridge.getCameraView("main", context.generation - 1), /stale Testudo package generation/);
@@ -109,6 +113,31 @@ test("camera and Camera-panel bridge controls return their contract state and re
   await assert.rejects(bridge.setMapControl("main", "legend", true, context.generation - 1), /stale Testudo package generation/);
   await assert.rejects(bridge.setKpiGeometry("main", "sections", true, context.generation - 1), /stale Testudo package generation/);
   await assert.rejects(bridge.setRenderer("main", "maplibre", context.generation - 1), /stale Testudo package generation/);
+});
+
+test("playback updates are published only for the current TView generation", async () => {
+  let publish!: (state: TestudoPlaybackState) => void;
+  const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => {
+    const session = provider(context);
+    session.playback = {
+      getPlaybackState: () => ({ available: true, loading: false, playing: false, tick: 0, maxTick: 767, speed: 1, dt: 0.8, loop: true }),
+      play: () => session.playback!.getPlaybackState("main", context.generation),
+      pause: () => session.playback!.getPlaybackState("main", context.generation),
+      restart: () => session.playback!.getPlaybackState("main", context.generation),
+      seek: () => session.playback!.getPlaybackState("main", context.generation),
+      setSpeed: () => session.playback!.getPlaybackState("main", context.generation),
+      subscribe: listener => { publish = state => listener("main", context.generation, state); return () => {}; },
+    };
+    return session;
+  } });
+  await createAndLoad(bridge, "main");
+  const events: number[] = [];
+  bridge.subscribePlayback((_id, state) => events.push(state.maxTick));
+  publish({ available: true, loading: false, playing: true, tick: 1, maxTick: 767, speed: 1, dt: 0.8, loop: true });
+  assert.deepEqual(events, [767]);
+  bridge.close("main");
+  publish({ available: true, loading: false, playing: true, tick: 2, maxTick: 767, speed: 1, dt: 0.8, loop: true });
+  assert.deepEqual(events, [767]);
 });
 
 test("recording and annotation commands report unavailable capabilities instead of false success", async () => {

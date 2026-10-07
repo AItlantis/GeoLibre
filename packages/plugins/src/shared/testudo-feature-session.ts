@@ -39,6 +39,8 @@ export type TestudoNetworkFilter = {
   value?: string | number | boolean;
 };
 export type TestudoRenderer = "maplibre" | "cesium";
+export type TestudoKpiGeometry = "sections" | "lanes" | "turns" | "nodes";
+export type TestudoKpiGeometryState = { showSections: boolean; showLanes: boolean; showTurns: boolean; showNodes: boolean };
 
 export interface TestudoPlaybackFeature {
   getPlaybackState(tviewId: string, generation: number): TestudoPlaybackState;
@@ -72,6 +74,7 @@ export interface TestudoMapHandle {
   addSource(id: string, source: Record<string, unknown>): void;
   removeSource(id: string): void;
   getLayer(id: string): unknown;
+  getStyle?(): { layers?: Array<{ id?: string; type?: string }> };
   addLayer(layer: Record<string, unknown>, beforeId?: string): void;
   removeLayer(id: string): void;
   setLayoutProperty(id: string, name: string, value: unknown): void;
@@ -141,8 +144,8 @@ export interface TestudoFeatureSession {
   setMapControl?(controlId: string, visible: boolean): Promise<boolean> | boolean;
   getMapControlState?(): { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: TestudoRenderer };
   setRenderer?(renderer: TestudoRenderer): Promise<TestudoRenderer> | TestudoRenderer;
-  setKpiGeometry?(geometry: "lanes" | "sections", visible: boolean): Promise<{ showLanes: boolean; showSections: boolean }> | { showLanes: boolean; showSections: boolean };
-  getKpiGeometryState?(): { showLanes: boolean; showSections: boolean };
+  setKpiGeometry?(geometry: TestudoKpiGeometry, visible: boolean): Promise<TestudoKpiGeometryState> | TestudoKpiGeometryState;
+  getKpiGeometryState?(): TestudoKpiGeometryState;
   openAnnotations?(): Promise<boolean> | boolean;
   openRecordTour?(): Promise<void> | void;
   openRecordVideo?(): Promise<void> | void;
