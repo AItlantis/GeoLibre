@@ -51,6 +51,7 @@ import {
   type KpiRampOverrides,
 } from "./network-kpi-ramps";
 import { registerDuckDbLayer, releaseDuckDbLayer } from "../shared/duckdb-layer-registry";
+import { isTestudoLayout } from "../shared/testudo-layout";
 
 /**
  * GeoLibre network-kpi plugin.
@@ -534,7 +535,7 @@ class NetworkKpiEngine {
       },
     }) as unknown as Layer;
 
-    setSharedDeckLayers(NETWORK_KPI_DECK_SOURCE, [baseLayer, overlayLayer]);
+    setSharedDeckLayers(NETWORK_KPI_DECK_SOURCE, isTestudoLayout() ? [overlayLayer] : [baseLayer, overlayLayer]);
     this.deckActive = true;
   }
 

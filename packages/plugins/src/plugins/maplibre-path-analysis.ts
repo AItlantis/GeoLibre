@@ -8,6 +8,7 @@ import { canLoadLocalPathAnalysisPackage, createPathAnalysisDirectorySource, loa
 import { pathColorRgb, pathElevation, pathMetricRampExpression, pathMetricValue, type PathMetric } from "./path-analysis-ramps";
 import { bufferLineToRing } from "./network-kpi-geometry";
 import { registerDuckDbLayer, releaseDuckDbLayer } from "../shared/duckdb-layer-registry";
+import { isTestudoLayout } from "../shared/testudo-layout";
 import { MAPLIBRE_LABEL_LAYOUT, MAPLIBRE_LABEL_PAINT, formatTripVolume } from "../shared/map-labels";
 export const PATH_ANALYSIS_PLUGIN_ID="geolibre-path-analysis";
 export const PATH_ANALYSIS_STORE_LAYER_ID="geolibre-path-analysis-layer";
@@ -17,6 +18,8 @@ const PATH_RIBBON_WIDTH_M=12;
 let pathAnalysisLayerVisible=true;
 let pathLayerOpacity = 1;
 let loadToken=0;
+let pathPackageDirectory: VehicleDirectoryHandle | null = null;
+let selectedPathScenarioId: string | number | undefined;
 let intervalTimer: ReturnType<typeof setInterval> | null = null;
 export interface PathAnalysisSettings{manifestUrl:string|null;rule:PathRule;metric:PathMetric;displayMode:"section-volumes"|"origin-destination";extruded:boolean;maxHeightM:number;seeThroughBuildings:boolean;labelSize:number;visible:boolean;interval:number;intervalPlaying:boolean;playbackSpeed:number;loop:boolean}
 export interface PathAnalysisSnapshot{settings:PathAnalysisSettings;loading:boolean;selectionLoading:boolean;selectionError:string|null;error:string|null;summary:Record<string,unknown>|null;intervals:number[];selectedSections:number[];selectedSection:number|null;selectedSectionName:string|null;selectedVolume:number;sectionVolumes:Array<{section_id:number;volume:number;totalVolume:number;percentage:number;role:"upstream"|"selected"|"downstream"}>;matches:PathMatch[]}
@@ -33,7 +36,12 @@ export function openPathAnalysisPanel(app:GeoLibreAppAPI){appRef=app;visible=tru
 // own `this.data?.close()` sees the already-nulled field and no-ops.
 export function closePathAnalysisPanel(){visible=false;loadToken++;stopPathAnalysisTimer();snapshot={...snapshot,loading:false,settings:{...snapshot.settings,intervalPlaying:false}};releaseDuckDbLayer("path-analysis");appRef?.unregisterExternalNativeLayer?.(PATH_ANALYSIS_STORE_LAYER_ID);engine?.disposeData();panelListeners.forEach(f=>f())}
 export async function setPathAnalysisManifestUrl(url:string){const token=++loadToken;stopPathAnalysisTimer();engine?.disposeData();snapshot={...snapshot,summary:null,intervals:[],selectedSections:[],selectedSection:null,selectedSectionName:null,selectedVolume:0,sectionVolumes:[],matches:[],settings:{...snapshot.settings,manifestUrl:url,interval:0,intervalPlaying:false},loading:true,error:null,selectionLoading:false,selectionError:null};notify();try{const p=parsePathAnalysisManifest(await fetchNetworkKpiManifestJson(url),url);if(token!==loadToken)return;if(!p.available)throw new Error(p.unavailableReason??"Path data is unavailable in this package.");const d=await loadPathAnalysis(createHttpPackageSource(url),p);if(token!==loadToken){d.close();return}engine?.setData(d);fitPathAnalysisBounds(p.bounds);snapshot={...snapshot,loading:false,summary:d.summary,intervals:d.intervals??[],settings:{...snapshot.settings,interval:0,intervalPlaying:false},selectedSections:[],selectedSection:null,selectedSectionName:null,matches:[]}}catch(e){if(token!==loadToken)return;snapshot={...snapshot,loading:false,error:e instanceof Error?e.message:String(e)};notify()}notify()}
-export async function loadLocalPathAnalysisFolder(selectedDirectory?:VehicleDirectoryHandle){const token=++loadToken;if(!selectedDirectory&&!supportsLocalPackageFolders()){snapshot={...snapshot,error:"Local folders are not supported in this browser."};notify();return}stopPathAnalysisTimer();engine?.disposeData();snapshot={...snapshot,summary:null,intervals:[],selectedSections:[],selectedSection:null,selectedSectionName:null,selectedVolume:0,sectionVolumes:[],matches:[],selectionLoading:false,selectionError:null,loading:true,error:null,settings:{...snapshot.settings,interval:0,intervalPlaying:false}};notify();try{const root=selectedDirectory??await(window as any).showDirectoryPicker() as VehicleDirectoryHandle;if(token!==loadToken)return;const p=parsePathAnalysisManifest(await readLocalPathAnalysisManifestJson(root),null);if(token!==loadToken)return;const d=await loadPathAnalysis(createPathAnalysisDirectorySource(root),p);if(token!==loadToken){d.close();return}engine?.setData(d);fitPathAnalysisBounds(p.bounds);snapshot={...snapshot,loading:false,summary:d.summary,intervals:d.intervals??[],settings:{...snapshot.settings,interval:0,intervalPlaying:false,manifestUrl:null},selectedSections:[],selectedSection:null,selectedSectionName:null,matches:[]};notify()}catch(e){if(token!==loadToken)return;snapshot={...snapshot,loading:false,error:(e as Error).name!=="AbortError"?(e instanceof Error?e.message:String(e)):null};notify()}}
+export async function loadLocalPathAnalysisFolder(selectedDirectory?:VehicleDirectoryHandle, scenarioId=selectedPathScenarioId){const token=++loadToken;if(!selectedDirectory&&!supportsLocalPackageFolders()){snapshot={...snapshot,error:"Local folders are not supported in this browser."};notify();return}stopPathAnalysisTimer();engine?.disposeData();snapshot={...snapshot,summary:null,intervals:[],selectedSections:[],selectedSection:null,selectedSectionName:null,selectedVolume:0,sectionVolumes:[],matches:[],selectionLoading:false,selectionError:null,loading:true,error:null,settings:{...snapshot.settings,interval:0,intervalPlaying:false}};notify();try{const root=selectedDirectory??pathPackageDirectory??await(window as any).showDirectoryPicker() as VehicleDirectoryHandle;if(token!==loadToken)return;pathPackageDirectory=root;selectedPathScenarioId=scenarioId;const p=parsePathAnalysisManifest(await readLocalPathAnalysisManifestJson(root),null,scenarioId);if(token!==loadToken)return;const d=await loadPathAnalysis(createPathAnalysisDirectorySource(root),p);if(token!==loadToken){d.close();return}engine?.setData(d);fitPathAnalysisBounds(p.bounds);snapshot={...snapshot,loading:false,summary:d.summary,intervals:d.intervals??[],settings:{...snapshot.settings,interval:0,intervalPlaying:false,manifestUrl:null},selectedSections:[],selectedSection:null,selectedSectionName:null,matches:[]};notify()}catch(e){if(token!==loadToken)return;snapshot={...snapshot,loading:false,error:(e as Error).name!=="AbortError"?(e instanceof Error?e.message:String(e)):null};notify()}}
+export async function setPathAnalysisScenario(scenarioId:string|number):Promise<void>{
+  if(selectedPathScenarioId!==undefined&&String(selectedPathScenarioId)===String(scenarioId))return;
+  selectedPathScenarioId=scenarioId;
+  if(pathPackageDirectory)await loadLocalPathAnalysisFolder(pathPackageDirectory,scenarioId);
+}
 export{canLoadLocalPathAnalysisPackage};export function reattachPathAnalysis(app:GeoLibreAppAPI){appRef=app;if(visible){registerPathAnalysisStoreLayer();if(!engine){const map=app.getMap?.();if(map)engine=new PathAnalysisEngine(app,map)}}}export function setPathAnalysisSettings(p:Partial<PathAnalysisSettings>){const previous=snapshot.settings;snapshot={...snapshot,settings:{...snapshot.settings,...p}};const queryChanged=previous.interval!==snapshot.settings.interval||previous.rule!==snapshot.settings.rule;if(queryChanged)void engine?.refresh();else void engine?.render();if(previous.intervalPlaying!==snapshot.settings.intervalPlaying||previous.playbackSpeed!==snapshot.settings.playbackSpeed||previous.loop!==snapshot.settings.loop)syncPathAnalysisTimer();notify()}export function clearPathAnalysisSelection(){void engine?.clearSelection()}
 function stopPathAnalysisTimer(){if(intervalTimer){clearInterval(intervalTimer);intervalTimer=null}}
 function syncPathAnalysisTimer(){stopPathAnalysisTimer();if(snapshot.settings.intervalPlaying&&snapshot.intervals.filter((value)=>value!==0).length>0)intervalTimer=setInterval(()=>{if(!snapshot.selectionLoading)stepPathAnalysisInterval(1)},Math.max(100,1000/Math.max(0.1,snapshot.settings.playbackSpeed||1)))}
@@ -80,7 +88,7 @@ class PathAnalysisEngine {
     this.data = data;
     this.ensureLayerSources();
     const sections = this.map.getSource(SECTION_SOURCE) as any;
-    sections?.setData(data.geometry.sections as any);
+    if (!isTestudoLayout()) sections?.setData(data.geometry.sections as any);
     if (!this.styleBound) {
       this.map.on("style.load", () => {
         if (!this.data) return;
@@ -109,10 +117,11 @@ class PathAnalysisEngine {
 
   private ensureLayerSources() {
     const empty = { type: "FeatureCollection", features: [] };
-    for (const id of [SECTION_SOURCE, PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE]) {
+    const sourceIds = isTestudoLayout() ? [PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE] : [SECTION_SOURCE, PATH_SOURCE, LABEL_SOURCE, SELECTED_SOURCE];
+    for (const id of sourceIds) {
       if (!this.map.getSource(id)) this.map.addSource(id, { type: "geojson", data: empty as any });
     }
-    if (!this.map.getLayer(SECTION_SOURCE)) this.map.addLayer({ id: SECTION_SOURCE, type: "line", source: SECTION_SOURCE, paint: { "line-color": "#64748b", "line-width": 3, "line-opacity": 0.75 * pathLayerOpacity } });
+    if (!isTestudoLayout() && !this.map.getLayer(SECTION_SOURCE)) this.map.addLayer({ id: SECTION_SOURCE, type: "line", source: SECTION_SOURCE, paint: { "line-color": "#64748b", "line-width": 3, "line-opacity": 0.75 * pathLayerOpacity } });
     if (!this.map.getLayer(PATH_SOURCE)) this.map.addLayer({ id: PATH_SOURCE, type: "line", source: PATH_SOURCE, paint: { "line-color": ["get", "color"], "line-width": 7, "line-offset": ["get", "offset"], "line-opacity": ["*", ["get", "opacity"], pathLayerOpacity] } });
     if (!this.map.getLayer(LABEL_SOURCE)) this.map.addLayer({ id: LABEL_SOURCE, type: "symbol", source: LABEL_SOURCE, layout: { ...MAPLIBRE_LABEL_LAYOUT, "text-field": ["get", "label"], "text-size": snapshot.settings.labelSize }, paint: { ...MAPLIBRE_LABEL_PAINT, "text-opacity": pathLayerOpacity } });
     if (!this.map.getLayer(SELECTED_LAYER)) this.map.addLayer({ id: SELECTED_LAYER, type: "line", source: SELECTED_SOURCE, paint: { "line-color": "#ef4444", "line-width": 9, "line-opacity": pathLayerOpacity } });

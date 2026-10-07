@@ -66,8 +66,8 @@ export interface TestudoMapHandle {
   getContainer?(): HTMLElement;
   jumpTo?(options: { center: [number, number]; zoom: number; bearing: number; pitch: number }): void;
   fitBounds?(bounds: [[number, number], [number, number]], options: { padding: number; maxZoom: number; bearing: number; pitch: number }): void;
-  on?(type: "movestart", listener: (event?: { originalEvent?: unknown }) => void): void;
-  off?(type: "movestart", listener: (event?: { originalEvent?: unknown }) => void): void;
+  on?(type: "movestart" | "styledata", listener: (event?: { originalEvent?: unknown }) => void): void;
+  off?(type: "movestart" | "styledata", listener: (event?: { originalEvent?: unknown }) => void): void;
   getSource(id: string): { setData(data: unknown): void } | undefined;
   addSource(id: string, source: Record<string, unknown>): void;
   removeSource(id: string): void;

@@ -76,3 +76,17 @@ test("getActiveDuckDbLayers reflects a higher configured maxConcurrent", () => {
   assert.deepEqual(getActiveDuckDbLayers(), ["emissions-h3", "vehicle-playback"]);
   assert.deepEqual(disposed, ["network-kpi"]);
 });
+
+test("non-DuckDB playback resources do not consume or trigger the DuckDB cap", () => {
+  const disposed: string[] = [];
+  registerDuckDbLayer({ ...trackedHandle("network-kpi", disposed), family: "duckdb" });
+  registerDuckDbLayer({ ...trackedHandle("vehicle-playback", disposed), family: "non-duckdb" });
+  registerDuckDbLayer({ ...trackedHandle("scenario-comparison", disposed), family: "duckdb" });
+  assert.deepEqual(getActiveDuckDbLayers(), ["vehicle-playback", "scenario-comparison"]);
+  assert.deepEqual(disposed, ["network-kpi"]);
+
+  releaseDuckDbLayer("scenario-comparison");
+  registerDuckDbLayer({ ...trackedHandle("emissions-h3", disposed), family: "duckdb" });
+  assert.deepEqual(getActiveDuckDbLayers(), ["vehicle-playback", "emissions-h3"]);
+  assert.deepEqual(disposed, ["network-kpi"]);
+});

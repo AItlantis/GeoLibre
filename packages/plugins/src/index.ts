@@ -42,6 +42,7 @@ export {
   reattachPathAnalysis,
   setPathAnalysisManifestUrl,
   setPathAnalysisSettings,
+  setPathAnalysisScenario,
   stepPathAnalysisInterval,
   togglePathAnalysisIntervalPlaying,
   applyPathAnalysisVisualSettings,
@@ -1494,8 +1495,12 @@ export {
 } from "./plugins/flight-simulator-physics";
 
 export { readLocalNetworkKpiManifestJson } from "./plugins/network-kpi-data";
+export { setTestudoResultsSessionKey } from "./plugins/network-kpi-parquet-data";
 export { getGeolibrePackage } from "./plugins/geolibre-package-loader";
 export { TestudoFeatureBridge } from "./testudo-feature-bridge";
+export { TestudoPersistentNetwork, TESTUDO_NETWORK_LAYERS } from "./shared/testudo-persistent-network";
+export { isTestudoLayout } from "./shared/testudo-layout";
+export { TestudoGenerationMount, TestudoGenerationResourceCache } from "./shared/testudo-generation-resources";
 export type { TestudoFeatureProviderFactory, TestudoFeatureProviderResolver, TestudoPackageBootstrap, TestudoArtifactRequest, TestudoArtifactFetcher, TestudoFeatureViewerState, TestudoTViewInfo } from "./testudo-feature-bridge";
 export type { TestudoFeatureSession, TestudoPlaybackState, TestudoFeatureContext, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoNetworkFilter, TestudoCameraView } from "./shared/testudo-feature-session";
 export { createVehiclePlaybackAdapter, createNetworkKpiPlaybackAdapter, createScenarioComparisonPlaybackAdapter, createScenarioSelectionAdapters } from "./testudo-plugin-adapters";

@@ -32,6 +32,7 @@ import {
 import { vehicleColorRgb } from "./vehicle-shape-catalog";
 import { capabilityAvailable } from "./geolibre-package-loader";
 import { registerDuckDbLayer, releaseDuckDbLayer } from "../shared/duckdb-layer-registry";
+import { isTestudoLayout } from "../shared/testudo-layout";
 
 /**
  * GeoLibre vehicle-playback plugin.
@@ -637,6 +638,10 @@ class VehiclePlaybackEngine {
   private syncNetworkLayers(): void {
     if (this.destroyed) return;
     const map = this.map;
+    if (isTestudoLayout()) {
+      this.removeNetworkLayers();
+      return;
+    }
     // Adding a source before the style has loaded throws.
     if (!map.isStyleLoaded()) return;
 
@@ -1214,6 +1219,7 @@ export function openVehiclePlaybackPanel(app: GeoLibreAppAPI): void {
     duckDbRegistered = true;
     registerDuckDbLayer({
       pluginId: "vehicle-playback",
+      family: "non-duckdb",
       dispose: () => {
         duckDbRegistered = false;
         stopVehiclePlaybackClock();

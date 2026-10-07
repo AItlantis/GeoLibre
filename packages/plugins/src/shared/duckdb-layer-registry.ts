@@ -19,6 +19,8 @@
 export interface DuckDbLayerHandle {
   /** Stable id for the owning plugin, e.g. "network-kpi". */
   pluginId: string;
+  /** Non-DuckDB resources are tracked for cleanup but do not consume a DuckDB slot. */
+  family?: "duckdb" | "non-duckdb";
   /** Tear down this plugin's DuckDB-backed resources (connection/db/worker). */
   dispose(): void | Promise<void>;
 }
@@ -79,10 +81,11 @@ export function registerDuckDbLayer(handle: DuckDbLayerHandle): void {
   // Evict oldest entries until we're back at/under the cap. Runs only after
   // the new handle is already registered, so the just-registered plugin is
   // never itself a candidate for eviction from its own registration call.
-  while (active.size > maxConcurrent) {
+  while ([...active.values()].filter((entry) => entry.handle.family !== "non-duckdb").length > maxConcurrent) {
     let oldestKey: string | null = null;
     let oldestSeq = Number.POSITIVE_INFINITY;
     for (const [key, entry] of active) {
+      if (entry.handle.family === "non-duckdb") continue;
       if (entry.seq < oldestSeq) {
         oldestSeq = entry.seq;
         oldestKey = key;

@@ -10,12 +10,24 @@ import { laneKey, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSam
 import { catalogDid, pickDefaultDid, type CatalogEntry } from "./parquet-catalog";
 import { openTestudoDatasetProvider, type TestudoDatasetProvider } from "./testudo-dataset-provider";
 import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
+import { TestudoGenerationResourceCache } from "../shared/testudo-generation-resources";
 
 export type { CatalogEntry } from "./parquet-catalog";
 export { pickDefaultDid } from "./parquet-catalog";
 type Row = Record<string, unknown>;
 const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
 let dbPromise: Promise<duckdb.AsyncDuckDB> | null = null;
+let testudoResultsSessionKey: string | null = null;
+const testudoResultsSessions = new TestudoGenerationResourceCache<ParquetResultsDatabase>();
+
+/** Select the package/generation whose results connection must survive mode changes. */
+export async function setTestudoResultsSessionKey(key: string | null): Promise<void> {
+  const previousKey = testudoResultsSessionKey;
+  testudoResultsSessionKey = key;
+  if (previousKey && previousKey !== key) {
+    await testudoResultsSessions.remove(previousKey, previous => previous.dispose());
+  }
+}
 
 async function createDatabase(): Promise<duckdb.AsyncDuckDB> {
   const bundle = await duckdb.selectBundle({ mvp: { mainModule: duckdbWasmMvp, mainWorker: mvpWorker }, eh: { mainModule: duckdbWasmEh, mainWorker: ehWorker } });
@@ -68,6 +80,7 @@ export class ParquetResultsDatabase {
     private readonly source: NetworkKpiPackageSource,
     private readonly catalog: CatalogEntry[],
     private readonly manifest: unknown,
+    private readonly sessionKey: string | null,
   ) {}
   private registered = new Map<string, string>();
   private fallback: TestudoDatasetProvider | null = null;
@@ -75,9 +88,15 @@ export class ParquetResultsDatabase {
   private closed = false;
 
   static async open(source: NetworkKpiPackageSource, catalogRelativePath: string, manifest: unknown = null): Promise<ParquetResultsDatabase> {
-    const catalog = JSON.parse(new TextDecoder().decode(await source.read(catalogRelativePath))) as { files?: CatalogEntry[] } | CatalogEntry[];
-    const files = Array.isArray(catalog) ? catalog : catalog.files;
-    return new ParquetResultsDatabase(await getDatabase(), source, Array.isArray(files) ? files : [], manifest);
+    const sessionKey = testudoResultsSessionKey;
+    const create = async () => {
+      const catalog = JSON.parse(new TextDecoder().decode(await source.read(catalogRelativePath))) as { files?: CatalogEntry[] } | CatalogEntry[];
+      const files = Array.isArray(catalog) ? catalog : catalog.files;
+      return new ParquetResultsDatabase(await getDatabase(), source, Array.isArray(files) ? files : [], manifest, sessionKey);
+    };
+    return sessionKey
+      ? testudoResultsSessions.get(sessionKey, create)
+      : create();
   }
   private entries(did: number | null): CatalogEntry[] {
     // The partition is used only to locate the relevant file. The query below
@@ -307,6 +326,11 @@ export class ParquetResultsDatabase {
   }
 
   async close(): Promise<void> {
+    if (this.sessionKey && testudoResultsSessions.has(this.sessionKey)) return;
+    await this.dispose();
+  }
+
+  async dispose(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     for (const handle of this.registered.values()) { try { await this.db.dropFiles([handle]); } catch {} }
