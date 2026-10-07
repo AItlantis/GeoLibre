@@ -8,7 +8,7 @@ import type { NetworkKpiPackageSource } from "./network-kpi-data";
 import { deriveSimulationTimeline, readSimulationTimeline as readProviderSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
 import { laneKey, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample } from "./network-kpi-data";
 import { catalogDid, pickDefaultDid, type CatalogEntry } from "./parquet-catalog";
-import { openTestudoDatasetProvider, type TestudoDatasetProvider } from "./testudo-dataset-provider";
+import { openTestudoDatasetProvider, setTestudoDatasetSessionKey, type TestudoDatasetProvider } from "./testudo-dataset-provider";
 import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
 import { TestudoGenerationResourceCache } from "../shared/testudo-generation-resources";
 
@@ -27,6 +27,7 @@ export async function setTestudoResultsSessionKey(key: string | null): Promise<v
   if (previousKey && previousKey !== key) {
     await testudoResultsSessions.remove(previousKey, previous => previous.dispose());
   }
+  await setTestudoDatasetSessionKey(key);
 }
 
 async function createDatabase(): Promise<duckdb.AsyncDuckDB> {
@@ -112,7 +113,8 @@ export class ParquetResultsDatabase {
       const handles = await Promise.all(entries.map((e) => this.register(e)));
       const con = await this.db.connect();
       try {
-        const result = rows(await con.query(`SELECT did, scid, from_time, duration, simstatintervals, totalstatintervals FROM read_parquet(${q(handles[0])})${did == null ? "" : ` WHERE did = ${did}`} LIMIT 1`));
+        const parquetSource = handles.length === 1 ? `read_parquet(${q(handles[0])})` : `read_parquet([${handles.map(q).join(", ")}])`;
+        const result = rows(await con.query(`SELECT did, scid, from_time, duration, simstatintervals, totalstatintervals FROM ${parquetSource}${did == null ? "" : ` WHERE did = ${did}`} LIMIT 1`));
         const row = result[0];
         if (!row) return null;
         const number = (...names: string[]) => { for (const name of names) { const value = Number(row[name] ?? row[name.toLowerCase()] ?? row[name.toUpperCase()]); if (Number.isFinite(value)) return value; } return null; };

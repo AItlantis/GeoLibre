@@ -31,7 +31,7 @@ export interface TestudoCameraView {
   pitch?: number;
 }
 
-export type TestudoViewMode = "animation" | "flow" | "paths" | "density";
+export type TestudoViewMode = "animation" | "flow" | "paths" | "density" | "results" | "comparison" | "environment";
 export type TestudoCapabilityKey = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison";
 export type TestudoNetworkFilter = {
   id: string;

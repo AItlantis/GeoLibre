@@ -65,6 +65,7 @@ test("provider scenarios and playback are addressed to the requested TView", asy
 
   assert.equal(await bridge.selectScenario("left", "proposal"), "proposal");
   await assert.rejects(bridge.selectScenario("left", "missing"), /not declared/);
+  await assert.rejects(bridge.selectScenario("left", "baseline", 0), /stale/);
   assert.equal((await bridge.playback("left", "seek", 9)).tick, 9);
   assert.equal((await bridge.playback("right", "play")).playing, true);
   assert.equal(bridge.getPlaybackState("left").playing, false);

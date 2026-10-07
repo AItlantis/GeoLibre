@@ -38,8 +38,15 @@ test("testudoSetMode additionally requires a recognized demo mode", () => {
   });
   assert.equal(acceptsTestudoMessage(setMode("animation"), parent, [origin], challenge), true);
   assert.equal(acceptsTestudoMessage(setMode("flow"), parent, [origin], challenge), true);
+  for (const mode of ["results", "comparison", "environment", "animation", "paths"]) assert.equal(acceptsTestudoMessage(setMode(mode), parent, [origin], challenge), true);
   assert.equal(acceptsTestudoMessage(setMode("not-a-mode"), parent, [origin], challenge), false);
   assert.equal(acceptsTestudoMessage(setMode(undefined), parent, [origin], challenge), false);
+});
+
+test("style command is additive and challenge-bound", () => {
+  const styleRequest = (payload: Record<string, unknown>) => ({ ...event, data: { ...event.data, type: "testudoSetStyle", payload: { challenge, ...payload } } });
+  assert.equal(acceptsTestudoMessage(styleRequest({ tviewId: "main", generation: 3, style: { display: "ramp", metric: "flow", interval: 0, maxHeightM: 100 } }), parent, [origin], challenge), true);
+  assert.equal(acceptsTestudoMessage(styleRequest({ tviewId: "main", generation: 3, token: "secret" }), parent, [origin], challenge), false);
 });
 
 test("testudoRequestInvestigation requires a challenge-bound nonblank question of at most 4000 characters", () => {

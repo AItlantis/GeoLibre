@@ -41,6 +41,17 @@ test("results resource cache reuses one database resource per package generation
   assert.equal(opens, 2);
 });
 
+test("network KPI timeline reads all per-did SIM_INFO catalog partitions", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const source = fs.readFileSync(path.join(process.cwd(), "packages/plugins/src/plugins/network-kpi-parquet-data.ts"), "utf8");
+  assert.match(source, /const parquetSource = handles\.length === 1[\s\S]*read_parquet\(\[\$\{handles\.map\(q\)\.join\("\, "\)\}\]\)/);
+  assert.match(source, /WHERE did = \$\{did\}/);
+  const provider = fs.readFileSync(path.join(process.cwd(), "packages/plugins/src/plugins/testudo-dataset-provider.ts"), "utf8");
+  assert.match(provider, /testudoDatasetSessions\.get\(sessionKey, create\)/);
+  assert.match(provider, /Plugin deactivation releases its view, while the package owner disposes/);
+});
+
 test("path analysis prefers the selected scenario index and keeps the legacy default", () => {
   const indices = { "0": "indexed_paths/0", "49320": "indexed_paths/49320", "49414": "indexed_paths/49414" };
   assert.equal(selectScenarioPathIndex(indices, 49414), "indexed_paths/49414");

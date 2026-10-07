@@ -1,7 +1,16 @@
 export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison" | "geoai" | "geoai-buildings";
 /** Map plugins replace one another; GeoAI chat is an independent persistent panel. */
 export type TestudoSelectablePluginId = Exclude<TestudoCapabilityId, "geoai">;
-export type TestudoDemoMode = "animation" | "flow" | "paths" | "density";
+export type TestudoDemoMode = "animation" | "flow" | "paths" | "density" | "results" | "comparison" | "environment";
+export interface TestudoViewModeMetadata {
+  id: "results" | "comparison" | "environment" | "animation" | "paths";
+  table: string; column: string; unit: string;
+  style: { type: "ramp" | "extrusion"; id?: string; column?: string; max?: number; stops?: string[]; colors?: string[] };
+  domains: { sid?: { min?: number; max?: number }; ent?: { min?: number; max?: number }; intervalSeconds?: number };
+  alternates?: Array<{ table: string; column: string; unit: string; style: TestudoViewModeMetadata["style"] }>;
+  scenarioDidPair?: Array<{ scid: number; did: number }>;
+}
+export interface TestudoStyle { display: "ramp" | "extrusion"; metric: string; interval: number; maxHeightM: number; scenarioA?: number; scenarioB?: number }
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
 export interface TestudoBootstrap {
   packageId: string;
@@ -24,6 +33,11 @@ export interface TestudoViewerState {
   capabilities: TestudoCapability[];
   availableModes: TestudoDemoMode[];
   selectedMode?: TestudoDemoMode;
+  viewModes?: Partial<Record<TestudoViewModeMetadata["id"], TestudoViewModeMetadata>>;
+  timeAxis?: { fromTime: number; intervalMs: number; intervals: number };
+  style?: TestudoStyle;
+  scenarios?: Array<{ id: string; label: string }>;
+  selectedScenarioId?: string;
   status: "empty" | "loading" | "ready" | "error";
   error?: string;
   presetId?: string;

@@ -2,8 +2,8 @@ import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@ge
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetViewMode", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest"] as const;
-export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density"];
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetViewMode", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest"] as const;
+export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density", "results", "comparison", "environment"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
 export const TESTUDO_GUEST_TOKEN_RE = /^[A-Za-z0-9._~-]{32,4096}$/;
@@ -89,7 +89,7 @@ function containsCredentialField(value: unknown): boolean {
 }
 
 /** Return only the four package-backed modes surfaced by the website demo. */
-export function availableTestudoModes(features: { animation: boolean; flow: boolean; paths: boolean; density: boolean }): TestudoDemoMode[] {
+export function availableTestudoModes(features: { animation: boolean; flow: boolean; paths: boolean; density: boolean; results?: boolean; comparison?: boolean; environment?: boolean }): TestudoDemoMode[] {
   return TESTUDO_DEMO_MODES.filter(mode => features[mode]);
 }
 

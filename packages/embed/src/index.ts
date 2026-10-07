@@ -1,5 +1,5 @@
 import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate, TestudoArtifactFetcher, TestudoArtifactRequest, TestudoTViewInfo, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoStyle, TestudoViewModeMetadata, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -104,8 +104,9 @@ export interface GeoLibreEmbedClient {
   testudoRequestInvestigation(question: string): Promise<{ requestId: string; accepted: true }>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
   testudoGetState(): Promise<TestudoViewerState>;
-  testudoSetScenario(payload: { tviewId: string; scenarioId: string; generation?: number }): Promise<{ scenarioId: string }>;
+  testudoSetScenario(payload: { tviewId: string; generation: number; scenarioId: string }): Promise<{ scenarioId: string }>;
   testudoSetScenarioPair(payload: { tviewId: string; scenarioA: number; scenarioB: number; generation?: number }): Promise<{ scenarioA: number; scenarioB: number }>;
+  testudoSetStyle(payload: { tviewId: string; generation: number; style: import("./testudo").TestudoStyle }): Promise<TestudoViewerState>;
   testudoSetPlaybackPlaying(payload: { tviewId: string; playing: boolean; generation?: number }): Promise<TestudoPlaybackState>;
   testudoRestartPlayback(payload: { tviewId: string; generation?: number }): Promise<TestudoPlaybackState>;
   testudoSeekPlayback(payload: { tviewId: string; tick: number; generation?: number }): Promise<TestudoPlaybackState>;
@@ -228,6 +229,7 @@ export function connect(
     testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
     testudoSetScenario: (payload) => sendTestudo("testudoSetScenario", payload as unknown as Record<string, unknown>),
     testudoSetScenarioPair: (payload) => sendTestudo("testudoSetScenarioPair", payload as unknown as Record<string, unknown>),
+    testudoSetStyle: (payload) => sendTestudo("testudoSetStyle", payload as unknown as Record<string, unknown>),
     testudoSetPlaybackPlaying: (payload) => sendTestudo("testudoSetPlaybackPlaying", payload as unknown as Record<string, unknown>),
     testudoRestartPlayback: (payload) => sendTestudo("testudoRestartPlayback", payload as unknown as Record<string, unknown>),
     testudoSeekPlayback: (payload) => sendTestudo("testudoSeekPlayback", payload as unknown as Record<string, unknown>),

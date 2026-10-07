@@ -14,6 +14,7 @@ import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 import { openLocalPackageFromActivation } from "../../lib/testudo-picker-flow";
+import { pluginForTestudoMode, validateTestudoStyle } from "../../lib/testudo-view-style";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
@@ -363,7 +364,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         const comparison = plugins.getScenarioComparisonStatus();
         if (!comparison.timelineA || !comparison.timelineB || comparison.matchedIntervals.length === 0) {
           handlers[id].close();
-          update({ selectedPlugin: null, selectedMode: undefined, status: "ready",
+          update({ selectedPlugin: null, selectedMode: undefined, status: "ready", availableModes: current.availableModes.filter(mode => mode !== "comparison"),
             capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: false,
               reason: "Scenario comparison is unavailable: this package has no matched simulation intervals." } : item) });
           const activeSession = featureBridge.sessions.get("main");
@@ -400,15 +401,54 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     };
     window.addEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction);
     const selectMode = async (mode: TestudoDemoMode) => {
-      if (!current.availableModes.includes(mode)) throw new Error("This mode is not available in this package.");
-      const target = modes.find(item => item.id === mode)!;
-      const result = await select(target.plugin);
+      if (!current.availableModes.includes(mode)) {
+        const capabilityId = mode === "animation" ? "vehicle-playback" : mode === "paths" ? "path-analysis" : mode === "environment" ? "emissions-h3" : mode === "comparison" ? "scenario-comparison" : "network-kpi";
+        const reason = current.capabilities.find(item => item.id === capabilityId)?.reason;
+        throw new Error(reason ?? (mode === "comparison" ? "Scenario comparison requires a declared scenario pair and at least one matched interval."
+          : mode === "environment" ? "Environment mode requires usable CO2, NOx, or noise data."
+          : mode === "animation" ? "Animation requires at least one playable scenario."
+          : mode === "paths" ? "Path analysis requires a scenario path index." : "Results mode requires a supported network KPI."));
+      }
+      const target = modes.find(item => item.id === mode) ?? { id: mode, plugin: pluginForTestudoMode(mode) };
+      const result = current.status === "ready" && current.selectedPlugin === target.plugin ? current : await select(target.plugin);
       if (mode === "animation") {
         const playback = plugins.getVehiclePlaybackStatus();
         if (playback.scenarioIndex < 0 && playback.scenarios.length > 0) await plugins.setVehiclePlaybackScenario(0);
       }
-      if (mode === "flow" || mode === "density") handlers["network-kpi"].settings({ metric: mode });
-      const updated = update({ ...result, selectedMode: mode });
+      if (mode === "flow" || mode === "density" || mode === "results") {
+        const viewMode = current.viewModes?.results;
+        const metric = mode === "results" ? (viewMode?.style.id === "delay" ? "delay" : viewMode?.column === "dtime" ? "delay" : viewMode?.column ?? "flow") : mode;
+        handlers["network-kpi"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setNetworkKpiSettings>[0]["metric"]>, ...(viewMode?.style ? { extruded: viewMode.style.type === "extrusion" } : {}) });
+      }
+      if (mode === "comparison") {
+        const viewMode = current.viewModes?.comparison;
+        const snapshot = plugins.getScenarioComparisonSnapshot();
+        const comparisonMetric = viewMode?.style.id === "cmp_flow_delta" ? "flow_delta" : viewMode?.column ?? "flow_delta";
+        handlers["scenario-comparison"].settings({ metric: comparisonMetric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, mode: "diff", ...(viewMode?.style ? { extruded: viewMode.style.type === "extrusion" } : {}) });
+        if (viewMode?.scenarioDidPair?.length) {
+          const a = plugins.getScenarioComparisonStatus().scenarios.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![0].scid));
+          const b = plugins.getScenarioComparisonStatus().scenarios.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![1].scid));
+          if (a >= 0 && b >= 0) handlers["scenario-comparison"].settings({ scenarioA: a, scenarioB: b });
+        }
+        void snapshot;
+      }
+      if (mode === "environment") {
+        const viewMode = current.viewModes?.environment;
+        handlers["emissions-h3"].settings({ metric: (viewMode?.column ?? "co2") as NonNullable<Parameters<typeof plugins.setEmissionsH3Settings>[0]["metric"]>, ...(viewMode?.style ? { extruded: viewMode.style.type === "extrusion" } : {}) });
+        const emissions = plugins.getEmissionsH3Status();
+        if (!emissions.hasEmissions) {
+          const reason = "Environment mode is unavailable: the selected scenario has no usable emissions data.";
+          update({ availableModes: current.availableModes.filter(item => item !== "environment"), capabilities: current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: false, reason } : item) });
+          throw new Error(reason);
+        }
+      }
+      const viewMode = current.viewModes?.[mode as "results" | "comparison" | "environment"];
+      const defaultMetric = viewMode?.style.id === "cmp_flow_delta" ? "flow_delta" : viewMode?.style.id === "delay" || viewMode?.column === "dtime" ? "delay" : (viewMode?.column ?? "flow");
+      const pair = viewMode?.scenarioDidPair?.length && mode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : [];
+      const pairA = viewMode?.scenarioDidPair?.[0] ? pair.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![0].scid)) : -1;
+      const pairB = viewMode?.scenarioDidPair?.[1] ? pair.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![1].scid)) : -1;
+      const style = viewMode ? { display: viewMode.style.type, metric: defaultMetric, interval: 0, maxHeightM: viewMode.style.max ?? 100, ...(pairA >= 0 && pairB >= 0 ? { scenarioA: pairA, scenarioB: pairB } : {}) } : current.style;
+      const updated = update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
       if (bridgeInstalled) await featureBridge.setViewMode("main", mode);
       return updated;
     };
@@ -528,6 +568,21 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       const pkg = getGeolibrePackage(raw);
       const packageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
       declaredScenarioIds = packageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined);
+      let hasMatchedComparison = false;
+      if (pkg?.viewModes.comparison && pkg.scenarios.length > 1) {
+        handlers["scenario-comparison"].open(app);
+        try {
+          await plugins.loadLocalScenarioComparisonFolder(directory);
+          const comparison = plugins.getScenarioComparisonStatus();
+          hasMatchedComparison = Boolean(comparison.timelineA && comparison.timelineB && comparison.matchedIntervals.length > 0);
+        } finally { handlers["scenario-comparison"].close(); }
+      }
+      let hasUsableEmissions = false;
+      if (pkg?.viewModes.environment) {
+        handlers["emissions-h3"].open(app);
+        try { await plugins.loadLocalEmissionsH3Folder(directory); hasUsableEmissions = plugins.getEmissionsH3Status().hasEmissions; }
+        finally { handlers["emissions-h3"].close(); }
+      }
       const hasAnimation = packageScenarios.length > 0;
       const root = raw as Record<string, unknown>;
       const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
@@ -538,20 +593,32 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         animation: safeCapabilities.some(item => item.id === "vehicle-playback" && item.available) && hasAnimation,
         flow: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("flow"),
         density: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("density"),
+        results: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && Boolean(pkg?.viewModes.results),
+        comparison: hasMatchedComparison,
+        environment: safeCapabilities.some(item => item.id === "emissions-h3" && item.available) && hasUsableEmissions,
         paths: safeCapabilities.some(item => item.id === "path-analysis" && item.available)
           && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
       });
-      update({ availableModes });
+      const matchedReason = "Scenario comparison is unavailable: this package has no matched simulation intervals.";
+      comparisonDeclared = hasMatchedComparison;
+      update({ availableModes, viewModes: pkg?.viewModes, timeAxis: pkg?.timeAxis ?? undefined, scenarios: declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` })), selectedScenarioId: declaredScenarioIds.length ? String(declaredScenarioIds[0]) : undefined,
+        capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: hasMatchedComparison, reason: hasMatchedComparison ? undefined : matchedReason }
+          : item.id === "emissions-h3" && pkg?.viewModes.environment ? { ...item, available: hasUsableEmissions, reason: hasUsableEmissions ? undefined : "No declared scenario has usable emissions rows." } : item) });
       const installedSession = featureBridge.sessions.get("main");
       if (installedSession) {
+        installedSession.capabilities = current.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
         installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
         installedSession.scenarios = declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` }));
       }
       const initialMode = availableModes.includes("animation") ? "animation" : availableModes[0];
-      const initialPlugin = payload.selectedPlugin ?? (initialMode ? modes.find(item => item.id === initialMode)!.plugin : undefined);
+      const initialPlugin = payload.selectedPlugin ?? (initialMode ? (modes.find(item => item.id === initialMode)?.plugin ?? pluginForTestudoMode(initialMode)) : undefined);
       if (!initialPlugin) throw new Error("This package has no supported viewer data");
-      if (initialMode && !payload.selectedPlugin) await selectMode(initialMode);
-      else await select(initialPlugin);
+      const modeForPlugin: Partial<Record<TestudoSelectablePluginId, TestudoDemoMode>> = { "vehicle-playback": "animation", "network-kpi": "results", "scenario-comparison": "comparison", "emissions-h3": "environment", "path-analysis": "paths", "geoai-buildings": "environment" };
+      const requestedMode = payload.selectedPlugin ? modeForPlugin[payload.selectedPlugin] : initialMode;
+      if (requestedMode && availableModes.includes(requestedMode)) {
+        if (payload.selectedPlugin) await select(initialPlugin);
+        await selectMode(requestedMode);
+      } else await select(initialPlugin);
       if (payload.presetId) await applyPreset(payload.presetId);
       return current;
     };
@@ -584,13 +651,16 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         const root = raw as Record<string, unknown>;
         const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
         const knownColumns = Object.values(pkg.dataContracts).flatMap(value => value && typeof value === "object" && Array.isArray((value as { columns?: unknown }).columns) ? (value as { columns: unknown[] }).columns : []);
-        const availableModes = availableTestudoModes({
+        let availableModes = availableTestudoModes({
           animation: capabilities.some(item => item.id === "vehicle-playback" && item.available) && listVehicleManifestScenarios(raw, { includeAnimationVariants: true }).length > 0,
           flow: capabilities.some(item => item.id === "network-kpi" && item.available) && (Object.hasOwn(ramps, "flow") || knownColumns.includes("flow")),
           density: capabilities.some(item => item.id === "network-kpi" && item.available) && (Object.hasOwn(ramps, "density") || knownColumns.includes("density")),
+          results: capabilities.some(item => item.id === "network-kpi" && item.available) && Boolean(pkg.viewModes.results),
+          comparison: capabilities.some(item => item.id === "scenario-comparison" && item.available) && Boolean(pkg.viewModes.comparison?.scenarioDidPair?.length && (pkg.timeAxis?.intervals ?? 0) > 0),
+          environment: capabilities.some(item => item.id === "emissions-h3" && item.available) && emissions?.status === "available" && Boolean(pkg.viewModes.environment),
           paths: capabilities.some(item => item.id === "path-analysis" && item.available) && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
         });
-        update({ package: { packageId: crypto.randomUUID(), versionId: null, label: selected.name, origin: "local" }, capabilities, availableModes, status: "loading" });
+        update({ package: { packageId: crypto.randomUUID(), versionId: null, label: selected.name, origin: "local" }, capabilities, availableModes, viewModes: pkg.viewModes, timeAxis: pkg.timeAxis ?? undefined, scenarios: declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` })), selectedScenarioId: declaredScenarioIds.length ? String(declaredScenarioIds[0]) : undefined, status: "loading" });
         const localBootstrap = { packageId: current.package!.packageId, versionId: "local", label: selected.name,
           origin: "published" as const, manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
           artifactEndpoint: "", capabilities: capabilities.filter(item => featureCapabilityIds.includes(item.id)), presets: [] };
@@ -599,8 +669,35 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
         await plugins.setTestudoResultsSessionKey(`${localBootstrap.packageId}:${featureContext.generation}`);
         await persistentNetwork.mount(featureContext, directory, raw, app.getMap?.() as any,
           context => featureBridge.sessions.isCurrent(context));
+        let hasMatchedComparison = false;
+        if (pkg.viewModes.comparison && pkg.scenarios.length > 1) {
+          handlers["scenario-comparison"].open(app);
+          try {
+            await plugins.loadLocalScenarioComparisonFolder(directory);
+            const comparison = plugins.getScenarioComparisonStatus();
+            hasMatchedComparison = Boolean(comparison.timelineA && comparison.timelineB && comparison.matchedIntervals.length > 0);
+          } finally { handlers["scenario-comparison"].close(); }
+        }
+        comparisonDeclared = hasMatchedComparison;
+        if (hasMatchedComparison && !availableModes.includes("comparison")) availableModes = [...availableModes, "comparison"];
+        if (!hasMatchedComparison) availableModes = availableModes.filter(mode => mode !== "comparison");
+        update({ availableModes, capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: hasMatchedComparison, reason: hasMatchedComparison ? undefined : "Scenario comparison is unavailable: this package has no matched simulation intervals." } : item) });
+        if (pkg.viewModes.environment) {
+          handlers["emissions-h3"].open(app);
+          try {
+            await plugins.loadLocalEmissionsH3Folder(directory);
+            const hasEmissions = plugins.getEmissionsH3Status().hasEmissions;
+            if (hasEmissions && !availableModes.includes("environment")) availableModes = [...availableModes, "environment"];
+            if (!hasEmissions) {
+              availableModes = availableModes.filter(mode => mode !== "environment");
+            }
+            update({ availableModes, capabilities: current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions, reason: hasEmissions ? undefined : "No declared scenario has usable emissions rows." } : item) });
+          }
+          finally { handlers["emissions-h3"].close(); }
+        }
         const installedSession = featureBridge.sessions.get("main");
         if (installedSession) {
+          installedSession.capabilities = current.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
           installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
           installedSession.scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true })
             .flatMap(item => item.scid === undefined ? [] : [{ id: String(item.scid), label: String(item.label ?? item.scid) }]);
@@ -750,9 +847,41 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             return tview;
           }
           if (request.type === "testudoLoadPackage") return await load(request.payload);
-          if (request.type === "testudoSetPlugin") return await select(request.payload?.id);
+          if (request.type === "testudoSetPlugin") {
+            const id = String(request.payload?.id ?? "");
+            if ((current.availableModes as string[]).includes(id)) return await selectMode(id as TestudoDemoMode);
+            return await select(id as TestudoSelectablePluginId);
+          }
           if (request.type === "testudoSetMode") return await selectMode(request.payload.mode);
-          if (request.type === "testudoSetScenario") return { scenarioId: await featureBridge.selectScenario("main", String(request.payload?.scenarioId), request.payload?.generation as number | undefined) };
+          if (request.type === "testudoSetScenario") {
+            const generationExpected = request.payload?.generation;
+            if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Scenario command targets an unsupported TView.");
+            if (generationExpected !== undefined && generationExpected !== generation) throw new Error("Scenario command belongs to a stale package generation.");
+            const scenarioId = await featureBridge.selectScenario("main", String(request.payload?.scenarioId), generationExpected as number | undefined);
+            if (bridgePluginId === "emissions-h3") {
+              const hasEmissions = plugins.getEmissionsH3Status().hasEmissions;
+              const reason = "Environment mode is unavailable for this scenario because it has no usable emissions rows.";
+              const availableModes = hasEmissions && current.viewModes?.environment
+                ? [...new Set([...current.availableModes, "environment" as TestudoDemoMode])]
+                : current.availableModes.filter(mode => mode !== "environment");
+              const capabilities = current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions, reason: hasEmissions ? undefined : reason } : item);
+              const activeSession = featureBridge.sessions.get("main");
+              if (activeSession) { activeSession.availableModes = availableModes; activeSession.capabilities = capabilities.filter(item => featureCapabilityIds.includes(item.id)) as TestudoFeatureSession["capabilities"]; }
+              update({ selectedScenarioId: scenarioId, availableModes, capabilities, ...(hasEmissions ? {} : { selectedMode: undefined }) });
+              if (!hasEmissions) throw new Error(reason);
+            } else update({ selectedScenarioId: scenarioId });
+            return { scenarioId };
+          }
+          if (request.type === "testudoSetStyle") {
+            if (request.payload?.tviewId !== "main" || request.payload?.generation !== generation) throw new Error("Style command belongs to a stale package generation.");
+            const style = validateTestudoStyle(request.payload?.style, current.selectedMode, declaredScenarioIds.length);
+            const { display, metric, interval, maxHeightM, scenarioA, scenarioB } = style;
+            const extruded = display === "extrusion";
+            if (current.selectedMode === "comparison") handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), ...(scenarioA !== undefined ? { scenarioA: Number(scenarioA) } : {}), ...(scenarioB !== undefined ? { scenarioB: Number(scenarioB) } : {}) });
+            else if (current.selectedMode === "environment") handlers["emissions-h3"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setEmissionsH3Settings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
+            else handlers["network-kpi"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setNetworkKpiSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
+            return update({ style });
+          }
           if (request.type === "testudoSetScenarioPair") {
             if (!current.capabilities.some(item => item.id === "scenario-comparison" && item.available)) throw new Error("Scenario comparison is unavailable for this package.");
             const session = featureBridge.sessions.get("main");

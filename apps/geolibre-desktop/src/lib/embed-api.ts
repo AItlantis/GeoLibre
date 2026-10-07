@@ -762,7 +762,7 @@ export function isSafeArtifactReference(value: string): boolean {
 
 const TESTUDO_COMMANDS = new Set([
   "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoLoadPackage", "testudoOpenLocalPackage",
-  "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState", "testudoSetScenario", "testudoSetPlaybackPlaying",
+  "testudoSetPlugin", "testudoSetMode", "testudoSetPreset", "testudoGetState", "testudoSetScenario", "testudoSetStyle", "testudoSetPlaybackPlaying",
   "testudoSetScenarioPair", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView",
   "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility",
   "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState",

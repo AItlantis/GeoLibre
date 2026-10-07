@@ -4,6 +4,7 @@ import {
   type GeolibrePackage,
   type GeolibreScenario,
 } from "./geolibre-package-loader";
+import { TestudoGenerationResourceCache } from "../shared/testudo-generation-resources";
 
 type Primitive = string | number | boolean | null;
 type Row = Record<string, unknown>;
@@ -157,6 +158,15 @@ const DEFAULT_LIMITS: TestudoProviderLimits = {
   maxFilesPerQuery: 64,
   maxFilters: 32,
 };
+
+let testudoDatasetSessionKey: string | null = null;
+const testudoDatasetSessions = new TestudoGenerationResourceCache<TestudoDatasetProvider>();
+/** Keep one package/generation provider alive while KPI views switch plugins. */
+export async function setTestudoDatasetSessionKey(key: string | null): Promise<void> {
+  const previousKey = testudoDatasetSessionKey;
+  testudoDatasetSessionKey = key;
+  if (previousKey && previousKey !== key) await testudoDatasetSessions.remove(previousKey, provider => provider.close());
+}
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const q = (value: string): string => `'${value.replaceAll("'", "''")}'`;
@@ -591,6 +601,21 @@ class TestudoDatasetProviderImpl implements TestudoDatasetProvider {
 
 /** Open a manifest-driven provider without eagerly loading result data. */
 export async function openTestudoDatasetProvider(
+  options: OpenTestudoDatasetProviderOptions,
+): Promise<TestudoDatasetProvider> {
+  const sessionKey = testudoDatasetSessionKey;
+  const create = async (): Promise<TestudoDatasetProvider> => openUncachedTestudoDatasetProvider(options);
+  if (sessionKey) {
+    const shared = await testudoDatasetSessions.get(sessionKey, create);
+    // Plugin deactivation releases its view, while the package owner disposes
+    // the shared provider when the generation changes.
+    return { metadata: shared.metadata, describe: () => shared.describe(), query: request => shared.query(request),
+      readSimulationInfo: selection => shared.readSimulationInfo(selection), close: async () => {} };
+  }
+  return create();
+}
+
+async function openUncachedTestudoDatasetProvider(
   options: OpenTestudoDatasetProviderOptions,
 ): Promise<TestudoDatasetProvider> {
   const pkg = packageEnvelope(options.manifest);

@@ -4,7 +4,8 @@ export interface GeolibreCapability { state: "available" | "unavailable" | strin
 export interface GeolibreReplication { did: number; didname?: string; xid?: number; xname?: string }
 export interface GeolibreAnimation { name?: string; manifestPath?: string; scid?: number | string; did?: number | string }
 export interface GeolibreScenario { name?: string; scid: number | string; replications: GeolibreReplication[]; animations?: GeolibreAnimation[] }
-export interface GeolibrePackage { schemaVersion?: string; capabilities: Record<string, GeolibreCapability>; scenarios: GeolibreScenario[]; resultsPath: string | null; resultsChecksum: { algorithm?: string; value?: string } | null; resultsCatalogRelative: string | null; resultsFormat: string | null; resultsTableSelection: string[]; dataContracts: Record<string, unknown>; legacyManifestPath: string | null; pathIndicesByScid: Record<string, string> }
+export interface GeolibreViewMode { id: "results" | "comparison" | "environment" | "animation" | "paths"; table: string; column: string; unit: string; style: { type: "ramp" | "extrusion"; id?: string; column?: string; max?: number; stops?: string[]; colors?: string[] }; domains: { sid?: { min?: number; max?: number }; ent?: { min?: number; max?: number }; intervalSeconds?: number }; alternates?: Array<{ table: string; column: string; unit: string; style: GeolibreViewMode["style"] }>; scenarioDidPair?: Array<{ scid: number; did: number }> }
+export interface GeolibrePackage { schemaVersion?: string; capabilities: Record<string, GeolibreCapability>; scenarios: GeolibreScenario[]; resultsPath: string | null; resultsChecksum: { algorithm?: string; value?: string } | null; resultsCatalogRelative: string | null; resultsFormat: string | null; resultsTableSelection: string[]; dataContracts: Record<string, unknown>; legacyManifestPath: string | null; pathIndicesByScid: Record<string, string>; viewModes: Partial<Record<GeolibreViewMode["id"], GeolibreViewMode>>; timeAxis: { fromTime: number; intervalMs: number; intervals: number } | null }
 
 const envelopeKey = "__geolibrePackage";
 const record = (value: unknown): Record<string, unknown> => (value && typeof value === "object" ? value as Record<string, unknown> : {});
@@ -40,7 +41,28 @@ export function parseGeolibrePackage(raw: unknown): GeolibrePackage {
     ? environment.results_catalog_relative
     : typeof parquetSidecar.catalogPath === "string" ? parquetSidecar.catalogPath : null;
   const pathIndices = record(root.pathIndicesByScid);
-  return { schemaVersion: typeof root.schemaVersion === "string" ? root.schemaVersion : undefined, capabilities: record(root.capabilities) as Record<string, GeolibreCapability>, scenarios, resultsPath: typeof results.path === "string" ? results.path : null, resultsChecksum: results.checksum && typeof results.checksum === "object" ? results.checksum as GeolibrePackage["resultsChecksum"] : null, resultsCatalogRelative: catalogPath, resultsFormat: typeof results.format === "string" ? results.format : typeof environment.results_format === "string" ? environment.results_format : null, resultsTableSelection: Array.isArray(environment.results_table_selection) ? environment.results_table_selection.filter((x): x is string => typeof x === "string") : [], dataContracts, legacyManifestPath: typeof root.legacyManifestPath === "string" ? root.legacyManifestPath : null, pathIndicesByScid: Object.fromEntries(Object.entries(pathIndices).filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]))) };
+  const rawViewModes = record(results.viewModes);
+  const viewModes: GeolibrePackage["viewModes"] = {};
+  for (const [key, value] of Object.entries(rawViewModes)) {
+    if (!["results", "comparison", "environment", "animation", "paths"].includes(key)) continue;
+    const mode = record(value); const style = record(mode.style); const domains = record(mode.domains);
+    if (typeof mode.table !== "string" || typeof mode.column !== "string" || typeof mode.unit !== "string"
+      || (style.type !== "ramp" && style.type !== "extrusion")) continue;
+    const normalizeStyle = (candidate: unknown): GeolibreViewMode["style"] | null => {
+      const x = record(candidate); if (x.type !== "ramp" && x.type !== "extrusion") return null;
+      return { type: x.type, ...(typeof x.id === "string" ? { id: x.id } : {}), ...(typeof x.column === "string" ? { column: x.column } : {}), ...(Number.isFinite(x.max) ? { max: Number(x.max) } : {}), ...(Array.isArray(x.stops) ? { stops: x.stops.filter((item): item is string => typeof item === "string") } : {}), ...(Array.isArray(x.colors) ? { colors: x.colors.filter((item): item is string => typeof item === "string") } : {}) };
+    };
+    const normalized = normalizeStyle(style); if (!normalized) continue;
+    const pair = Array.isArray(mode.scenarioDidPair) ? mode.scenarioDidPair.map(item => record(item)).filter(item => Number.isSafeInteger(item.scid) && Number.isSafeInteger(item.did)).map(item => ({ scid: Number(item.scid), did: Number(item.did) })) : undefined;
+    const bounds = (candidate: unknown) => { const x = record(candidate); return { ...(Number.isFinite(x.min) ? { min: Number(x.min) } : {}), ...(Number.isFinite(x.max) ? { max: Number(x.max) } : {}) }; };
+    const alternates = Array.isArray(mode.alternates) ? mode.alternates.map(item => record(item)).flatMap(item => { const alternateStyle = normalizeStyle(item.style); return typeof item.table === "string" && typeof item.column === "string" && typeof item.unit === "string" && alternateStyle ? [{ table: item.table, column: item.column, unit: item.unit, style: alternateStyle }] : []; }) : undefined;
+    viewModes[key as GeolibreViewMode["id"]] = { id: key as GeolibreViewMode["id"], table: mode.table, column: mode.column, unit: mode.unit, style: normalized, domains: { ...(domains.sid ? { sid: bounds(domains.sid) } : {}), ...(domains.ent ? { ent: bounds(domains.ent) } : {}), ...(Number.isFinite(domains.intervalSeconds) ? { intervalSeconds: Number(domains.intervalSeconds) } : {}) }, ...(alternates?.length ? { alternates } : {}), ...(pair?.length ? { scenarioDidPair: pair } : {}) };
+  }
+  const axis = record(results.timeAxis);
+  const timeAxis = Number.isFinite(axis.fromTime) && Number.isFinite(axis.intervalMs) && Number(axis.intervalMs) > 0
+    && Number.isSafeInteger(axis.intervals) && Number(axis.intervals) >= 0
+    ? { fromTime: Number(axis.fromTime), intervalMs: Number(axis.intervalMs), intervals: Number(axis.intervals) } : null;
+  return { schemaVersion: typeof root.schemaVersion === "string" ? root.schemaVersion : undefined, capabilities: record(root.capabilities) as Record<string, GeolibreCapability>, scenarios, resultsPath: typeof results.path === "string" ? results.path : null, resultsChecksum: results.checksum && typeof results.checksum === "object" ? results.checksum as GeolibrePackage["resultsChecksum"] : null, resultsCatalogRelative: catalogPath, resultsFormat: typeof results.format === "string" ? results.format : typeof environment.results_format === "string" ? environment.results_format : null, resultsTableSelection: Array.isArray(environment.results_table_selection) ? environment.results_table_selection.filter((x): x is string => typeof x === "string") : [], dataContracts, legacyManifestPath: typeof root.legacyManifestPath === "string" ? root.legacyManifestPath : null, pathIndicesByScid: Object.fromEntries(Object.entries(pathIndices).filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]))), viewModes, timeAxis };
 }
 
 export function attachGeolibrePackage(legacy: unknown, packageRaw: unknown): unknown {
