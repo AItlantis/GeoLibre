@@ -30,6 +30,7 @@ providers in **Settings → AI Providers**:
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-opus-5` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-5.6` |
 | **OpenRouter** | `OPENROUTER_API_KEY` (+ optional `OPENROUTER_MODEL`) | `openai/gpt-5.6-luna` |
+| **Vercel AI Gateway** | `AI_GATEWAY_API_KEY` (+ optional `AI_GATEWAY_MODEL`) | `openai/gpt-5.6-luna` |
 | **Ollama** (local) | `OLLAMA_BASE_URL` (e.g. `http://localhost:11434`) | `gemma4` |
 | **Amazon Bedrock** | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_REGION`, optional `AWS_SESSION_TOKEN`) | `global.anthropic.claude-opus-5` |
 | **Custom** (OpenAI-compatible) | `OPENAI_COMPATIBLE_BASE_URL` (+ optional `OPENAI_COMPATIBLE_API_KEY`) and `OPENAI_COMPATIBLE_MODEL` | — |
@@ -44,6 +45,13 @@ providers in **Settings → AI Providers**:
   fetches the public catalog without sending your key; search by model name or id,
   or enter an unlisted `provider/model` id. Set `OPENROUTER_MODEL` to choose a
   different default.
+- **Vercel AI Gateway** calls `https://ai-gateway.vercel.sh/v1` with Chat
+  Completions from your browser, using one `AI_GATEWAY_API_KEY` for every model
+  the gateway offers. The model picker fetches the public catalog without
+  sending your key and keeps language models that accept tools and return text.
+  Set `AI_GATEWAY_MODEL` to a `provider/model` id to choose a different default.
+  Provider credentials you bring yourself (BYOK) stay in the Vercel dashboard;
+  they do not replace the gateway key.
 - **Custom** covers any OpenAI-compatible endpoint — LiteLLM, vLLM, Groq, Together, a local server, etc. — via its chat-completions API.
 
 Hosted keys (and AWS credentials) are used **directly from your browser** to call
@@ -162,7 +170,7 @@ Optional variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `GEOLIBRE_ASSISTANT_PROVIDER` | Force a provider (`google` / `anthropic` / `openai` / `openrouter`) when several keys are set. |
+| `GEOLIBRE_ASSISTANT_PROVIDER` | Force a provider (`google` / `anthropic` / `openai` / `openrouter` / `vercel`) when several keys are set. |
 | `GEOLIBRE_ASSISTANT_MODEL` | Pin a specific model id, overriding the default and the picker. |
 
 When more than one provider key is configured, a **provider** dropdown appears in
@@ -192,6 +200,7 @@ the UI:
 | Anthropic | `ANTHROPIC_API_KEY` |
 | OpenAI | `OPENAI_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` |
+| Vercel AI Gateway | `AI_GATEWAY_API_KEY`, `AI_GATEWAY_MODEL` |
 | Ollama | `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
 | Custom (OpenAI-compatible) | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_MODEL` |
 | Web search | `TAVILY_API_KEY` |

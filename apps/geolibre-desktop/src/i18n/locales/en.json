@@ -2980,6 +2980,7 @@
         "anthropicKey": "sk-ant-…",
         "openaiKey": "sk-…",
         "openrouterKey": "sk-or-…",
+        "vercelKey": "AI Gateway key",
         "ollamaBaseUrl": "http://localhost:11434",
         "ollamaModel": "llama3.2",
         "awsAccessKey": "AKIA…",
