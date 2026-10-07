@@ -10,7 +10,7 @@ export interface TestudoViewModeMetadata {
   alternates?: Array<{ table: string; column: string; unit: string; style: TestudoViewModeMetadata["style"] }>;
   scenarioDidPair?: Array<{ scid: number; did: number }>;
 }
-export interface TestudoStyle { display: "ramp" | "extrusion"; metric: string; interval: number; maxHeightM: number; scenarioA?: number; scenarioB?: number }
+export interface TestudoStyle { display: "ramp" | "extrusion"; metric: string; interval: number; maxHeightM: number; scenarioA?: number | string; scenarioB?: number | string; showDifference?: boolean }
 export type TestudoKpiGeometry = "sections" | "lanes" | "turns" | "nodes";
 export interface TestudoKpiGeometryState { showSections: boolean; showLanes: boolean; showTurns: boolean; showNodes: boolean }
 export interface TestudoMapControlState { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: "maplibre" | "cesium" }

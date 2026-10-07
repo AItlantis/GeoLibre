@@ -15,7 +15,7 @@ import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
 import { openLocalPackageFromActivation } from "../../lib/testudo-picker-flow";
-import { availableModesForScenario, pluginForTestudoMode, validateTestudoStyle } from "../../lib/testudo-view-style";
+import { availableModesForScenario, comparisonStyleState, modeForScenarioChange, pluginForTestudoMode, validateTestudoStyle } from "../../lib/testudo-view-style";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
@@ -100,6 +100,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     let bridgeInstalled = false;
     let bridgePluginId: TestudoSelectablePluginId | null = null;
     const persistentNetwork = new plugins.TestudoPersistentNetwork();
+    const persistentNetworkMapWatch = setInterval(() => persistentNetwork.reconcileMap(app.getMap?.() as any ?? null), 200);
     let comparisonDeclared = false;
     const scenarioAdapters = plugins.createScenarioSelectionAdapters({ setNetworkKpiScenario: plugins.setNetworkKpiScenario,
       setVehiclePlaybackScenario: plugins.setVehiclePlaybackScenario, setScenarioComparisonSettings: plugins.setScenarioComparisonSettings });
@@ -429,7 +430,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       }
     };
     window.addEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction);
-    const selectMode = async (mode: TestudoDemoMode) => {
+    const selectMode = async (mode: TestudoDemoMode, rememberPreference = true) => {
       if (!current.availableModes.includes(mode)) {
         const capabilityId = mode === "animation" ? "vehicle-playback" : mode === "paths" ? "path-analysis" : mode === "environment" ? "emissions-h3" : mode === "comparison" ? "scenario-comparison" : "network-kpi";
         const reason = current.capabilities.find(item => item.id === capabilityId)?.reason;
@@ -438,7 +439,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           : mode === "animation" ? "Animation requires at least one playable scenario."
           : mode === "paths" ? "Path analysis requires a scenario path index." : "Results mode requires a supported network KPI."));
       }
-      preferredMode = mode;
+      if (rememberPreference) preferredMode = mode;
       const target = modes.find(item => item.id === mode) ?? { id: mode, plugin: pluginForTestudoMode(mode) };
       const result = current.status === "ready" && current.selectedPlugin === target.plugin ? current : await select(target.plugin);
       if (mode === "animation") {
@@ -474,10 +475,17 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       }
       const viewMode = current.viewModes?.[mode as "results" | "comparison" | "environment"];
       const defaultMetric = viewMode?.style.id === "cmp_flow_delta" ? "flow_delta" : viewMode?.style.id === "delay" || viewMode?.column === "dtime" ? "delay" : (viewMode?.column ?? "flow");
-      const pair = viewMode?.scenarioDidPair?.length && mode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : [];
-      const pairA = viewMode?.scenarioDidPair?.[0] ? pair.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![0].scid)) : -1;
-      const pairB = viewMode?.scenarioDidPair?.[1] ? pair.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![1].scid)) : -1;
-      const style = viewMode ? { display: viewMode.style.type, metric: defaultMetric, interval: 0, maxHeightM: viewMode.style.max ?? 100, ...(pairA >= 0 && pairB >= 0 ? { scenarioA: pairA, scenarioB: pairB } : {}) } : current.style;
+      const pair = mode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : [];
+      const comparisonSettings = mode === "comparison" ? plugins.getScenarioComparisonSnapshot() : undefined;
+      const pairA = comparisonSettings?.scenarioA ?? (viewMode?.scenarioDidPair?.[0] ? pair.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![0].scid)) : -1);
+      const pairB = comparisonSettings?.scenarioB ?? (viewMode?.scenarioDidPair?.[1] ? pair.findIndex(row => String(row.scid) === String(viewMode.scenarioDidPair![1].scid)) : -1);
+      const style = viewMode || mode === "comparison" ? {
+        display: viewMode?.style.type ?? "ramp", metric: defaultMetric, interval: comparisonSettings?.interval ?? 0,
+        maxHeightM: viewMode?.style.max ?? comparisonSettings?.maxHeightM ?? 100,
+        ...(pairA >= 0 ? { scenarioA: pair[pairA]?.scid ?? pairA } : {}),
+        ...(pairB >= 0 ? { scenarioB: pair[pairB]?.scid ?? pairB } : {}),
+        ...(mode === "comparison" ? { showDifference: comparisonSettings?.mode === "diff" } : {}),
+      } : current.style;
       const updated = update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
       if (bridgeInstalled) await featureBridge.setViewMode("main", mode);
       if (bridgeInstalled) {
@@ -902,21 +910,14 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
               if (emissionsIndex >= 0 && bridgePluginId !== "emissions-h3") await plugins.setEmissionsH3Scenario(emissionsIndex);
               const hasEmissions = emissionsIndex >= 0 && plugins.getEmissionsH3Status().hasEmissions;
               const reason = "Environment mode is unavailable for this scenario because it has no usable emissions rows.";
-              const availableModes = availableModesForScenario(declaredAvailableModes, hasEmissions && Boolean(current.viewModes?.environment));
+              const scenarioModeState = modeForScenarioChange(declaredAvailableModes, hasEmissions && Boolean(current.viewModes?.environment), preferredMode, current.selectedMode);
+              const availableModes = scenarioModeState.availableModes;
               const capabilities = current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions, reason: hasEmissions ? undefined : reason } : item);
               const activeSession = featureBridge.sessions.get("main");
               if (activeSession) { activeSession.availableModes = availableModes; activeSession.capabilities = capabilities.filter(item => featureCapabilityIds.includes(item.id)) as TestudoFeatureSession["capabilities"]; }
               const selectedMode = current.selectedMode;
               update({ selectedScenarioId: scenarioId, availableModes, capabilities });
-              if (!hasEmissions && selectedMode === "environment") {
-                const fallback = ["results", "flow", "animation", "paths", "comparison", "density"].find(mode => availableModes.includes(mode as TestudoDemoMode)) as TestudoDemoMode | undefined;
-                if (!fallback) throw new Error(reason);
-                const restorePreferred = preferredMode;
-                await selectMode(fallback);
-                preferredMode = restorePreferred;
-              } else if (hasEmissions && preferredMode === "environment" && selectedMode !== "environment") {
-                await selectMode("environment");
-              }
+              if (scenarioModeState.selectedMode && scenarioModeState.selectedMode !== selectedMode) await selectMode(scenarioModeState.selectedMode, false);
             } else update({ selectedScenarioId: scenarioId });
             return { scenarioId };
           }
@@ -924,23 +925,25 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             if (request.payload?.tviewId !== "main" || request.payload?.generation !== generation) throw new Error("Style command belongs to a stale package generation.");
             const comparisonScenarios = current.selectedMode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : undefined;
             const style = validateTestudoStyle(request.payload?.style, current.selectedMode, declaredScenarioIds.length, comparisonScenarios);
-            const incomingStyle = request.payload?.style as Record<string, unknown>;
-            const { display, metric, interval, maxHeightM, scenarioA, scenarioB } = style;
+            const comparisonSnapshot = current.selectedMode === "comparison" ? plugins.getScenarioComparisonSnapshot() : undefined;
+            const scenarioA = style.scenarioA ?? (current.style?.scenarioA === undefined ? comparisonSnapshot?.scenarioA : validateTestudoStyle({ ...style, scenarioA: current.style.scenarioA }, current.selectedMode, declaredScenarioIds.length, current.selectedMode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : undefined).scenarioA);
+            const scenarioB = style.scenarioB ?? (current.style?.scenarioB === undefined ? comparisonSnapshot?.scenarioB : validateTestudoStyle({ ...style, scenarioB: current.style.scenarioB }, current.selectedMode, declaredScenarioIds.length, current.selectedMode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : undefined).scenarioB);
+            const showDifference = style.showDifference ?? current.style?.showDifference ?? (scenarioA !== undefined || scenarioB !== undefined);
+            const { display, metric, interval, maxHeightM } = style;
             const extruded = display === "extrusion";
             if (current.selectedMode === "comparison") {
-              const pair = scenarioA === undefined && scenarioB === undefined ? {} : {
+              const pair = {
                 ...(scenarioA !== undefined ? { scenarioA } : {}),
                 ...(scenarioB !== undefined ? { scenarioB } : {}),
               };
-              handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), mode: scenarioA === undefined && scenarioB === undefined ? "side-by-side" : "diff", ...pair });
+              handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), mode: showDifference ? "diff" : "side-by-side", ...pair });
             }
             else if (current.selectedMode === "environment") handlers["emissions-h3"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setEmissionsH3Settings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
             else handlers["network-kpi"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setNetworkKpiSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
-            return update({ style: current.selectedMode === "comparison" ? {
-              ...style,
-              ...(typeof incomingStyle.scenarioA === "number" ? { scenarioA: incomingStyle.scenarioA } : { scenarioA: undefined }),
-              ...(typeof incomingStyle.scenarioB === "number" ? { scenarioB: incomingStyle.scenarioB } : { scenarioB: undefined }),
-            } : style });
+            const echoedStyle = current.selectedMode === "comparison"
+              ? comparisonStyleState({ ...style, ...(scenarioA !== undefined ? { scenarioA } : {}), ...(scenarioB !== undefined ? { scenarioB } : {}) }, plugins.getScenarioComparisonStatus().scenarios, showDifference)
+              : style;
+            return update({ style: echoedStyle });
           }
           if (request.type === "testudoSetScenarioPair") {
             if (!current.capabilities.some(item => item.id === "scenario-comparison" && item.available)) throw new Error("Scenario comparison is unavailable for this package.");
@@ -951,6 +954,10 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             const scenarioCount = plugins.getScenarioComparisonStatus().scenarios.length;
             if (!Number.isSafeInteger(scenarioA) || scenarioA < 0 || scenarioA >= scenarioCount || !Number.isSafeInteger(scenarioB) || scenarioB < 0 || scenarioB >= scenarioCount) throw new Error("Comparison scenario indexes are invalid.");
             scenarioAdapters.comparison(scenarioA, scenarioB);
+            const scenarios = plugins.getScenarioComparisonStatus().scenarios;
+            const style = current.style ?? { display: "ramp" as const, metric: "flow_delta", interval: 0, maxHeightM: 100 };
+            const echoedStyle = comparisonStyleState({ ...style, scenarioA, scenarioB }, scenarios, style.showDifference ?? true);
+            update({ style: echoedStyle });
             return { scenarioA, scenarioB };
           }
           if (request.type === "testudoSetLegendVisibility" || request.type === "testudoSetEsriWorldImagery") {
@@ -1038,7 +1045,7 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-local-package-picker", onLocalPickerActivation); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-local-package-picker", onLocalPickerActivation); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));

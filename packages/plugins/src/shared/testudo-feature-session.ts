@@ -74,6 +74,7 @@ export interface TestudoMapHandle {
   addSource(id: string, source: Record<string, unknown>): void;
   removeSource(id: string): void;
   getLayer(id: string): unknown;
+  getLayoutProperty?(id: string, name: string): unknown;
   getStyle?(): { layers?: Array<{ id?: string; type?: string }> };
   addLayer(layer: Record<string, unknown>, beforeId?: string): void;
   removeLayer(id: string): void;

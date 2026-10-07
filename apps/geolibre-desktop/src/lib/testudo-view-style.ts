@@ -21,10 +21,49 @@ export function availableModesForScenario(baseModes: readonly TestudoDemoMode[],
   return baseModes.filter(mode => mode !== "environment" || environmentAvailable);
 }
 
-export function validateTestudoStyle(candidate: unknown, mode: TestudoDemoMode | undefined, scenarioCount: number, scenarios?: readonly { id?: string | number; scid?: string | number }[]): TestudoStyle {
+/** Compute effective mode while retaining the user's preferred mode through temporary scenario gaps. */
+export function modeForScenarioChange(
+  baseModes: readonly TestudoDemoMode[],
+  environmentAvailable: boolean,
+  preferredMode: TestudoDemoMode | undefined,
+  selectedMode: TestudoDemoMode | undefined,
+): { availableModes: TestudoDemoMode[]; selectedMode: TestudoDemoMode | undefined } {
+  const availableModes = availableModesForScenario(baseModes, environmentAvailable);
+  const selected = selectedMode && availableModes.includes(selectedMode)
+    ? selectedMode
+    : ["results", "flow", "animation", "paths", "comparison", "density"].find(mode => availableModes.includes(mode as TestudoDemoMode)) as TestudoDemoMode | undefined;
+  return {
+    availableModes,
+    selectedMode: environmentAvailable && preferredMode === "environment" && selectedMode !== "environment"
+      ? "environment" : selected,
+  };
+}
+
+export function comparisonStyleState(
+  style: TestudoStyle,
+  scenarios: readonly { id?: string | number; scid?: string | number }[],
+  showDifference: boolean,
+): TestudoStyle {
+  const toId = (value: string | number | undefined): string | number | undefined => {
+    if (value === undefined) return undefined;
+    const index = resolveComparisonScenarioIndex(value, scenarios);
+    const scenario = scenarios[index!];
+    return scenario.id ?? scenario.scid ?? value;
+  };
+  return {
+    ...style,
+    ...(style.scenarioA !== undefined ? { scenarioA: toId(style.scenarioA) } : {}),
+    ...(style.scenarioB !== undefined ? { scenarioB: toId(style.scenarioB) } : {}),
+    showDifference,
+  };
+}
+
+export type ValidatedTestudoStyle = Omit<TestudoStyle, "scenarioA" | "scenarioB"> & { scenarioA?: number; scenarioB?: number };
+
+export function validateTestudoStyle(candidate: unknown, mode: TestudoDemoMode | undefined, scenarioCount: number, scenarios?: readonly { id?: string | number; scid?: string | number }[]): ValidatedTestudoStyle {
   if (!candidate || typeof candidate !== "object") throw new Error("Style settings are invalid.");
   const style = candidate as Record<string, unknown>;
-  const { display, metric, interval, maxHeightM, scenarioA, scenarioB } = style;
+  const { display, metric, interval, maxHeightM, scenarioA, scenarioB, showDifference } = style;
   if ((display !== "ramp" && display !== "extrusion") || typeof metric !== "string" || !metric.trim() || metric.length > 64
     || !Number.isSafeInteger(interval) || Number(interval) < 0 || !Number.isFinite(maxHeightM) || Number(maxHeightM) <= 0 || Number(maxHeightM) > 10000) throw new Error("Style settings are invalid.");
   const aliases: Record<string, string> = { dtime: "delay", nstops: "noise" };
@@ -37,10 +76,11 @@ export function validateTestudoStyle(candidate: unknown, mode: TestudoDemoMode |
   if (!metrics.includes(normalizedMetric) && !(mode === "comparison" && ["flow", "speed", "density", "delay"].includes(comparisonBase ?? ""))) {
     throw new Error(`Style metric "${metric}" is unavailable for the selected mode.`);
   }
+  if (showDifference !== undefined && typeof showDifference !== "boolean") throw new Error("Style settings are invalid.");
   const resolve = (value: unknown) => value === undefined ? undefined : scenarios
     ? resolveComparisonScenarioIndex(value, scenarios)
     : Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) < scenarioCount ? Number(value) : (() => { throw new Error("Style scenario indexes are invalid."); })();
   const resolvedA = resolve(scenarioA);
   const resolvedB = resolve(scenarioB);
-  return { display, metric: normalizedMetric, interval: Number(interval), maxHeightM: Number(maxHeightM), ...(resolvedA !== undefined ? { scenarioA: resolvedA } : {}), ...(resolvedB !== undefined ? { scenarioB: resolvedB } : {}) };
+  return { display, metric: normalizedMetric, interval: Number(interval), maxHeightM: Number(maxHeightM), ...(resolvedA !== undefined ? { scenarioA: resolvedA } : {}), ...(resolvedB !== undefined ? { scenarioB: resolvedB } : {}), ...(showDifference !== undefined ? { showDifference } : {}) };
 }

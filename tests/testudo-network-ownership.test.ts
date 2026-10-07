@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { TestudoGenerationMount, TestudoGenerationResourceCache } from "../packages/plugins/src/shared/testudo-generation-resources";
 import { TestudoPersistentNetwork } from "../packages/plugins/src/shared/testudo-persistent-network";
+import type { TestudoFeatureContext, TestudoMapHandle } from "../packages/plugins/src/shared/testudo-feature-session";
+import type { NetworkKpiGeometry } from "../packages/plugins/src/plugins/network-kpi-data";
 import { selectScenarioPathIndex } from "../packages/plugins/src/shared/scenario-path-index";
 import {
   __resetDuckDbLayerRegistryForTests,
@@ -44,6 +46,51 @@ test("persistent network geometry toggles update the owned layer visibility", ()
     ["testudo-network-sections", "visibility", "none"], ["testudo-network-lanes", "visibility", "none"],
     ["testudo-network-turns", "visibility", "none"], ["testudo-network-nodes", "visibility", "none"],
   ]);
+});
+
+test("persistent network reattaches once after map replacement and style reload", async () => {
+  class FakeMap implements TestudoMapHandle {
+    sources = new Set<string>();
+    layers = new Map<string, Record<string, unknown>>();
+    visibility = new Map<string, unknown>();
+    listeners = new Map<string, Set<(event?: { originalEvent?: unknown }) => void>>();
+    loaded = true;
+    getSource(id: string) { return this.sources.has(id) ? { setData: () => {} } : undefined; }
+    addSource(id: string) { this.sources.add(id); }
+    removeSource(id: string) { this.sources.delete(id); }
+    getLayer(id: string) { return this.layers.get(id); }
+    addLayer(layer: Record<string, unknown>) { this.layers.set(String(layer.id), layer); }
+    removeLayer(id: string) { this.layers.delete(id); }
+    setLayoutProperty(id: string, _key: string, value: unknown) { this.visibility.set(id, value); }
+    getStyle() { return { layers: [] }; }
+    isStyleLoaded() { return this.loaded; }
+    on(type: string, listener: (event?: { originalEvent?: unknown }) => void) {
+      let listeners = this.listeners.get(type); if (!listeners) this.listeners.set(type, listeners = new Set()); listeners.add(listener);
+    }
+    off(type: string, listener: (event?: { originalEvent?: unknown }) => void) { this.listeners.get(type)?.delete(listener); }
+    fire(type: string) { for (const listener of this.listeners.get(type) ?? []) listener(); }
+    reloadStyle() { this.sources.clear(); this.layers.clear(); this.loaded = false; this.fire("styledata"); this.loaded = true; this.fire("styledata"); }
+  }
+  const network = new TestudoPersistentNetwork();
+  const mountState = (network as unknown as { mountState: { mount(generation: number, current: () => boolean, apply: () => void): Promise<boolean> } }).mountState;
+  await mountState.mount(9, () => true, () => {});
+  const featureContext: TestudoFeatureContext = { tviewId: "main", packageId: "pkg", versionId: "v1", pluginId: "network-kpi", generation: 9 };
+  const geometry = { sections: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }] }, lanes: { type: "FeatureCollection", features: [] }, turns: { type: "FeatureCollection", features: [] }, nodes: { type: "FeatureCollection", features: [] } } as NetworkKpiGeometry;
+  const owned = network as unknown as { context: TestudoFeatureContext; generation: number; geometry: NetworkKpiGeometry; isCurrent: () => boolean };
+  owned.context = featureContext; owned.generation = 9; owned.geometry = geometry; owned.isCurrent = () => true;
+  network.setVisible("sections", false);
+  const firstMap = new FakeMap();
+  network.reconcileMap(firstMap);
+  assert.equal(firstMap.layers.size, 1);
+  const replacementMap = new FakeMap();
+  network.reconcileMap(replacementMap);
+  assert.equal(replacementMap.layers.size, 1);
+  replacementMap.reloadStyle();
+  assert.equal(replacementMap.layers.size, 1);
+  assert.equal(replacementMap.sources.size, 1);
+  assert.equal(replacementMap.visibility.get("testudo-network-sections"), "none");
+  assert.deepEqual(network.getVisibility(), { showSections: false, showLanes: true, showTurns: true, showNodes: true });
+  network.clear();
 });
 
 test("results resource cache reuses one database resource per package generation", async () => {
