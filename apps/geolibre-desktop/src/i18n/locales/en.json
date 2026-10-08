@@ -7412,7 +7412,8 @@
     "title": "Object-Based Analysis",
     "description": "Object-based image analysis in the browser: segment imagery into image objects and work with the objects instead of single pixels.",
     "steps": {
-      "segment": "Segment"
+      "segment": "Segment",
+      "measure": "Measure"
     },
     "image": "Image",
     "imagePlaceholder": "Choose a raster layer",
@@ -7443,6 +7444,27 @@
       "tooManyBands_other": "{{count}} bands of this image need more memory than the in-browser workbench allows. Select fewer bands, or clip the image.",
       "noSuchBand": "The image has no band {{index}}.",
       "failed": "Segmentation failed."
+    },
+    "measure": {
+      "hint": "Measure each object on the original bands. The values are written to the objects layer, where the attribute table, styling and the classifier can use them.",
+      "spectral": "Spectral statistics (mean, std, min, max per band)",
+      "indices": "Spectral indices (brightness, NDVI, NDWI)",
+      "indicesNeedSpectral": "Indices are computed from the band means, so they need spectral statistics.",
+      "red": "Red",
+      "green": "Green",
+      "nir": "Near-infrared",
+      "none": "None",
+      "shape": "Shape (area, perimeter, compactness, elongation)",
+      "texture": "GLCM texture on",
+      "context": "Neighborhood (neighbor count, shared boundary)",
+      "run": "Measure objects",
+      "running": "Measuring…",
+      "result": "{{fields}} features measured for {{count}} objects",
+      "error": {
+        "layersMissing": "The source image or the objects layer was removed. Segment again.",
+        "resegmented": "The objects were segmented again while measuring, so these values were discarded. Measure the new objects.",
+        "failed": "Measuring the objects failed."
+      }
     }
   },
   "pluginPanel": {
