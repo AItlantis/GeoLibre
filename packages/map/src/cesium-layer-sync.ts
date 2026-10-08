@@ -45,16 +45,19 @@ import {
   type ZarrCesiumModule,
 } from "./cesium-zarr-imagery";
 import { getZarrStore } from "./zarr-source";
+import { PointCloudStreamer } from "./cesium-point-cloud-stream";
 import { createFeatureStyleResolver, type FeatureStyleResolver } from "./feature-style";
 import { createCesiumLabeler, pickLabelPart } from "./cesium-labels";
 import {
   buildPointCloudCollection,
   isSplatTilesetUrl,
   loadCopcPointCloud,
+  openEptSource,
   loadLasPointCloud,
   pointCloudSourceKind,
   setPointCloudOpacity,
   type LoadCopcOptions,
+  type LoadEptOptions,
   type LoadLasOptions,
 } from "./cesium-point-cloud";
 import {
@@ -285,13 +288,13 @@ function isTilesetLayer(layer: GeoLibreLayer): boolean {
 }
 
 /**
- * A point cloud the globe decodes itself: a COPC archive (issue #2285) or a
- * plain LAS/LAZ file (issue #2261).
+ * A point cloud the globe decodes itself: a COPC archive (issue #2285), or a
+ * plain LAS/LAZ file or an EPT dataset (issue #2261).
  */
 function isDecodedPointCloudLayer(layer: GeoLibreLayer): boolean {
   if (layer.type !== "lidar") return false;
   const kind = pointCloudSourceKind(pointCloudUrl(layer));
-  return kind === "copc" || kind === "las";
+  return kind === "copc" || kind === "las" || kind === "ept";
 }
 
 interface LayerEntry {
@@ -308,6 +311,8 @@ interface LayerEntry {
     | null;
   /** Aborts a decoded point cloud's download when the entry goes. */
   abort?: AbortController;
+  /** Streams an EPT cloud by view; destroyed with the entry. */
+  streamer?: PointCloudStreamer;
   /** Removes the one-shot tile listener that reads a tileset's attribute names. */
   fieldsListener?: () => void;
   /** Stops counting an imagery entry's tile loads and failures. */
@@ -953,6 +958,8 @@ export interface CesiumLayerSyncDeps {
   copcOptions?: Omit<LoadCopcOptions, "signal">;
   /** Overrides for the plain LAS/LAZ decoder (the module, the download, the projector). */
   lasOptions?: Omit<LoadLasOptions, "signal" | "fallbackWkt">;
+  /** Overrides for the EPT decoder (the module, the fetchers, the projector). */
+  eptOptions?: Omit<LoadEptOptions, "signal">;
   /**
    * Publishes the attribute names read off a tileset's first rendered tile
    * (issue #2290). A 3D Tiles layer has no `layer.geojson` for the Style panel
@@ -2802,8 +2809,30 @@ export class CesiumLayerSync {
     const abort = new AbortController();
     entry.abort = abort;
     try {
+      const kind = pointCloudSourceKind(url);
+      if (kind === "ept") {
+        // A large EPT dataset needs detail where the camera is, not one
+        // sample of the whole cloud: stream it by view.
+        const source = await openEptSource(url, { ...this.deps.eptOptions, signal: abort.signal });
+        if (entry.cancelled) return;
+        const streamer = new PointCloudStreamer(Cesium, viewer, source, {
+          opacity: () => this.effectiveOpacity(entry),
+          altitudeOffset: Number(entry.layer.source.altitudeOffset),
+          onError: (message) => {
+            entry.loadError ??= message;
+          },
+        });
+        entry.streamer = streamer;
+        viewer.scene.primitives.add(streamer.collection);
+        await streamer.start();
+        if (entry.cancelled) return;
+        entry.handle = streamer.collection;
+        entry.appliedAlpha = String(this.effectiveOpacity(entry));
+        this.applyAppearance(entry);
+        return;
+      }
       const cloud =
-        pointCloudSourceKind(url) === "las"
+        kind === "las"
           ? await loadLasPointCloud(url, {
               ...this.deps.lasOptions,
               // The LiDAR control records the WKT it read, for a file whose
@@ -4135,6 +4164,14 @@ export class CesiumLayerSync {
     // A fit still waiting on this entry has nothing left to frame.
     if (this.pendingZoomLayerId === entry.layer.id) this.pendingZoomLayerId = null;
     entry.abort?.abort();
+    if (entry.streamer) {
+      entry.streamer.destroy();
+      // Removed before its first load landed: the collection is already in
+      // the scene but not yet the entry's handle.
+      if (entry.handle !== entry.streamer.collection)
+        this.viewer.scene.primitives.remove(entry.streamer.collection);
+      entry.streamer = undefined;
+    }
     entry.documentCleanup?.();
     entry.documentCleanup = undefined;
     entry.overlayContainer?.remove();
