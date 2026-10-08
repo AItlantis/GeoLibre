@@ -13,15 +13,21 @@ import {
   fetchDynamicalCatalog,
   formatLeadTime,
   formatUtc,
+  bboxCenter,
+  bboxContains,
   isLeadTimeDimension,
   isTemporalDimension,
+  needsRegionalView,
   projectedBounds,
   projectedDimensions,
   projectionFromSpatialRef,
+  regionalMinZoom,
   sampleRange,
   sliceDimensions,
   sliceSelectorValue,
 } from "./dynamical-api";
+import { registerGribberishCodec } from "./grib2-codec";
+import { getStyleMap } from "./style-map";
 import {
   DEFAULT_ICECHUNK_BRANCH,
   icechunkLayerUrl,
@@ -37,6 +43,8 @@ const PANEL_ID = DYNAMICAL_PLUGIN_ID;
 const PLUGIN_NAME = "Dynamical";
 /** `metadata.sourceKind` is the Zarr control's; this key marks the layers this panel added. */
 const DATASET_METADATA_KEY = "dynamicalDatasetId";
+/** How far below its minimum zoom a regional layer still draws. */
+const REGIONAL_ZOOM_TOLERANCE = 0.05;
 /** Wait this long after a slider stops before re-slicing a live layer. */
 const SLICE_DEBOUNCE_MS = 250;
 
@@ -174,9 +182,13 @@ function loadCatalog(): Promise<DynamicalDataset[]> {
   return catalogPromise;
 }
 
-/** Open a dataset's repository, through the reader the STAC browser shares. */
+/**
+ * Open a dataset's repository, through the reader the STAC browser shares. A virtual repository
+ * first teaches zarrita the `gribberish` codec its chunks decode with.
+ */
 async function openRepository(dataset: DynamicalDataset): Promise<ZarrKeyReader> {
   try {
+    if (dataset.virtual) await registerGribberishCodec();
     return await openIcechunkStore(dataset.repositoryUrl, DEFAULT_ICECHUNK_BRANCH);
   } catch (error) {
     throw repositoryOpenError(
@@ -329,6 +341,120 @@ function liveLayerExists(live: LiveLayer | null): live is LiveLayer {
   return Boolean(live && useAppStore.getState().layers.some((layer) => layer.id === live.id));
 }
 
+/** The map's size in CSS pixels, which decides how many chunks a view holds. */
+function viewportSize(app: GeoLibreAppAPI): { width: number; height: number } {
+  const container = getStyleMap(app)?.getContainer();
+  return {
+    width: container?.clientWidth || window.innerWidth,
+    height: container?.clientHeight || window.innerHeight,
+  };
+}
+
+/**
+ * Bring the map in to a regional layer's minimum zoom before it is added, so the renderer's first
+ * read covers a region rather than the globe. Stays over the current view when the dataset covers
+ * it, and moves to the dataset otherwise.
+ *
+ * Returns:
+ *   A function that puts the camera back, for an add that fails; null when nothing moved.
+ */
+function zoomInForRegionalLayer(
+  app: GeoLibreAppAPI,
+  dataset: DynamicalDataset,
+  minZoom: number,
+): (() => void) | null {
+  const map = getStyleMap(app);
+  if (!map) return null;
+  const center = map.getCenter();
+  const zoom = map.getZoom();
+  const bbox = dataset.bbox;
+  const inside = !bbox || bboxContains(bbox, center.lng, center.lat);
+  if (zoom >= minZoom && inside) return null;
+  map.jumpTo({ center: inside ? center : bboxCenter(bbox), zoom: Math.max(zoom, minZoom) });
+  return () => map.jumpTo({ center, zoom });
+}
+
+/**
+ * Hide a regional layer below its minimum zoom, where a view would read more chunks than the
+ * budget allows.
+ *
+ * MapLibre skips a layer's render passes outside its zoom range, and the renderer only fetches from
+ * them, so this keeps a zoomed-out view (or a re-slice while zoomed out) from reading anything. The
+ * Zarr control has no zoom option and the layer sync leaves control-rendered layers' zoom ranges
+ * alone, so the range is set here. The renderer also fetches once while it initializes, gated on
+ * its own minimum zoom rather than MapLibre's; that is set too, when the renderer still has the
+ * field, for a view zoomed out while the layer's metadata loads.
+ */
+function applyRegionalZoomRange(app: GeoLibreAppAPI, layerId: string, minZoom: number): void {
+  const map = getStyleMap(app);
+  const layer = useAppStore.getState().layers.find((entry) => entry.id === layerId);
+  if (!map || !layer) return;
+  // A zoom animation can settle a hair short of a whole level (3.9999 shows as "4.00"), which
+  // would leave the layer hidden at the zoom the panel names; the margin widens a view by ~3%.
+  const threshold = Math.max(0, minZoom - REGIONAL_ZOOM_TOLERANCE);
+  const nativeIds = layer.metadata.nativeLayerIds;
+  for (const nativeId of Array.isArray(nativeIds) ? nativeIds : []) {
+    if (typeof nativeId !== "string") continue;
+    const native = map.getLayer(nativeId) as { implementation?: { minZoom?: unknown } } | undefined;
+    if (!native) continue;
+    map.setLayerZoomRange(nativeId, threshold, 24);
+    const renderer = native.implementation;
+    if (renderer && typeof renderer.minZoom === "number") renderer.minZoom = threshold;
+  }
+}
+
+/**
+ * The regional layers this panel added, by layer id, so a resize can recompute their minimum
+ * zoom: the budget is per view, and a larger map at the same zoom holds more chunks.
+ */
+const regionalLayers = new Map<
+  string,
+  { dataset: DynamicalDataset; variable: DynamicalVariable }
+>();
+/** The map the resize listener is on, and the listener, while any regional layer exists. */
+let resizeWatch: {
+  map: { off(type: "resize", listener: () => void): unknown };
+  listener: () => void;
+} | null = null;
+
+function stopResizeWatch(): void {
+  resizeWatch?.map.off("resize", resizeWatch.listener);
+  resizeWatch = null;
+}
+
+/** Re-apply every live regional layer's minimum zoom for the map's current size. */
+function refreshRegionalZoomRanges(app: GeoLibreAppAPI): void {
+  const layers = useAppStore.getState().layers;
+  for (const [layerId, entry] of regionalLayers) {
+    if (!layers.some((layer) => layer.id === layerId)) {
+      regionalLayers.delete(layerId);
+      continue;
+    }
+    applyRegionalZoomRange(
+      app,
+      layerId,
+      regionalMinZoom(entry.dataset, entry.variable, viewportSize(app)),
+    );
+  }
+  if (!regionalLayers.size) stopResizeWatch();
+}
+
+/** Track a regional layer, listening for map resizes while any exists. */
+function watchRegionalLayer(
+  app: GeoLibreAppAPI,
+  layerId: string,
+  dataset: DynamicalDataset,
+  variable: DynamicalVariable,
+): void {
+  regionalLayers.set(layerId, { dataset, variable });
+  const map = getStyleMap(app);
+  if (!map || resizeWatch?.map === map) return;
+  stopResizeWatch();
+  const listener = () => refreshRegionalZoomRanges(app);
+  map.on("resize", listener);
+  resizeWatch = { map, listener };
+}
+
 /**
  * Re-slices run one after another, so an older one cannot land last. Module-wide, so a panel
  * rebuilt for a language change queues behind the one it replaced.
@@ -387,7 +513,7 @@ function buildPanel(container: HTMLElement): () => void {
       CSS.infoText,
       tr(
         "aboutAccess",
-        "GeoLibre reads the archives straight from their cloud storage, one map slice at a time. Datasets that store long time series in each chunk, and the low-latency virtual datasets (which reference the original GRIB files), cannot be drawn in the browser yet and are listed as unavailable.",
+        "GeoLibre reads the archives straight from their cloud storage, one map slice at a time, and decodes the low-latency virtual datasets from the producers' original GRIB2 files. Analyses and ensembles store a long time series in every chunk, so they draw a region at a time, once the map is zoomed in.",
       ),
     ),
     aboutLinks,
@@ -401,6 +527,7 @@ function buildPanel(container: HTMLElement): () => void {
   const variableLabel = labelled(tr("variable", "Variable"), variableSelect);
   const slidersBox = element("div", "display:flex;flex-direction:column;gap:8px;");
   const validLine = element("div", CSS.hint);
+  const regionalLine = element("p", CSS.hint);
 
   const colormapSelect = element("select", CSS.input);
   for (const ramp of VECTOR_COLOR_RAMPS) {
@@ -425,7 +552,15 @@ function buildPanel(container: HTMLElement): () => void {
   const attribution = element("p", CSS.attribution);
 
   const editor = element("div", "display:flex;flex-direction:column;gap:10px;");
-  editor.append(variableLabel, slidersBox, validLine, styleBox, addButton, attribution);
+  editor.append(
+    variableLabel,
+    slidersBox,
+    validLine,
+    styleBox,
+    regionalLine,
+    addButton,
+    attribution,
+  );
   editor.style.display = "none";
 
   container.append(
@@ -449,15 +584,30 @@ function buildPanel(container: HTMLElement): () => void {
   const currentVariable = (): DynamicalVariable | undefined =>
     currentDataset()?.variables.find((variable) => variable.name === state.variable);
 
-  const unsupportedReason = (dataset: DynamicalDataset): string | null => {
-    switch (datasetMapSupport(dataset)) {
-      case "virtual":
-        return tr("unsupportedVirtual", "reads GRIB files, not drawable yet");
-      case "time-series":
-        return tr("unsupportedTimeSeries", "time-series layout, too large to map");
-      default:
-        return null;
-    }
+  const unsupportedReason = (dataset: DynamicalDataset): string | null =>
+    datasetMapSupport(dataset) === "time-series"
+      ? tr("unsupportedTimeSeries", "time-series layout, too large to map")
+      : null;
+
+  /** The chosen variable's minimum zoom, or 0 when it draws at any zoom. */
+  const currentMinZoom = (): number => {
+    const dataset = currentDataset();
+    const variable = currentVariable();
+    if (!appRef || !dataset || !variable || !needsRegionalView(dataset, variable)) return 0;
+    return regionalMinZoom(dataset, variable, viewportSize(appRef));
+  };
+
+  const renderRegionalHint = (): void => {
+    const minZoom = currentMinZoom();
+    regionalLine.style.display = minZoom > 0 ? "" : "none";
+    regionalLine.textContent =
+      minZoom > 0
+        ? tr(
+            "regionalHint",
+            "This dataset stores a long time series in every chunk, so it draws a region at a time: from zoom {{zoom}} in. Adding it zooms the map in if needed.",
+            { zoom: minZoom },
+          )
+        : "";
   };
 
   const renderDatasets = (): void => {
@@ -472,6 +622,8 @@ function buildPanel(container: HTMLElement): () => void {
     datasetSelect.replaceChildren(placeholder);
     const supported = element("optgroup");
     supported.label = tr("groupSupported", "Map-ready");
+    const regional = element("optgroup");
+    regional.label = tr("groupRegional", "Regional: draws when zoomed in");
     const unsupported = element("optgroup");
     unsupported.label = tr("groupUnsupported", "Not available in the browser");
     for (const dataset of catalog) {
@@ -483,9 +635,12 @@ function buildPanel(container: HTMLElement): () => void {
       );
       option.value = dataset.id;
       option.disabled = Boolean(reason);
-      (reason ? unsupported : supported).append(option);
+      if (reason) unsupported.append(option);
+      else if (datasetMapSupport(dataset) === "regional") regional.append(option);
+      else supported.append(option);
     }
     if (supported.children.length) datasetSelect.append(supported);
+    if (regional.children.length) datasetSelect.append(regional);
     if (unsupported.children.length) datasetSelect.append(unsupported);
     const dataset = currentDataset();
     datasetSelect.value = dataset && !unsupportedReason(dataset) ? dataset.id : "";
@@ -662,6 +817,7 @@ function buildPanel(container: HTMLElement): () => void {
       .join(" ");
     const previousVariable = state.variable;
     renderVariables(dataset);
+    renderRegionalHint();
     const variable = currentVariable();
     if (variable && (changed || previousVariable !== state.variable || !state.colormap)) {
       applyStyleDefaults(variable);
@@ -741,6 +897,7 @@ function buildPanel(container: HTMLElement): () => void {
     const sliceAxes = axes;
     const indices = { ...state.indices };
     const stillChosen = () => state.datasetId === dataset.id && state.variable === variable.name;
+    let restoreCamera: (() => void) | null = null;
     try {
       setStatus(tr("opening", "Opening {{name}}…", { name: dataset.title }));
       const store = await openRepository(dataset);
@@ -766,6 +923,12 @@ function buildPanel(container: HTMLElement): () => void {
       const proj4 = projected ? await readProjection(store) : null;
       const bounds = projected ? projectedBounds(dataset) : null;
       const name = layerName(dataset, variable, sliceAxes, indices);
+      const minZoom = needsRegionalView(dataset, variable)
+        ? regionalMinZoom(dataset, variable, viewportSize(app))
+        : 0;
+      // The jump has to come before the add, which fetches as it initializes; a failed add puts
+      // the camera back.
+      restoreCamera = minZoom > 0 ? zoomInForRegionalLayer(app, dataset, minZoom) : null;
       setStatus(tr("adding", "Adding {{name}}…", { name: variable.longName }));
       const layerId = await addZarrRasterLayer(app, {
         url: icechunkLayerUrl(dataset.repositoryUrl, DEFAULT_ICECHUNK_BRANCH),
@@ -781,7 +944,15 @@ function buildPanel(container: HTMLElement): () => void {
         ...(projected ? { spatialDimensions: projected } : {}),
         ...(proj4 ? { proj4 } : {}),
         ...(bounds ? { bounds } : {}),
+        ...(minZoom > 0 ? { minZoom: Math.max(0, minZoom - REGIONAL_ZOOM_TOLERANCE) } : {}),
       });
+      // The layer is on the map, drawing at the zoom the camera moved to.
+      restoreCamera = null;
+      if (minZoom > 0) applyRegionalZoomRange(app, layerId, minZoom);
+      // Tracked even at a minimum zoom of 0: a larger map later can need one.
+      if (needsRegionalView(dataset, variable)) {
+        watchRegionalLayer(app, layerId, dataset, variable);
+      }
       const layer = useAppStore.getState().layers.find((entry) => entry.id === layerId);
       if (layer) {
         useAppStore.getState().updateLayer(layerId, {
@@ -796,15 +967,22 @@ function buildPanel(container: HTMLElement): () => void {
       }
       state.live = { id: layerId, datasetId: dataset.id, variable: variable.name, name };
       setStatus(
-        sliceAxes.length
+        minZoom > 0
           ? tr(
-              "addedLive",
-              "Added {{name}}. Move the sliders to re-slice it; the first view of a region can take a few seconds.",
-              { name: variable.longName },
+              "addedRegional",
+              "Added {{name}}. It draws from zoom {{zoom}} in and hides when zoomed out further; each new region takes a few seconds.",
+              { name: variable.longName, zoom: minZoom },
             )
-          : tr("added", "Added {{name}}.", { name: variable.longName }),
+          : sliceAxes.length
+            ? tr(
+                "addedLive",
+                "Added {{name}}. Move the sliders to re-slice it; the first view of a region can take a few seconds.",
+                { name: variable.longName },
+              )
+            : tr("added", "Added {{name}}.", { name: variable.longName }),
       );
     } catch (error) {
+      restoreCamera?.();
       setStatus(
         tr("addFailed", "Could not add the layer: {{message}}", { message: errorMessage(error) }),
         true,
@@ -820,6 +998,7 @@ function buildPanel(container: HTMLElement): () => void {
     state.variable = variableSelect.value || null;
     const variable = currentVariable();
     if (variable) applyStyleDefaults(variable);
+    renderRegionalHint();
     void loadAxes();
   });
   colormapSelect.addEventListener("change", () => {
@@ -866,9 +1045,11 @@ function mountPanel(container: HTMLElement): void {
 
 /**
  * Dynamical plugin: browses dynamical.org's catalog of cloud-optimized weather
- * forecasts and analyses (NOAA GFS and HRRR, ECMWF AIFS, DWD ICON-EU, ECCC
- * HRDPS, ...) and adds a variable as a Zarr raster layer read straight from its
- * Icechunk repository, with sliders for the forecast run and lead time.
+ * forecasts, ensembles and analyses (NOAA GFS, GEFS, HRRR and MRMS, ECMWF AIFS
+ * and IFS, DWD ICON-EU, ECCC HRDPS, NASA IMERG) and adds a variable as a Zarr
+ * raster layer read straight from its Icechunk repository, with sliders for the
+ * forecast run and lead time. Virtual repositories decode the producers' GRIB2
+ * messages in the browser; analyses and ensembles draw from a minimum zoom.
  */
 export const maplibreDynamicalPlugin: GeoLibrePlugin = {
   id: DYNAMICAL_PLUGIN_ID,
@@ -911,6 +1092,8 @@ export const maplibreDynamicalPlugin: GeoLibrePlugin = {
     state = initialState();
     // A later session reads the axes afresh.
     axesCache.clear();
+    stopResizeWatch();
+    regionalLayers.clear();
     appRef = null;
   },
 };
