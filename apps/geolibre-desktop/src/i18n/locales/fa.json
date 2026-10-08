@@ -1970,7 +1970,7 @@
     "only3d": "تنها سه‌بعدی",
     "noMapbox": "بدون Mapbox",
     "noArcgis": "بدون ArcGIS",
-    "cesiumTokenHint": "برای زمین و تصاویر Ion، یک توکن Cesium Ion در تنظیمات بیفزایید"
+    "cesiumTokenHint": "برای بارگیری لایه 3D Tiles از Ion، یک توکن Cesium Ion در تنظیمات اضافه کنید"
   },
   "renderer": {
     "basemap": "نقشهٔ پایه",

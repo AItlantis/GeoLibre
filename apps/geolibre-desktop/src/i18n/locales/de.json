@@ -1970,7 +1970,7 @@
     "only3d": "Nur 3D",
     "noMapbox": "Kein Mapbox",
     "noArcgis": "Kein ArcGIS",
-    "cesiumTokenHint": "Fügen Sie in den Einstellungen ein Cesium-Ion-Token für Gelände und Ion-Bilder hinzu"
+    "cesiumTokenHint": "Fügen Sie in den Einstellungen ein Cesium-Ion-Token hinzu, um den Ion-3D-Tiles-Layer zu laden"
   },
   "renderer": {
     "basemap": "Hintergrundkarte",

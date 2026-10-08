@@ -773,8 +773,20 @@ export function parseTestudoEmbedRequest(data: unknown, challenge: string): Test
     || typeof data.requestId !== "string" || !data.requestId || data.requestId.length > 200 || !isRecord(data.payload)
     || data.payload.challenge !== challenge || (data.type !== "testudoSetGuestCapability" && containsCredentialField(data.payload))) return null;
   const { challenge: _challenge, ...payload } = data.payload;
-  if (data.type === "testudoOpenLocalPackage" && Object.keys(payload).length > 1) return null;
+  if (data.type === "testudoOpenLocalPackage") {
+    const handle = payload.directoryHandle;
+    if (payload.tviewId !== "main" || !isDirectoryHandle(handle)
+      || (payload.generation !== undefined && (!Number.isSafeInteger(payload.generation) || Number(payload.generation) < 0))
+      || Object.keys(payload).some(key => !["tviewId", "generation", "directoryHandle"].includes(key))) return null;
+  }
   return { type: data.type, requestId: data.requestId, payload };
+}
+
+function isDirectoryHandle(value: unknown): value is FileSystemDirectoryHandle {
+  if (!isRecord(value)) return false;
+  const handle = value as Partial<FileSystemDirectoryHandle>;
+  return handle.kind === "directory" && typeof handle.name === "string" && handle.name.length <= 255
+    && typeof handle.getFileHandle === "function" && typeof handle.getDirectoryHandle === "function";
 }
 
 export function parseTestudoArtifactResponse(data: unknown, challenge: string): TestudoArtifactResponse | null {

@@ -55,6 +55,7 @@ export type EmbedEventMap = {
   ready: { version: string; challenge?: string };
   testudoStateChanged: TestudoViewerState;
   testudoPlaybackChanged: TestudoPlaybackState & { tviewId: string };
+  testudoMapControlStateChanged: TestudoMapControlState & { tviewId: string; generation: number };
   testudoArtifactRequest: TestudoArtifactRequest & { challenge: string };
   testudoGeoAIRequest: TestudoGeoAIRequest;
   testudoGeoAIReply: TestudoGeoAIReply;
@@ -87,6 +88,12 @@ export interface ConnectOptions {
   fetchArtifact?: TestudoArtifactFetcher;
 }
 
+export interface TestudoOpenLocalPackagePayload {
+  tviewId: string;
+  directoryHandle: FileSystemDirectoryHandle;
+  generation?: number;
+}
+
 export interface GeoLibreEmbedClient {
   testudoCreateTView(payload: { tviewId: string }): Promise<TestudoTViewInfo>;
   testudoDestroyTView(payload: { tviewId: string }): Promise<TestudoTViewInfo>;
@@ -97,8 +104,8 @@ export interface GeoLibreEmbedClient {
   testudoSetGuestCapability(payload: Omit<TestudoSetGuestCapability, "challenge">): Promise<{ protocol: 1; challenge: string; expiresAt: number }>;
   testudoLoadPackage(payload: TestudoLoadPackage): Promise<TestudoViewerState>;
   testudoSetPlugin(payload: { id: TestudoSelectablePluginId }): Promise<TestudoViewerState>;
-  /** Open the native folder picker; call directly from a user-activation handler. */
-  testudoOpenLocalPackage(): Promise<TestudoViewerState>;
+  /** Load a directory handle picked by the host during its user-activation handler. */
+  testudoOpenLocalPackage(payload: TestudoOpenLocalPackagePayload): Promise<TestudoViewerState>;
   testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoOpenGeoAiChat(payload: { open: boolean }): Promise<TestudoViewerState>;
   /** Subscribe to testudoGeoAiInvestigationUpdate first, then submit a question and correlate by the returned requestId. */
@@ -233,7 +240,7 @@ export function connect(
     testudoGetActiveTView: () => sendTestudo("testudoGetActiveTView"),
     testudoSetGuestCapability: (payload) => sendTestudo("testudoSetGuestCapability", payload),
     testudoLoadPackage: (payload) => sendTestudo<TestudoViewerState>("testudoLoadPackage", { ...payload, tviewId: payload.tviewId ?? "main" }),
-    testudoOpenLocalPackage: () => sendTestudo<TestudoViewerState>("testudoOpenLocalPackage"),
+    testudoOpenLocalPackage: (payload) => sendTestudo<TestudoViewerState>("testudoOpenLocalPackage", { ...withGeneration(payload) }),
     testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
     testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),

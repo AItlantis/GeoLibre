@@ -1970,7 +1970,7 @@
     "only3d": "3D uniquement",
     "noMapbox": "Sans Mapbox",
     "noArcgis": "Sans ArcGIS",
-    "cesiumTokenHint": "Ajoutez un jeton Cesium Ion dans les Paramètres pour le relief et l'imagerie Ion"
+    "cesiumTokenHint": "Ajoutez un jeton Cesium Ion dans les paramètres pour charger la couche Ion 3D Tiles"
   },
   "renderer": {
     "basemap": "Fond de carte",

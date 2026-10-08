@@ -1,5 +1,6 @@
+import { cesiumIonAssetId, useAppStore } from "@geolibre/core";
 import { CesiumCanvas, type CesiumWidgetControlLabels, type MapEngine } from "@geolibre/map";
-import { useMemo, type RefObject } from "react";
+import { useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { useCesiumIonToken } from "../../hooks/useCesiumIonToken";
 
@@ -13,6 +14,8 @@ export interface PrimaryCesiumCanvasProps {
   engineRef: RefObject<MapEngine | null>;
   /** Called once the engine is live, to re-arm anything keyed to map readiness. */
   onEngineReady: () => void;
+  onEngineRestart?: () => void;
+  onEngineError: (message: string) => void;
 }
 
 /**
@@ -30,9 +33,20 @@ export interface PrimaryCesiumCanvasProps {
  * mounted beside it, and the menus gate those on `engine.capabilities` rather
  * than on the renderer's name.
  */
-export function PrimaryCesiumCanvas({ engineRef, onEngineReady }: PrimaryCesiumCanvasProps) {
+export function PrimaryCesiumCanvas({ engineRef, onEngineReady, onEngineRestart, onEngineError }: PrimaryCesiumCanvasProps) {
   const { t } = useTranslation();
   const ionToken = useCesiumIonToken();
+  const hasIonAssetLayer = useAppStore((s) =>
+    s.layers.some((layer) => layer.type === "3d-tiles" && cesiumIonAssetId(layer) !== null),
+  );
+  const previousIonToken = useRef(ionToken);
+  const onEngineRestartRef = useRef(onEngineRestart);
+  onEngineRestartRef.current = onEngineRestart;
+  useLayoutEffect(() => {
+    if (Object.is(previousIonToken.current, ionToken)) return;
+    previousIonToken.current = ionToken;
+    onEngineRestartRef.current?.();
+  }, [ionToken]);
   // Cesium's toolbar widgets render outside React and hardcode English, so the
   // translated tooltips are handed to the canvas the way `MapController`'s
   // compass and terrain labels are pushed in. Memoized on the language rather
@@ -67,6 +81,7 @@ export function PrimaryCesiumCanvas({ engineRef, onEngineReady }: PrimaryCesiumC
         ionToken={ionToken}
         engineRef={engineRef}
         onEngineReady={onEngineReady}
+        onEngineError={(error) => onEngineError(error.message)}
         controlLabels={controlLabels}
         popupCloseLabel={t("common.close")}
       />
@@ -74,7 +89,7 @@ export function PrimaryCesiumCanvas({ engineRef, onEngineReady }: PrimaryCesiumC
           so say what a token would add rather than hiding the view. Bottom-end
           keeps it clear of Cesium's own credit display (bottom-left) and of the
           pane label along the top, matching the globe panes in MapGrid. */}
-      {ionToken ? null : (
+      {ionToken || !hasIonAssetLayer ? null : (
         <div className="pointer-events-none absolute bottom-2 end-2 z-10 max-w-[70%] truncate rounded-md border border-input map-glass px-2 py-1 text-xs text-muted-foreground shadow-sm">
           {t("mapGrid.cesiumTokenHint")}
         </div>

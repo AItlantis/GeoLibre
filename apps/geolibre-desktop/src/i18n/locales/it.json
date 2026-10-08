@@ -1970,7 +1970,7 @@
     "only3d": "Solo 3D",
     "noMapbox": "No Mapbox",
     "noArcgis": "No ArcGIS",
-    "cesiumTokenHint": "Aggiungi un token Cesium Ion nelle Impostazioni per il terreno e le immagini Ion"
+    "cesiumTokenHint": "Aggiungi un token Cesium Ion nelle Impostazioni per caricare il layer Ion 3D Tiles"
   },
   "renderer": {
     "basemap": "Mappa di base",

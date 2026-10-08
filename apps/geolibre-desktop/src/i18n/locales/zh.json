@@ -1924,7 +1924,7 @@
     "only3d": "仅 3D",
     "noMapbox": "不支持 Mapbox",
     "noArcgis": "不支持 ArcGIS",
-    "cesiumTokenHint": "在设置中添加 Cesium Ion 令牌即可使用地形和 Ion 影像"
+    "cesiumTokenHint": "在设置中添加 Cesium Ion 令牌以加载 Ion 3D Tiles 图层"
   },
   "renderer": {
     "basemap": "底图",

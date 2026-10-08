@@ -1,4 +1,5 @@
 import { TestudoControls } from "./TestudoControls";
+import { TestudoNativeActionReceiver } from "./TestudoNativeActionReceiver";
 // @refresh reset
 import { localFileName, useAppStore, type GeoLibreLayer } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
@@ -139,6 +140,7 @@ import { registerMbtilesProtocol } from "../../lib/mbtiles";
 import { hasReverseGeocodeConsent } from "../../lib/reverse-geocode-consent";
 import { hasKnowledgeCardConsent, recordKnowledgeCardConsent } from "../../lib/knowledge-consent";
 import { isTestudoLayout, TESTUDO_BLOCKED_PLUGIN_IDS } from "../../lib/testudo-mode";
+import type { TestudoRendererReadiness, TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { wikipediaLang } from "../../lib/knowledge";
 import { registerXyzTileProtocol } from "../../lib/xyz-url";
 import { useEmbedBridge } from "../../hooks/useEmbedBridge";
@@ -680,6 +682,25 @@ export function DesktopShell({
   const activeResizeCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => () => activeResizeCleanupRef.current?.(), []);
   const mapControllerRef = useRef<MapEngine | null>(null);
+  const currentTestudoTViewRef = useRef<TestudoTViewIdentityRef["current"]>(null);
+  const primaryRenderer = useAppStore((s) => s.primaryRenderer);
+  const currentTestudoRenderer = primaryRenderer === "cesium" ? "cesium" : "maplibre";
+  const rendererReadinessRef = useRef<TestudoRendererReadiness>({
+    renderer: currentTestudoRenderer,
+    epoch: 0,
+    ready: false,
+    error: null,
+  });
+  // Sync the epoch during render so callbacks passed to the newly mounted canvas
+  // capture the same generation that the action bridge observes.
+  if (rendererReadinessRef.current.renderer !== currentTestudoRenderer) {
+    rendererReadinessRef.current = {
+      renderer: currentTestudoRenderer,
+      epoch: rendererReadinessRef.current.epoch + 1,
+      ready: false,
+      error: null,
+    };
+  }
 
   // Frame layers a `?data=` deep link added. Single non-GeoJSON datasets move
   // the camera in their format-specific loader; a repeated `data` batch lists
@@ -1435,18 +1456,34 @@ export function DesktopShell({
     };
   }, []);
 
-  const handleMapControllerReady = useCallback(() => {
+  const handleMapControllerReady = useCallback((renderer: TestudoRendererReadiness["renderer"], epoch: number) => {
+    const readiness = rendererReadinessRef.current;
+    if (readiness.renderer !== renderer || readiness.epoch !== epoch
+      || (useAppStore.getState().primaryRenderer === "cesium") !== (renderer === "cesium")
+      || !mapControllerRef.current) return;
+    rendererReadinessRef.current = { ...readiness, ready: true, error: null };
     setMapReadyGeneration((generation) => generation + 1);
     onMapReady?.(createAppAPI(mapControllerRef));
   }, [onMapReady]);
+  const handleMapControllerError = useCallback((renderer: TestudoRendererReadiness["renderer"], epoch: number, error: string) => {
+    const readiness = rendererReadinessRef.current;
+    if (readiness.renderer !== renderer || readiness.epoch !== epoch) return;
+    rendererReadinessRef.current = { ...readiness, ready: false, error };
+  }, []);
+  const handleMapControllerRestart = useCallback((renderer: TestudoRendererReadiness["renderer"]) => {
+    const readiness = rendererReadinessRef.current;
+    if (readiness.renderer !== renderer) return;
+    rendererReadinessRef.current = { ...readiness, epoch: readiness.epoch + 1, ready: false, error: null };
+    setMapReadyGeneration((generation) => generation + 1);
+  }, []);
 
   /**
    * Which engine draws the primary map area (issue #2217). `"cesium"` unmounts
    * `MapCanvas` in favour of the globe, so no `MapController` exists while it is
    * selected.
    */
-  const primaryRenderer = useAppStore((s) => s.primaryRenderer);
   const cesiumPrimary = primaryRenderer === "cesium";
+  const rendererEpoch = rendererReadinessRef.current.epoch;
   useScreenshotReadiness(
     mapControllerRef,
     mapReadyGeneration,
@@ -2759,18 +2796,20 @@ export function DesktopShell({
                 <PrimaryMapboxCanvas
                   canUseRemoteElevation={hasElevationConsent}
                   engineRef={mapControllerRef}
-                  onEngineReady={handleMapControllerReady}
+                  onEngineReady={() => handleMapControllerReady(currentTestudoRenderer, rendererEpoch)}
                   onMapDiagnosticEvent={handleMapDiagnosticEvent}
                 />
               ) : primaryRenderer === "arcgis" ? (
                 <PrimaryArcgisCanvas
                   engineRef={mapControllerRef}
-                  onEngineReady={handleMapControllerReady}
+                  onEngineReady={() => handleMapControllerReady(currentTestudoRenderer, rendererEpoch)}
                 />
               ) : cesiumPrimary ? (
                 <PrimaryCesiumCanvas
                   engineRef={mapControllerRef}
-                  onEngineReady={handleMapControllerReady}
+                  onEngineReady={() => handleMapControllerReady(currentTestudoRenderer, rendererEpoch)}
+                  onEngineRestart={() => handleMapControllerRestart("cesium")}
+                  onEngineError={(error) => handleMapControllerError(currentTestudoRenderer, rendererEpoch, error)}
                 />
               ) : (
                 <>
@@ -2780,7 +2819,7 @@ export function DesktopShell({
                     identifyAllLabels={identifyAllLabels}
                     identifyRasterLayerAt={identifyRasterLayerAt}
                     onMapDiagnosticEvent={handleMapDiagnosticEvent}
-                    onControllerReady={handleMapControllerReady}
+                    onControllerReady={() => handleMapControllerReady(currentTestudoRenderer, rendererEpoch)}
                   />
                   <MapModeBanner mapControllerRef={mapControllerRef} />
                   <PixelTimeSeriesControl mapControllerRef={mapControllerRef} />
@@ -2936,7 +2975,12 @@ export function DesktopShell({
           >
             <FlightSimulatorPanel />
           </SectionErrorBoundary>
-          {new URLSearchParams(window.location.search).get("layout") === "testudo" && <TestudoControls app={mapAppAPI} />}
+          {new URLSearchParams(window.location.search).get("layout") === "testudo" && (
+            <>
+              <TestudoControls app={mapAppAPI} rendererReadinessRef={rendererReadinessRef} currentTViewRef={currentTestudoTViewRef} />
+              <TestudoNativeActionReceiver appApi={mapAppAPI} mapControllerRef={mapControllerRef} rendererReadinessRef={rendererReadinessRef} currentTViewRef={currentTestudoTViewRef} />
+            </>
+          )}
           <PathAnalysisPanel />
           <ScenarioComparisonPanel />
           <SectionErrorBoundary label="GeoAI chat panel" displayName={t("shell.section.geoAiChatPanel", "GeoAI chat panel")}>

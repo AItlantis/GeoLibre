@@ -13,7 +13,7 @@ export interface TestudoViewModeMetadata {
 export interface TestudoStyle { display: "ramp" | "extrusion"; metric: string; interval: number; maxHeightM: number; scenarioA?: string; scenarioB?: string; showDifference?: boolean }
 export type TestudoKpiGeometry = "sections" | "lanes" | "turns" | "nodes";
 export interface TestudoKpiGeometryState { showSections: boolean; showLanes: boolean; showTurns: boolean; showNodes: boolean }
-export interface TestudoMapControlState { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: "maplibre" | "cesium" }
+export interface TestudoMapControlState { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: "maplibre" | "cesium"; controllerReady: boolean; rendererEpoch: number; rendererError: string | null }
 export interface TestudoNetworkFilter { id: string; enabled: boolean; value?: string | number | boolean }
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
 export interface TestudoBootstrap {

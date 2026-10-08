@@ -6,15 +6,15 @@ import type { GeoAiViewerContext, GeoLibreAppAPI, TestudoCameraView, TestudoFeat
 import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
 import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins, unsupportedTestudoCommand } from "../../lib/embed-api";
 import { parentOriginHintFromBrowser, pickBroadcastTargets } from "../../hooks/embedHost";
+import { mapViewFromMapLibre, type TestudoRendererReadinessRef, type TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, hasDeclaredPathIndex, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, hasDeclaredPathIndex, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
-import { openLocalPackageFromActivation } from "../../lib/testudo-picker-flow";
 import { availableModesForScenario, comparisonStyleState, environmentAvailableForScenario, modeForScenarioChange, pluginForTestudoMode, testudoViewerStyleState, validateTestudoStyle } from "../../lib/testudo-view-style";
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
@@ -29,8 +29,20 @@ const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectab
   { id: "density", label: "Density", plugin: "network-kpi" },
 ];
 const empty: TestudoViewerState = { package: null, selectedPlugin: null, assistantOpen: false, capabilities: [], availableModes: [], status: "empty" };
-type LocalPackagePickerWindow = Window & {
-  showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<VehicleDirectoryHandle>;
+function isVehicleDirectoryHandle(value: unknown): value is VehicleDirectoryHandle {
+  if (!value || typeof value !== "object") return false;
+  const handle = value as Partial<VehicleDirectoryHandle> & { kind?: unknown };
+  return handle.kind === "directory" && typeof handle.name === "string" && handle.name.length <= 255
+    && typeof handle.getFileHandle === "function" && typeof handle.getDirectoryHandle === "function";
+}
+type TestudoControlMap = {
+  getSource(id: string): unknown;
+  addSource(id: string, source: Record<string, unknown>): void;
+  getLayer(id: string): unknown;
+  addLayer(layer: Record<string, unknown>, beforeId?: string): void;
+  getStyle(): { layers?: Array<{ id?: string; type?: string }> };
+  getLayoutProperty(id: string, name: string): unknown;
+  setLayoutProperty(id: string, name: string, value: unknown): void;
 };
 function isBoundedDisplayObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -70,11 +82,9 @@ const handlers = {
 };
 
 /** Curated native runtime. The host owns navigation; these plugins own their map layers. */
-export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
+export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: { app: GeoLibreAppAPI | null; rendererReadinessRef: TestudoRendererReadinessRef; currentTViewRef: TestudoTViewIdentityRef }) {
   const { t } = useTranslation();
   const [state, setState] = useState<TestudoViewerState>(empty);
-  const [localPickerRequest, setLocalPickerRequest] = useState<string | null>(null);
-  const localPickerRequestRef = useRef<string | null>(null);
   const picker = useRef<((directory: VehicleDirectoryHandle) => Promise<void>) | null>(null);
   const modeSelector = useRef<((mode: TestudoDemoMode) => Promise<TestudoViewerState>) | null>(null);
   useEffect(() => {
@@ -103,10 +113,13 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     const persistentNetwork = new plugins.TestudoPersistentNetwork();
     const persistentNetworkMapWatch = setInterval(() => persistentNetwork.reconcileMap(app.getMap?.() as any ?? null), 200);
     let comparisonDeclared = false;
+    let standaloneEsriVisible = false;
     const scenarioAdapters = plugins.createScenarioSelectionAdapters({ setNetworkKpiScenario: plugins.setNetworkKpiScenario,
       setVehiclePlaybackScenario: plugins.setVehiclePlaybackScenario, setScenarioComparisonSettings: plugins.setScenarioComparisonSettings });
-    let openingLocalPicker = false;
+    const seenLocalPackageRequests = new Set<string>();
     let readyTimer: ReturnType<typeof setInterval> | undefined;
+    let mapControlsTimer: ReturnType<typeof setInterval> | undefined;
+    let unsubscribeMapControls: (() => void) | undefined;
     const featureBridge = new plugins.TestudoFeatureBridge((packageBootstrap) => ({
       open: async (_bootstrap, context) => {
         bridgePluginId = context.pluginId as TestudoSelectablePluginId | null;
@@ -184,15 +197,19 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
               if (visible) plugins.openLegendPanel(app); else plugins.closeLegendPanel(app);
               return plugins.isLegendPanelVisible() === visible;
             }
-            if (controlId === "esri-world-imagery") return persistentNetwork.setEsriWorldImagery(visible);
+            if (controlId === "esri-world-imagery") return setStandaloneEsriVisible(visible);
             throw new Error(`Map control ${controlId} is unavailable.`);
           },
           getMapControlState: () => ({
             legendVisible: plugins.isLegendPanelVisible(),
-            esriWorldImageryVisible: persistentNetwork.isEsriWorldImageryVisible(),
+            esriWorldImageryVisible: getStandaloneEsriVisible(),
             renderer: useAppStore.getState().primaryRenderer === "cesium" ? "cesium" : "maplibre",
           }),
           setRenderer: renderer => {
+            if (renderer === "cesium" && useAppStore.getState().primaryRenderer !== "cesium") {
+              const currentMapView = mapViewFromMapLibre(app.getMap?.());
+              if (currentMapView) useAppStore.getState().setMapView(currentMapView);
+            }
             useAppStore.getState().setPrimaryRenderer(renderer);
             return renderer;
           },
@@ -211,9 +228,87 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     featureBridge.setMapResolver(() => app.getMap?.() as any ?? null);
     featureBridge.createTView("main");
     featureBridge.setActiveTView("main");
+    const requireMainGeneration = (payload: Record<string, unknown>) => {
+      if (payload.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+      const main = featureBridge.getTViews().find(view => view.tviewId === "main");
+      if (!main) throw new Error("The main TView is not ready.");
+      if (payload.generation !== undefined && payload.generation !== main.generation) {
+        throw new Error("This command belongs to a stale Testudo TView generation.");
+      }
+      return main;
+    };
+    const esriProjectLayer = () => useAppStore.getState().layers.find(layer => layer.id === "basemap-esri-world-imagery"
+      || (layer.metadata as Record<string, unknown> | undefined)?.basemapId === "esri-world-imagery");
+    const getStandaloneEsriVisible = () => {
+      const projectLayer = esriProjectLayer();
+      if (projectLayer) return projectLayer.visible;
+      const map = app.getMap?.() as TestudoControlMap | null | undefined;
+      if (map?.getLayer("testudo-esri-world-imagery")) {
+        return map.getLayoutProperty("testudo-esri-world-imagery", "visibility") !== "none";
+      }
+      return standaloneEsriVisible;
+    };
+    const setStandaloneEsriVisible = (visible: boolean) => {
+      const projectLayer = esriProjectLayer();
+      if (projectLayer) {
+        useAppStore.getState().setLayerVisibility(projectLayer.id, visible);
+        standaloneEsriVisible = visible;
+        return visible;
+      }
+      const map = app.getMap?.() as TestudoControlMap | null | undefined;
+      if (!map) throw new Error("World Imagery is unavailable until the map is ready.");
+      const sourceId = "testudo-esri-world-imagery";
+      const layerId = sourceId;
+      if (visible && !map.getSource(sourceId)) {
+        map.addSource(sourceId, {
+          type: "raster",
+          tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+          tileSize: 256,
+          attribution: "Tiles © Esri",
+        });
+      }
+      if (visible && !map.getLayer(layerId)) {
+        const beforeId = map.getStyle()?.layers?.find(layer => layer.id && layer.type !== "background")?.id;
+        map.addLayer({ id: layerId, type: "raster", source: sourceId,
+          layout: { visibility: "visible" }, paint: { "raster-opacity": 1 } }, beforeId);
+      } else if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+      }
+      standaloneEsriVisible = visible;
+      return visible;
+    };
     const emit = (type: string, payload: unknown, target = parentOrigin) => {
       if (!disposed && target && allowed.includes(target)) window.parent.postMessage({ v: 2, source: "geolibre", type, payload }, target);
     };
+    let lastEmittedMapControlState = "";
+    const currentRendererReadiness = () => {
+      const readiness = rendererReadinessRef.current;
+      const renderer = useAppStore.getState().primaryRenderer === "cesium" ? "cesium" : "maplibre";
+      return { controllerReady: readiness.ready && readiness.renderer === renderer && !readiness.error, rendererEpoch: readiness.epoch, rendererError: readiness.renderer === renderer ? readiness.error : null };
+    };
+    const emitMapControlState = () => {
+      currentTViewRef.current = () => featureBridge.getTViews().find(view => view.tviewId === "main") ?? null;
+      const main = featureBridge.getTViews().find(view => view.tviewId === "main");
+      if (!main) return;
+      const state = {
+        tviewId: "main",
+        generation: main.generation,
+        legendVisible: plugins.isLegendPanelVisible(),
+        // World Imagery is the project layer basemap-esri-world-imagery (or
+        // metadata basemapId=esri-world-imagery); the helper also reads the
+        // package-free testudo-esri-world-imagery fallback layer.
+        esriWorldImageryVisible: getStandaloneEsriVisible(),
+        renderer: useAppStore.getState().primaryRenderer === "cesium" ? "cesium" as const : "maplibre" as const,
+        ...currentRendererReadiness(),
+      };
+      const signature = JSON.stringify(state);
+      if (signature === lastEmittedMapControlState) return;
+      lastEmittedMapControlState = signature;
+      emit("testudoMapControlStateChanged", state);
+    };
+    unsubscribeMapControls = useAppStore.subscribe(emitMapControlState);
+    mapControlsTimer = setInterval(emitMapControlState, 250);
+    emitMapControlState();
     const unsubscribeBridgeGeoAI = featureBridge.subscribeGeoAIRequests(request => emit("testudoGeoAIRequest", request));
     const unsubscribePlayback = featureBridge.subscribePlayback((tviewId, playback) => {
       const session = featureBridge.sessions.get(tviewId);
@@ -757,62 +852,11 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       } catch (error) { update({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
       finally { busy = false; }
     };
-    const loadPickedLocalPackage = async (selected: VehicleDirectoryHandle, requestId: string) => {
+    const loadPickedLocalPackage = async (selected: VehicleDirectoryHandle) => {
       if (busy) throw new Error(t("testudo.loading"));
-      const pickerWindow = window as LocalPackagePickerWindow;
-      if (!pickerWindow.showDirectoryPicker) {
-        const error = t("testudo.folderUnsupported");
-        update({ status: "error", error });
-        throw new Error(error);
-      }
-      try {
-        await picker.current?.(selected);
-        const result = current;
-        if (requestId) emit("ack", { requestId, ok: true, result });
-        return result;
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          localPickerRequestRef.current = null;
-          setLocalPickerRequest(null);
-          if (requestId) emit("ack", { requestId, ok: true, result: current });
-          return current;
-        }
-        throw error;
-      }
+      await picker.current?.(selected);
+      return current;
     };
-    const onLocalPickerActivation = (event: Event) => {
-      const requestId = (event as CustomEvent<{ requestId?: string }>).detail?.requestId;
-      if (!requestId || requestId !== localPickerRequestRef.current) return;
-      const pickerWindow = window as LocalPackagePickerWindow;
-      if (!pickerWindow.showDirectoryPicker) {
-        const error = t("testudo.folderUnsupported");
-        update({ status: "error", error });
-        localPickerRequestRef.current = null;
-        setLocalPickerRequest(null);
-        emit("ack", { requestId, ok: false, error });
-        return;
-      }
-      if (openingLocalPicker) return;
-      openingLocalPicker = true;
-      localPickerRequestRef.current = null;
-      setLocalPickerRequest(null);
-      void openLocalPackageFromActivation(requestId, requestId,
-        () => pickerWindow.showDirectoryPicker!({ mode: "read" }), selected => loadPickedLocalPackage(selected, requestId))
-        .then(result => {
-          if (result === null) return;
-        }).catch(error => {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          emit("ack", { requestId, ok: true, result: current });
-          return;
-        }
-        const detail = error instanceof Error ? error.message : String(error);
-        update({ status: "error", error: detail });
-        localPickerRequestRef.current = null;
-        setLocalPickerRequest(null);
-        emit("ack", { requestId, ok: false, error: detail });
-      }).finally(() => { openingLocalPicker = false; });
-    };
-    window.addEventListener("testudo-local-package-picker", onLocalPickerActivation);
     const requestInvestigation = (request: MessageEvent["data"]) => {
       const requestId = request.requestId as string;
       const question = request.payload.question as string;
@@ -852,15 +896,18 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       if (!acceptsTestudoMessage(event, window.parent, allowed, challenge)) return;
       clearInterval(readyTimer);
       const request = event.data;
+      if (request.type === "testudoOpenLocalPackage") {
+        if (seenLocalPackageRequests.has(request.requestId)) return;
+        seenLocalPackageRequests.add(request.requestId);
+        if (seenLocalPackageRequests.size > 128) seenLocalPackageRequests.delete(seenLocalPackageRequests.values().next().value!);
+      }
+      if (request.type === "testudoLoadPackage" || request.type === "testudoOpenLocalPackage") {
+        window.dispatchEvent(createTestudoSupersedeStartupProjectEvent(request.requestId));
+      }
       parentOrigin = event.origin;
       if (request.type === "testudoSetGuestCapability") {
         guestCredential = { token: request.payload.guestEmbedToken, expiresAt: request.payload.expiresAt };
         emit("ack", { requestId: request.requestId, ok: true, result: { protocol: 1, challenge, expiresAt: guestCredential.expiresAt } });
-        return;
-      }
-      if (request.type === "testudoOpenLocalPackage") {
-        localPickerRequestRef.current = request.requestId;
-        setLocalPickerRequest(request.requestId);
         return;
       }
       if (request.type === "testudoRequestInvestigation") {
@@ -869,6 +916,12 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
       }
       const run = async () => {
         if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
+        if (request.type === "testudoOpenLocalPackage") {
+          if (busy) throw new Error(t("testudo.loading"));
+          requireMainGeneration(request.payload);
+          if (!isVehicleDirectoryHandle(request.payload.directoryHandle)) throw new Error("A valid local package directory handle is required.");
+          return await loadPickedLocalPackage(request.payload.directoryHandle);
+        }
         if (request.type === "testudoGetState") return { ...current, tviewId: "main", generation: featureBridge.getTViews()[0]?.generation ?? 0 };
         if (request.type === "testudoCreateTView") {
           if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
@@ -966,8 +1019,21 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           if (request.type === "testudoSetLegendVisibility" || request.type === "testudoSetEsriWorldImagery") {
             if (typeof request.payload?.visible !== "boolean") throw new Error("visible must be a boolean.");
             const controlId = request.type === "testudoSetLegendVisibility" ? "legend" : "esri-world-imagery";
-            await featureBridge.setMapControl("main", controlId, request.payload.visible, request.payload?.generation);
-            const state = featureBridge.getMapControlState("main", request.payload?.generation);
+            requireMainGeneration(request.payload);
+            const session = featureBridge.sessions.get("main");
+            if (session) await featureBridge.setMapControl("main", controlId, request.payload.visible, request.payload.generation as number | undefined);
+            else if (controlId === "legend") {
+              if (request.payload.visible) plugins.openLegendPanel(app); else plugins.closeLegendPanel(app);
+            } else setStandaloneEsriVisible(request.payload.visible);
+            const state = session ? {
+              ...featureBridge.getMapControlState("main", request.payload.generation as number | undefined),
+              esriWorldImageryVisible: getStandaloneEsriVisible(),
+              ...currentRendererReadiness(),
+            } : {
+              legendVisible: plugins.isLegendPanelVisible(), esriWorldImageryVisible: getStandaloneEsriVisible(),
+              renderer: useAppStore.getState().primaryRenderer === "cesium" ? "cesium" as const : "maplibre" as const,
+              ...currentRendererReadiness(),
+            };
             return { visible: controlId === "legend" ? state.legendVisible : state.esriWorldImageryVisible };
           }
           if (request.type === "testudoSetMapControl") {
@@ -975,7 +1041,19 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             if (typeof controlId !== "string" || typeof request.payload?.visible !== "boolean") throw new Error("controlId and boolean visible are required.");
             return { visible: await featureBridge.setMapControl("main", controlId, request.payload.visible, request.payload?.generation) };
           }
-          if (request.type === "testudoGetMapControlState") return featureBridge.getMapControlState("main", request.payload?.generation);
+          if (request.type === "testudoGetMapControlState") {
+            requireMainGeneration(request.payload);
+            const session = featureBridge.sessions.get("main");
+            return session ? {
+              ...featureBridge.getMapControlState("main", request.payload.generation as number | undefined),
+              esriWorldImageryVisible: getStandaloneEsriVisible(),
+              ...currentRendererReadiness(),
+            } : {
+              legendVisible: plugins.isLegendPanelVisible(), esriWorldImageryVisible: getStandaloneEsriVisible(),
+              renderer: useAppStore.getState().primaryRenderer === "cesium" ? "cesium" as const : "maplibre" as const,
+              ...currentRendererReadiness(),
+            };
+          }
           if (request.type === "testudoSetKpiGeometry") {
             const geometry = request.payload?.geometry;
             if (!["sections", "lanes", "turns", "nodes"].includes(String(geometry)) || typeof request.payload?.visible !== "boolean") {
@@ -987,7 +1065,11 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
           if (request.type === "testudoSetRenderer") {
             const renderer = request.payload?.renderer;
             if (renderer !== "maplibre" && renderer !== "cesium") throw new Error("renderer must be maplibre or cesium.");
-            return { renderer: await featureBridge.setRenderer("main", renderer, request.payload?.generation) };
+            requireMainGeneration(request.payload);
+            const session = featureBridge.sessions.get("main");
+            if (session) return { renderer: await featureBridge.setRenderer("main", renderer, request.payload.generation as number | undefined) };
+            useAppStore.getState().setPrimaryRenderer(renderer);
+            return { renderer };
           }
           if (request.type === "testudoSetNetworkFilter") {
             const filter = request.payload?.filter;
@@ -996,9 +1078,36 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
             await featureBridge.setNetworkFilter("main", filter, request.payload?.generation);
             return { applied: true as const };
           }
-          if (request.type === "testudoOpenAnnotations") return { active: await featureBridge.openAnnotations("main", request.payload?.generation) };
-          if (request.type === "testudoOpenRecordTour" || request.type === "testudoRecordTour") { await featureBridge.openRecordTour("main", request.payload?.generation); return { opened: true }; }
-          if (request.type === "testudoOpenRecordVideo" || request.type === "testudoRecordVideo") { await featureBridge.openRecordVideo("main", request.payload?.generation); return { opened: true }; }
+          if (request.type === "testudoOpenAnnotations" || request.type === "testudoOpenRecordTour" || request.type === "testudoRecordTour"
+            || request.type === "testudoOpenRecordVideo" || request.type === "testudoRecordVideo") {
+            const main = requireMainGeneration(request.payload);
+            const action = request.type === "testudoOpenAnnotations" ? "annotations"
+              : request.type === "testudoOpenRecordVideo" || request.type === "testudoRecordVideo" ? "record-video" : "record-tour";
+            await new Promise<void>((resolve, reject) => {
+              let settled = false;
+              const timeout = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                reject(new Error("The requested map action did not receive a response."));
+              }, 5000);
+              const respond = (result: import("../../lib/testudo-protocol").TestudoNativeActionResult) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeout);
+                if (result.ok) {
+                  try {
+                    requireMainGeneration({ tviewId: "main", generation: main.generation });
+                    resolve();
+                  } catch (error) {
+                    reject(error);
+                  }
+                } else reject(new Error(result.error));
+              };
+              window.dispatchEvent(createTestudoNativeActionEvent({ source: "testudo", action,
+                requestId: request.requestId, tviewId: "main", generation: main.generation, respond }));
+            });
+            return action === "annotations" ? { active: true } : { opened: true };
+          }
           if (request.type === "testudoSetPlaybackPlaying") return featureBridge.playback("main", request.payload?.playing ? "play" : "pause", undefined, request.payload?.generation);
           if (request.type === "testudoRestartPlayback") return featureBridge.playback("main", "restart", undefined, request.payload?.generation);
           if (request.type === "testudoSeekPlayback") return featureBridge.playback("main", "seek", Number(request.payload?.tick), request.payload?.generation);
@@ -1048,11 +1157,11 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-local-package-picker", onLocalPickerActivation); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));
-  const hasVisibleStatus = state.status === "loading" || Boolean(state.error) || Boolean(localPickerRequest);
+  const hasVisibleStatus = state.status === "loading" || Boolean(state.error);
   if (!canOpenGeoAi && !hasVisibleStatus) return null;
 
   // The embedding Testudo shell renders its own "open package" control and mode/plugin
@@ -1062,7 +1171,6 @@ export function TestudoControls({ app }: { app: GeoLibreAppAPI | null }) {
   return <div className="pointer-events-none absolute inset-x-3 top-3 z-40 flex justify-end" data-testudo-controls>
     <div className="pointer-events-auto w-fit min-w-0 max-w-[min(20rem,100%)] rounded-md border border-border bg-background p-3 shadow-lg">
       {canOpenGeoAi && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => { if (app) handlers["geoai"].open(app); }}>{t("toolbar.geoai.open", "Ask GeoAI")}</button>}
-      {localPickerRequest && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => window.dispatchEvent(new CustomEvent("testudo-local-package-picker", { detail: { requestId: localPickerRequest } }))}>{t("testudo.chooseLocalFolder", "Choose a local package folder")}</button>}
       {state.status === "loading" && <p role="status" className="text-sm">{t("testudo.loading")}</p>}
       {state.error && <p role="alert" className="mt-2 break-words text-sm text-red-600">{state.error}</p>}
     </div>

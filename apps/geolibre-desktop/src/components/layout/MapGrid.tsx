@@ -1,4 +1,4 @@
-import { isCesiumOnlyLayer, useAppStore, type MapRendererKind } from "@geolibre/core";
+import { cesiumIonAssetId, isCesiumOnlyLayer, useAppStore, type MapRendererKind } from "@geolibre/core";
 import {
   CesiumCanvas,
   isArcgisSupportedLayer,
@@ -80,6 +80,9 @@ export function MapGrid({ children }: MapGridProps) {
   const primaryMapLabel = useAppStore((s) => s.primaryMapLabel);
   const setPrimaryMapLabel = useAppStore((s) => s.setPrimaryMapLabel);
   const cesiumToken = useCesiumIonToken();
+  const hasIonAssetLayer = useAppStore((s) =>
+    s.layers.some((layer) => layer.type === "3d-tiles" && cesiumIonAssetId(layer) !== null),
+  );
 
   if (rows * cols <= 1) {
     return <>{children}</>;
@@ -103,7 +106,7 @@ export function MapGrid({ children }: MapGridProps) {
         />
       </div>
       {secondaryMapViews.map((pane, index) => (
-        <SecondaryMapPane key={pane.id} viewId={pane.id} index={index} cesiumToken={cesiumToken} />
+        <SecondaryMapPane key={pane.id} viewId={pane.id} index={index} cesiumToken={cesiumToken} hasIonAssetLayer={hasIonAssetLayer} />
       ))}
     </div>
   );
@@ -118,9 +121,10 @@ interface SecondaryMapPaneProps {
    * Ion imagery, but the pane is offered without one.
    */
   cesiumToken?: string;
+  hasIonAssetLayer: boolean;
 }
 
-function SecondaryMapPane({ viewId, index, cesiumToken }: SecondaryMapPaneProps) {
+function SecondaryMapPane({ viewId, index, cesiumToken, hasIonAssetLayer }: SecondaryMapPaneProps) {
   const { t } = useTranslation();
   const removeSecondaryMapView = useAppStore((s) => s.removeSecondaryMapView);
   const setSecondaryMapLabel = useAppStore((s) => s.setSecondaryMapLabel);
@@ -151,7 +155,7 @@ function SecondaryMapPane({ viewId, index, cesiumToken }: SecondaryMapPaneProps)
           so say what a token would add rather than hiding the view. Bottom-end
           keeps it clear of Cesium's own credit display (bottom-left) and of the
           pane's controls and label along the top. */}
-      {is3d && !cesiumToken ? (
+      {is3d && !cesiumToken && hasIonAssetLayer ? (
         <div className="pointer-events-none absolute bottom-2 end-2 z-10 max-w-[70%] truncate rounded-md border border-input map-glass px-2 py-1 text-xs text-muted-foreground shadow-sm">
           {t("mapGrid.cesiumTokenHint")}
         </div>

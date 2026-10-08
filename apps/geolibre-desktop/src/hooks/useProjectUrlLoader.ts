@@ -1,6 +1,7 @@
 import { useAppStore } from "@geolibre/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchProjectFromUrl, projectUrlFromLocation } from "../lib/project-url";
+import { isTestudoSupersedeStartupProjectEvent, TESTUDO_SUPERSEDE_STARTUP_PROJECT_EVENT } from "../lib/testudo-protocol";
 import { resolveProjectXyzLayers } from "../lib/xyz-url";
 
 export type ProjectUrlLoadState =
@@ -12,6 +13,7 @@ export function useProjectUrlLoader(): ProjectUrlLoadState {
   const loadProject = useAppStore((state) => state.loadProject);
   const projectUrl = useMemo(() => projectUrlFromLocation(), []);
   const clearMessageTimeoutRef = useRef<number | null>(null);
+  const activeLoadRef = useRef<AbortController | null>(null);
   const [state, setState] = useState<ProjectUrlLoadState>({
     error: null,
     message: null,
@@ -22,6 +24,14 @@ export function useProjectUrlLoader(): ProjectUrlLoadState {
     if (!projectUrl) return;
 
     const abortController = new AbortController();
+    activeLoadRef.current = abortController;
+    const supersede = (event: Event) => {
+      if (!isTestudoSupersedeStartupProjectEvent(event)) return;
+      abortController.abort();
+      if (activeLoadRef.current === abortController) activeLoadRef.current = null;
+      setState({ error: null, message: null, status: "idle" });
+    };
+    window.addEventListener(TESTUDO_SUPERSEDE_STARTUP_PROJECT_EVENT, supersede);
     setState({
       error: null,
       message: "Loading project from URL...",
@@ -55,7 +65,9 @@ export function useProjectUrlLoader(): ProjectUrlLoadState {
       });
 
     return () => {
+      window.removeEventListener(TESTUDO_SUPERSEDE_STARTUP_PROJECT_EVENT, supersede);
       abortController.abort();
+      if (activeLoadRef.current === abortController) activeLoadRef.current = null;
       if (clearMessageTimeoutRef.current !== null) {
         window.clearTimeout(clearMessageTimeoutRef.current);
         clearMessageTimeoutRef.current = null;

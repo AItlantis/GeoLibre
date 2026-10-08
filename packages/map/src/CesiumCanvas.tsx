@@ -71,6 +71,11 @@ const CESIUM_CSS_PATHS = [
   "/Widgets/BaseLayerPicker/BaseLayerPicker.css",
 ] as const;
 
+function safeCesiumErrorMessage(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value);
+  return raw.replace(/([?&](?:access_token|token|api_key|apikey|key)=)[^&#\s]*/gi, "$1[redacted]").slice(0, 500);
+}
+
 export interface CesiumCanvasProps {
   /**
    * Id of the `secondaryMapViews` entry this pane renders (label/telemetry).
@@ -101,6 +106,7 @@ export interface CesiumCanvasProps {
   engineRef?: React.RefObject<MapEngine | null>;
   /** Called once the engine is live and the ref is set. */
   onEngineReady?: () => void;
+  onEngineError?: (error: Error) => void;
   /**
    * Translated tooltips for the Cesium toolbar controls (home, scene mode).
    *
@@ -158,6 +164,7 @@ export const CesiumCanvas = memo(function CesiumCanvas({
   ionToken,
   engineRef,
   onEngineReady,
+  onEngineError,
   controlLabels,
   popupCloseLabel,
 }: CesiumCanvasProps) {
@@ -190,6 +197,8 @@ export const CesiumCanvas = memo(function CesiumCanvas({
   engineRefProp.current = engineRef;
   const onEngineReadyRef = useRef(onEngineReady);
   onEngineReadyRef.current = onEngineReady;
+  const onEngineErrorRef = useRef(onEngineError);
+  onEngineErrorRef.current = onEngineError;
   const popupCloseLabelRef = useRef(popupCloseLabel);
   popupCloseLabelRef.current = popupCloseLabel;
   const controlLabelsRef = useRef(controlLabels);
@@ -416,53 +425,11 @@ export const CesiumCanvas = memo(function CesiumCanvas({
         // moveEnd listener that cleanupInput never removes.
         if (cancelled || viewer.isDestroyed()) return;
 
-        if (viewId === undefined) {
-          const host = new CesiumControlHost(viewer, container, Cesium);
-          controlHostRef.current = host;
-          setPrimaryCesiumControlHost(host);
-          // Cesium's native toolbar widgets. Imported
-          // here rather than at module scope so `@cesium/widgets` stays in the
-          // lazily fetched `cesium` chunk instead of joining the 2D boot path.
-          const { createCesiumWidgetControls } = await import("./cesium-widget-controls");
-          if (!cancelled && !viewer.isDestroyed()) {
-            // Fullscreen expands the globe's own container, matching what
-            // MapLibre's fullscreen control does with the 2D map's — the app
-            // chrome around it goes away, the map fills the screen, and the
-            // control host inside it comes along so the buttons stay reachable.
-            const controls = createCesiumWidgetControls(
-              viewer,
-              container,
-              controlLabelsRef.current,
-              Boolean(token),
-            );
-            widgetControlsRef.current = controls;
-            // Home, the scene-mode picker and fullscreen mount through the
-            // engine under a built-in control id, so the Controls menu governs
-            // them and a remount restores the visibility and corner each was
-            // last given (a hidden control is not mounted at all). Home sits
-            // under "compass": the 2D map's compass is itself a
-            // reset-pitch-and-bearing button, and unlike "navigation" it is
-            // visible by default, so the Controls menu checkbox matches the
-            // button the globe mounts here. The base-layer picker has no 2D
-            // counterpart and mounts directly. Iterating `all` keeps the
-            // stacking order either way; top-right by default, above
-            // MapLibre's navigation control on the 2D map, so the toolbar
-            // reads the same whichever renderer is drawing.
-            const builtInIds = new Map<CesiumWidgetControlHandle, BuiltInMapControl>([
-              [controls.home, "compass"],
-              [controls.sceneMode, "globe"],
-              [controls.fullscreen, "fullscreen"],
-            ]);
-            for (const control of controls.all) {
-              const id = builtInIds.get(control);
-              if (id) engine.registerBuiltInControl(id, control);
-              else host.addControl(control, "top-right");
-            }
-          }
+        const primaryControlHost = viewId === undefined ? new CesiumControlHost(viewer, container, Cesium) : null;
+        if (primaryControlHost) {
+          controlHostRef.current = primaryControlHost;
+          setPrimaryCesiumControlHost(primaryControlHost);
         }
-
-        // Widget imports can finish after unmount has already destroyed this viewer.
-        if (cancelled || viewer.isDestroyed()) return;
 
         // Seed the camera from the shared store camera before the first frame.
         // The primary globe always seeds from `mapView`, which is what carries
@@ -497,10 +464,43 @@ export const CesiumCanvas = memo(function CesiumCanvas({
           onEngineReadyRef.current?.();
         }
 
+        // Toolbar widgets are optional UI. Load them after camera, imagery, layers,
+        // and the engine ref are live so this chunk cannot hold map readiness hostage.
+        if (primaryControlHost) {
+          void import("./cesium-widget-controls").then(({ createCesiumWidgetControls }) => {
+            if (cancelled || viewer.isDestroyed()) return;
+            try {
+              const controls = createCesiumWidgetControls(
+                viewer,
+                container,
+                controlLabelsRef.current,
+                Boolean(token),
+              );
+              widgetControlsRef.current = controls;
+              const builtInIds = new Map<CesiumWidgetControlHandle, BuiltInMapControl>([
+                [controls.home, "compass"],
+                [controls.sceneMode, "globe"],
+                [controls.fullscreen, "fullscreen"],
+              ]);
+              for (const control of controls.all) {
+                const id = builtInIds.get(control);
+                if (id) engine.registerBuiltInControl(id, control);
+                else primaryControlHost.addControl(control, "top-right");
+              }
+            } catch (err) {
+              if (!cancelled) console.warn("[Cesium] Optional toolbar controls failed to initialize:", safeCesiumErrorMessage(err));
+            }
+          }).catch((err) => {
+            if (!cancelled) console.warn("[Cesium] Optional toolbar controls failed to load:", safeCesiumErrorMessage(err));
+          });
+        }
+
         if (!cancelled) setReady(true);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
+        const message = safeCesiumErrorMessage(err);
+        setError(message);
+        onEngineErrorRef.current?.(new Error(message));
       }
     })();
 

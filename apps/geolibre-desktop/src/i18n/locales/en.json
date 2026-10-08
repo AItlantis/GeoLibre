@@ -2014,7 +2014,7 @@
     "only3d": "3D only",
     "noMapbox": "No Mapbox",
     "noArcgis": "No ArcGIS",
-    "cesiumTokenHint": "Add a Cesium Ion token in Settings for terrain and Ion imagery"
+    "cesiumTokenHint": "Add a Cesium Ion token in Settings to load the Ion 3D Tiles layer"
   },
   "renderer": {
     "basemap": "Basemap",

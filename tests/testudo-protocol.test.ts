@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { acceptsTestudoMessage, validateScenarioAnalysisAction } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
+import { acceptsTestudoMessage, createTestudoNativeActionEvent, isTestudoNativeActionEvent, TESTUDO_NATIVE_ACTION_EVENT, validateScenarioAnalysisAction } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
 
 const parent = {} as Window;
 const origin = "https://app.testudo.live";
@@ -89,4 +89,23 @@ test("scenario analysis actions are pinned to the active package and declared sc
   assert.equal(validateScenarioAnalysisAction({ ...action, scenario_id: 3 }, "version-1", [1, 2]), null);
   assert.equal(validateScenarioAnalysisAction({ ...action, source: "model" }, "version-1", [1, 2]), null);
   assert.equal(validateScenarioAnalysisAction({ ...action, section_id: { unsafe: true } }, "version-1", [1, 2]), null);
+});
+
+
+test("Testudo native actions require a current main-view identity and a receiver acknowledgement", () => {
+  const respond = () => undefined;
+  const valid = createTestudoNativeActionEvent({
+    source: "testudo", action: "record-tour", requestId: "request-1",
+    tviewId: "main", generation: 3, respond,
+  });
+  assert.equal(valid.type, TESTUDO_NATIVE_ACTION_EVENT);
+  assert.equal(isTestudoNativeActionEvent(valid), true);
+  for (const detail of [
+    { source: "testudo", action: "record-tour", requestId: "request-1", tviewId: "main", generation: -1, respond },
+    { source: "testudo", action: "record-tour", requestId: "request-1", tviewId: "other", generation: 3, respond },
+    { source: "testudo", action: "record-tour", requestId: "request-1", tviewId: "main", generation: 3 },
+  ]) {
+    const invalid = new CustomEvent(TESTUDO_NATIVE_ACTION_EVENT, { detail });
+    assert.equal(isTestudoNativeActionEvent(invalid), false);
+  }
 });

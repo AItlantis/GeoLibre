@@ -7,6 +7,48 @@ export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "path
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
 export const TESTUDO_GUEST_TOKEN_RE = /^[A-Za-z0-9._~-]{32,4096}$/;
+export const TESTUDO_SUPERSEDE_STARTUP_PROJECT_EVENT = "testudo:supersede-startup-project" as const;
+export const TESTUDO_NATIVE_ACTION_EVENT = "testudo:native-action" as const;
+
+export type TestudoNativeActionResult = { ok: true } | { ok: false; error: string };
+
+export interface TestudoNativeActionDetail {
+  source: "testudo";
+  action: "record-tour" | "record-video" | "annotations";
+  requestId: string;
+  tviewId: "main";
+  generation: number;
+  respond: (result: TestudoNativeActionResult) => void;
+}
+
+export function createTestudoNativeActionEvent(detail: TestudoNativeActionDetail): CustomEvent<TestudoNativeActionDetail> {
+  return new CustomEvent(TESTUDO_NATIVE_ACTION_EVENT, { detail });
+}
+
+export function isTestudoNativeActionEvent(event: Event): event is CustomEvent<TestudoNativeActionDetail> {
+  if (event.type !== TESTUDO_NATIVE_ACTION_EVENT || !(event instanceof CustomEvent)) return false;
+  const detail = event.detail as Partial<TestudoNativeActionDetail> | null;
+  return detail?.source === "testudo" && ["record-tour", "record-video", "annotations"].includes(String(detail.action))
+    && typeof detail.requestId === "string" && detail.requestId.length > 0 && detail.requestId.length <= 200
+    && detail.tviewId === "main" && Number.isSafeInteger(detail.generation) && Number(detail.generation) >= 0
+    && typeof detail.respond === "function";
+}
+
+export interface TestudoSupersedeStartupProjectDetail {
+  source: "testudo";
+  requestId: string;
+}
+
+export function createTestudoSupersedeStartupProjectEvent(requestId: string): CustomEvent<TestudoSupersedeStartupProjectDetail> {
+  return new CustomEvent(TESTUDO_SUPERSEDE_STARTUP_PROJECT_EVENT, { detail: { source: "testudo", requestId } });
+}
+
+export function isTestudoSupersedeStartupProjectEvent(event: Event): event is CustomEvent<TestudoSupersedeStartupProjectDetail> {
+  if (event.type !== TESTUDO_SUPERSEDE_STARTUP_PROJECT_EVENT || !(event instanceof CustomEvent)) return false;
+  const detail = event.detail as Partial<TestudoSupersedeStartupProjectDetail> | null;
+  return detail?.source === "testudo" && typeof detail.requestId === "string"
+    && detail.requestId.length > 0 && detail.requestId.length <= 200;
+}
 
 export interface ScenarioAnalysisViewerAction {
   scenario_id: string | number;
@@ -79,7 +121,23 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
       && payload.challenge === challenge && TESTUDO_CHALLENGE_RE.test(challenge)
       && typeof payload.question === "string" && payload.question.trim().length > 0 && payload.question.length <= 4000;
   }
+  if (request.type === "testudoOpenLocalPackage") {
+    const payload = request.payload;
+    if (!payload || typeof payload !== "object" || payload.challenge !== challenge || payload.tviewId !== "main"
+      || !isDirectoryHandle(payload.directoryHandle)
+      || (payload.generation !== undefined && (!Number.isSafeInteger(payload.generation) || payload.generation < 0))) return false;
+    const keys = Object.keys(payload);
+    return keys.every(key => ["challenge", "tviewId", "directoryHandle", "generation"].includes(key))
+      && keys.includes("directoryHandle");
+  }
   return request.payload?.challenge === challenge;
+}
+
+function isDirectoryHandle(value: unknown): value is FileSystemDirectoryHandle {
+  if (!value || typeof value !== "object") return false;
+  const handle = value as Partial<FileSystemDirectoryHandle>;
+  return handle.kind === "directory" && typeof handle.name === "string" && handle.name.length <= 255
+    && typeof handle.getFileHandle === "function" && typeof handle.getDirectoryHandle === "function";
 }
 
 function containsCredentialField(value: unknown): boolean {

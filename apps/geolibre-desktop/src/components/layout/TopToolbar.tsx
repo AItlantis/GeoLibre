@@ -61,6 +61,7 @@ import {
   DECK_VIZ_PLUGIN_ID,
   DIRECTIONS_PLUGIN_ID,
   GRATICULE_PLUGIN_ID,
+  ANNOTATIONS_PLUGIN_ID,
   CLOUDS_PLUGIN_ID,
   PRECIPITATION_PLUGIN_ID,
   REVERSE_GEOCODE_PLUGIN_ID,
@@ -115,6 +116,7 @@ import { useVectorTileGeometryBackfill } from "../../hooks/useVectorTileGeometry
 import type { ThemeMode } from "../../hooks/useThemeMode";
 import { isMobile } from "../../lib/is-mobile";
 import { isTauri } from "../../lib/tauri-io";
+import { TESTUDO_NATIVE_ACTION_EVENT, isTestudoNativeActionEvent } from "../../lib/testudo-protocol";
 import { isMaptoolkitBasemapActive } from "../../lib/maptoolkit-basemap";
 import { useDesktopSettingsStore } from "../../hooks/useDesktopSettings";
 import { MENU_MANAGED_PLUGIN_IDS, isMenuVisible, isPluginVisible } from "../../lib/ui-profile";
@@ -1362,6 +1364,39 @@ export function TopToolbar({
   const [gpsTrackingOpen, setGpsTrackingOpen] = useState(false);
   const [recordTourOpen, setRecordTourOpen] = useState(false);
   const [recordVideoOpen, setRecordVideoOpen] = useState(false);
+
+  useEffect(() => {
+    const onTestudoNativeAction = (event: Event) => {
+      if (!isTestudoNativeActionEvent(event)) return;
+      const respond = event.detail.respond;
+      try {
+        // The embed command path has already verified the current main TView
+        // generation before dispatching this synchronous same-document event.
+        if (!mapControllerRef.current) throw new Error("The map controller is not ready.");
+        if (!appApi) throw new Error("The map actions are not ready.");
+
+        switch (event.detail.action) {
+          case "record-tour":
+            setRecordTourOpen(true);
+            break;
+          case "record-video":
+            setRecordVideoOpen(true);
+            break;
+          case "annotations":
+            if (!isActive(ANNOTATIONS_PLUGIN_ID)) toggle(ANNOTATIONS_PLUGIN_ID, appApi);
+            if (!isActive(ANNOTATIONS_PLUGIN_ID)) throw new Error("The annotations tool could not be activated.");
+            break;
+        }
+        respond({ ok: true });
+      } catch (error) {
+        respond({ ok: false, error: error instanceof Error ? error.message : "The requested map action failed." });
+      }
+    };
+
+    window.addEventListener(TESTUDO_NATIVE_ACTION_EVENT, onTestudoNativeAction);
+    return () => window.removeEventListener(TESTUDO_NATIVE_ACTION_EVENT, onTestudoNativeAction);
+  }, [appApi, isActive, mapControllerRef, toggle]);
+
   const [georeferencerOpen, setGeoreferencerOpen] = useState(false);
   const [setViewOpen, setSetViewOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
