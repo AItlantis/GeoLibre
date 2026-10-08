@@ -715,3 +715,263 @@ export function stratifiedHoldout(
   }
   return held;
 }
+
+// --- Classification ---------------------------------------------------------
+
+/** Object property holding the predicted class. */
+export const OBIA_PREDICTED_FIELD = "obia_predicted";
+
+export type ObiaRuleOp = ">" | ">=" | "<" | "<=" | "==" | "!=";
+export const OBIA_RULE_OPS: readonly ObiaRuleOp[] = [">", ">=", "<", "<=", "==", "!="];
+
+/** One threshold rule: objects whose `field` satisfies `op value` get `className`. */
+export interface ObiaRule {
+  field: string;
+  op: ObiaRuleOp;
+  value: number;
+  className: string;
+}
+
+/** Predicted class per object, plus how it was produced. */
+export interface ObiaClassification {
+  predictions: Map<number, string>;
+  /** Features the classifier saw. */
+  fields: string[];
+  /** Missing values replaced by the column mean, per field (only fields that had any). */
+  imputed: Record<string, number>;
+  trainingCount: number;
+  call: ObiaToolCall;
+}
+
+/**
+ * Write a feature table as the tools' plain CSV. Columns with no values at all
+ * are dropped. Missing values are replaced by the column mean when `impute`
+ * is set (the random forest rejects empty cells), or left empty otherwise (the
+ * rules tool then skips a rule for an object it has no value for).
+ *
+ * @param table Feature table.
+ * @param fields Columns to include, in order.
+ * @param options `impute` (default true) fills missing values with the mean.
+ */
+export function featureTableCsv(
+  table: ObiaFeatureTable,
+  fields: readonly string[],
+  { impute = true }: { impute?: boolean } = {},
+): { csv: string; fields: string[]; imputed: Record<string, number> } {
+  const ids = [...table.rows.keys()].sort((a, b) => a - b);
+  const kept: string[] = [];
+  const means = new Map<string, number>();
+  const imputed: Record<string, number> = {};
+  for (const field of fields) {
+    let sum = 0;
+    let n = 0;
+    for (const id of ids) {
+      const value = table.rows.get(id)?.[field];
+      if (value != null && Number.isFinite(value)) {
+        sum += value;
+        n += 1;
+      }
+    }
+    if (!n) continue;
+    kept.push(field);
+    means.set(field, sum / n);
+    if (impute && n < ids.length) imputed[field] = ids.length - n;
+  }
+  const lines = [[OBIA_SEGMENT_ID_FIELD, ...kept].join(",")];
+  for (const id of ids) {
+    const row = table.rows.get(id)!;
+    lines.push(
+      [id, ...kept.map((field) => String(row[field] ?? (impute ? means.get(field) : "")))].join(
+        ",",
+      ),
+    );
+  }
+  return { csv: `${lines.join("\n")}\n`, fields: kept, imputed };
+}
+
+/**
+ * The feature table with an empty row for every object a feature tool skipped
+ * (e.g. GLCM texture of a 1-pixel object), so every object is classified: the
+ * random forest fills the gaps with column means, and rules give it the
+ * default class.
+ *
+ * @param table Feature table.
+ * @param objects The objects layer's features.
+ */
+export function tableForAllObjects(
+  table: ObiaFeatureTable,
+  objects: FeatureCollection,
+): ObiaFeatureTable {
+  const rows = new Map(table.rows);
+  for (const feature of objects.features) {
+    const id = objectSegmentId(feature);
+    if (Number.isFinite(id) && !rows.has(id)) rows.set(id, {});
+  }
+  return { fields: table.fields, rows };
+}
+
+/**
+ * CSV-safe stand-ins for class names: the tools' CSV has no quoting, so a
+ * class named "trees, shrubs" would split a row.
+ */
+function classTokens(names: Iterable<string>): {
+  token: (name: string) => string;
+  name: (token: string) => string;
+} {
+  const toToken = new Map<string, string>();
+  const toName = new Map<string, string>();
+  for (const name of names) {
+    if (toToken.has(name)) continue;
+    const token = `c${toToken.size}`;
+    toToken.set(name, token);
+    toName.set(token, name);
+  }
+  return {
+    token: (name) => toToken.get(name) ?? name,
+    name: (token) => toName.get(token) ?? token,
+  };
+}
+
+function readPredictions(
+  bytes: Uint8Array | undefined,
+  tool: string,
+  decodeClass: (token: string) => string,
+): Map<number, string> {
+  if (!bytes) throw new Error(`${tool} did not write predictions.`);
+  const csv = parseObiaCsv(new TextDecoder().decode(bytes));
+  const idCol = csv.headers.indexOf(OBIA_SEGMENT_ID_FIELD);
+  const classCol = csv.headers.indexOf("predicted_class");
+  if (idCol < 0 || classCol < 0) throw new Error(`${tool} wrote an unexpected table.`);
+  const predictions = new Map<number, string>();
+  for (const row of csv.rows) {
+    const token = row[classCol];
+    // Skip a malformed row rather than storing a NaN or blank (0) id or an
+    // undefined class.
+    if (!row[idCol] || !token) continue;
+    const id = Number(row[idCol]);
+    if (!Number.isFinite(id)) continue;
+    predictions.set(id, decodeClass(token));
+  }
+  return predictions;
+}
+
+/**
+ * Classify every object with a random forest trained on the training samples
+ * (`classify_objects_random_forest`; deterministic, the engine fixes its seed).
+ *
+ * @param table Object features.
+ * @param samples Labeled objects; only training samples are used.
+ * @param options Feature columns and number of trees.
+ */
+export async function classifyRandomForest(
+  table: ObiaFeatureTable,
+  samples: readonly ObiaSample[],
+  options: { fields: readonly string[]; trees: number },
+): Promise<ObiaClassification> {
+  const training = samples.filter(
+    (sample) => sample.role === "training" && table.rows.has(sample.segmentId),
+  );
+  const classNames = new Set(training.map((sample) => sample.className));
+  if (classNames.size < 2) {
+    throw new Error("Label training samples of at least two classes first.");
+  }
+  const { csv, fields, imputed } = featureTableCsv(table, options.fields);
+  if (!fields.length) throw new Error("Choose at least one measured feature.");
+  const tokens = classTokens([...classNames].sort());
+  const trainingCsv = [
+    `${OBIA_SEGMENT_ID_FIELD},class`,
+    ...training.map((sample) => `${sample.segmentId},${tokens.token(sample.className)}`),
+  ].join("\n");
+  const tool = "classify_objects_random_forest";
+  const args = [
+    "--features=/work/features.csv",
+    "--training=/work/training.csv",
+    `--n_trees=${Math.max(10, Math.round(options.trees))}`,
+    "--output=/work/predictions.csv",
+  ];
+  const encoder = new TextEncoder();
+  const files = await runTool(tool, args, {
+    "features.csv": encoder.encode(csv),
+    "training.csv": encoder.encode(`${trainingCsv}\n`),
+  });
+  return {
+    predictions: readPredictions(files["predictions.csv"], tool, tokens.name),
+    fields,
+    imputed,
+    trainingCount: training.length,
+    call: { tool, args },
+  };
+}
+
+/**
+ * Classify objects with ordered threshold rules (`classify_objects_rules_basic`):
+ * each object gets the class of the first rule it satisfies, else the default.
+ *
+ * @param table Object features.
+ * @param rules Rules in evaluation order.
+ * @param defaultClass Class for objects no rule matches.
+ */
+export async function classifyByRules(
+  table: ObiaFeatureTable,
+  rules: readonly ObiaRule[],
+  defaultClass: string,
+): Promise<ObiaClassification> {
+  if (!rules.length) throw new Error("Add at least one rule.");
+  if (rules.some((rule) => !Number.isFinite(rule.value))) {
+    throw new Error("Every rule needs a numeric value.");
+  }
+  const ruleFields = [...new Set(rules.map((rule) => rule.field))];
+  const missing = ruleFields.filter((field) => !table.fields.includes(field));
+  if (missing.length) throw new Error(`Not measured: ${missing.join(", ")}.`);
+  // No imputation: an object with no value for a rule's feature (e.g. no GLCM
+  // row) must not match that rule on the column mean.
+  const { csv, fields, imputed } = featureTableCsv(table, ruleFields, { impute: false });
+  const empty = ruleFields.filter((field) => !fields.includes(field));
+  if (empty.length) throw new Error(`No object has a value for: ${empty.join(", ")}.`);
+  const tokens = classTokens([...rules.map((rule) => rule.className), defaultClass]);
+  const rulesCsv = [
+    "feature,op,value,class",
+    ...rules.map(
+      (rule) => `${rule.field},${rule.op},${rule.value},${tokens.token(rule.className)}`,
+    ),
+  ].join("\n");
+  const tool = "classify_objects_rules_basic";
+  const args = [
+    "--features=/work/features.csv",
+    "--rules=/work/rules.csv",
+    `--default_class=${tokens.token(defaultClass)}`,
+    "--output=/work/predictions.csv",
+  ];
+  const encoder = new TextEncoder();
+  const files = await runTool(tool, args, {
+    "features.csv": encoder.encode(csv),
+    "rules.csv": encoder.encode(`${rulesCsv}\n`),
+  });
+  return {
+    predictions: readPredictions(files["predictions.csv"], tool, tokens.name),
+    fields,
+    imputed,
+    trainingCount: 0,
+    call: { tool, args },
+  };
+}
+
+/**
+ * Write predicted classes onto the objects (`obia_predicted`); objects without
+ * a prediction lose any earlier one.
+ */
+export function applyPredictions(
+  objects: FeatureCollection,
+  predictions: ReadonlyMap<number, string>,
+): FeatureCollection {
+  return {
+    ...objects,
+    features: objects.features.map((feature) => {
+      const properties: Record<string, unknown> = { ...(feature.properties ?? {}) };
+      const predicted = predictions.get(objectSegmentId(feature));
+      if (predicted === undefined) delete properties[OBIA_PREDICTED_FIELD];
+      else properties[OBIA_PREDICTED_FIELD] = predicted;
+      return { ...feature, properties };
+    }),
+  };
+}

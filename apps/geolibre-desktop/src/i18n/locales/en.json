@@ -7414,7 +7414,8 @@
     "steps": {
       "segment": "Segment",
       "measure": "Measure",
-      "train": "Label samples"
+      "train": "Label samples",
+      "classify": "Classify"
     },
     "image": "Image",
     "imagePlaceholder": "Choose a raster layer",
@@ -7434,7 +7435,8 @@
     "addLabels": "Also add the label raster to the map",
     "run": "Segment",
     "running": "Segmenting…",
-    "result": "{{count}} objects, about {{area}} pixels each",
+    "result_one": "{{count}} object, {{area}} pixels",
+    "result_other": "{{count}} objects, about {{area}} pixels each",
     "layerName": "{{name}} objects",
     "labelsLayerName": "{{name}} segments",
     "error": {
@@ -7460,7 +7462,8 @@
       "context": "Neighborhood (neighbor count, shared boundary)",
       "run": "Measure objects",
       "running": "Measuring…",
-      "result": "{{fields}} features measured for {{count}} objects",
+      "result_one": "{{fields}} features measured for {{count}} object",
+      "result_other": "{{fields}} features measured for {{count}} objects",
       "error": {
         "layersMissing": "The source image or the objects layer was removed. Segment again.",
         "resegmented": "The objects were segmented again while measuring, so these values were discarded. Measure the new objects.",
@@ -7496,6 +7499,36 @@
       "error": {
         "duplicateName": "Each class needs a unique, non-empty name.",
         "nothingToSplit": "Each class needs at least two training samples to hold some out."
+      }
+    },
+    "classify": {
+      "method": "Classifier",
+      "methods": {
+        "random-forest": "Random forest",
+        "rules": "Threshold rules"
+      },
+      "rfHint_one": "Trains on {{count}} training sample and predicts a class for every object. The engine fixes the random seed, so the same inputs give the same result.",
+      "rfHint_other": "Trains on {{count}} training samples and predicts a class for every object. The engine fixes the random seed, so the same inputs give the same result.",
+      "trees": "Trees",
+      "features": "Features ({{count}} of {{total}})",
+      "rulesHint": "Each object gets the class of the first rule it matches, top to bottom; objects matching none get the default class.",
+      "ruleField": "Feature",
+      "ruleOp": "Comparison",
+      "ruleValue": "Value",
+      "ruleClass": "Class",
+      "removeRule": "Remove rule",
+      "missingOption": "{{name}} (missing)",
+      "addRule": "Add rule",
+      "defaultClass": "Default class",
+      "run": "Classify",
+      "running": "Classifying…",
+      "result_one": "Classified {{count}} object: {{summary}}",
+      "result_other": "Classified {{count}} objects: {{summary}}",
+      "imputed": "Objects missing a value used the feature's mean: {{fields}}.",
+      "error": {
+        "incompleteRule": "Give every rule a feature and a class, or remove it.",
+        "remeasured": "The objects were measured again while classifying, so these predictions were discarded. Classify again.",
+        "failed": "Classification failed."
       }
     }
   },
