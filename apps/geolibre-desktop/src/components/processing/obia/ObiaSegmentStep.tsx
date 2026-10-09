@@ -1,12 +1,18 @@
 import { shouldZoomToNewLayers, useAppStore, type GeoLibreLayer } from "@geolibre/core";
 import type { MapEngine } from "@geolibre/map";
-import { readImageSummary, segmentImage, type ObiaImageSummary } from "@geolibre/processing";
+import {
+  fingerprintSegmentLabels,
+  readImageSummary,
+  segmentImage,
+  type ObiaImageSummary,
+} from "@geolibre/processing";
 import { Button, Label, Select } from "@geolibre/ui";
 import { Info, Loader2, Play } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { useObiaSession, type ObiaAddRaster } from "../../../lib/obia/obia-session";
 import { obiaErrorMessage } from "../../../lib/obia/obia-errors";
+import { obiaLayerLocation, obiaRunEnv } from "../../../lib/obia/obia-persistence";
 import { obiaSourceBands, obiaSourceBytes, obiaSourceKey } from "../../../lib/obia/obia-source";
 import { ObiaNumberField, ObiaStatus, ObiaStepHeading } from "./ObiaFields";
 
@@ -131,6 +137,8 @@ export function ObiaSegmentStep({
       if (!image) throw new Error(t("obia.error.readImage"));
       const result = await segmentImage(image, params);
       const name = t("obia.layerName", { name: sourceLayer.name });
+      // Fingerprint before adding the layer, so a failure here leaves nothing behind.
+      const { hash: labelsHash } = await fingerprintSegmentLabels(result.labels);
       const objectsLayerId = addGeoJsonLayer(name, result.objects);
       const added = useAppStore.getState().layers.find((layer) => layer.id === objectsLayerId);
       if (added) {
@@ -146,16 +154,22 @@ export function ObiaSegmentStep({
       setSegmentation({
         sourceLayerId: sourceLayer.id,
         sourceName: sourceLayer.name,
+        source: {
+          name: sourceLayer.name,
+          ...(obiaLayerLocation(sourceLayer) ? { location: obiaLayerLocation(sourceLayer) } : {}),
+        },
         bandIndexes: [...bandIndexes],
         width: image.width,
         height: image.height,
         labels: result.labels,
         objectsLayerId,
         objectCount: result.objectCount,
+        labelsHash,
         meanObjectArea: result.meanObjectArea,
         tool: result.tool,
         args: result.args,
         params: { ...params },
+        env: obiaRunEnv(),
         finishedAt: new Date().toISOString(),
       });
       if (addLabels) {

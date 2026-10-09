@@ -269,6 +269,57 @@ export function dissolveSegmentPolygons(
 }
 
 /**
+ * Fingerprint a label raster: the number of distinct objects (positive
+ * labels) and a hash of every pixel's label. Two label rasters with the same
+ * fingerprint describe the same objects, which is how a reloaded project
+ * checks that a rebuilt segmentation still matches its saved objects.
+ *
+ * @param labels Label raster (GeoTIFF).
+ * @returns The object count and a 32-bit FNV-1a hash of the labels, as hex.
+ */
+export async function fingerprintSegmentLabels(
+  labels: Uint8Array,
+): Promise<{ objectCount: number; hash: string }> {
+  const raster = await readRasterData(toArrayBuffer(labels));
+  const ids = new Set<number>();
+  let hash = 0x811c9dc5;
+  for (const value of raster.bands[0]) {
+    const label = value > 0 && value !== raster.nodata ? value : 0;
+    if (label) ids.add(label);
+    // Hash the label's four bytes, so ids above 255 hash distinctly.
+    for (let shift = 0; shift < 32; shift += 8) {
+      hash ^= (label >>> shift) & 0xff;
+      hash = Math.imul(hash, 0x01000193);
+    }
+  }
+  return { objectCount: ids.size, hash: (hash >>> 0).toString(16).padStart(8, "0") };
+}
+
+/**
+ * Run the region-growing segmentation alone, returning the label raster. The
+ * tool is deterministic, so the same image and parameters give the same
+ * labels, which is how a reloaded project rebuilds labels it did not save.
+ *
+ * @param image Bands from {@link splitImageBands}.
+ * @param params Region-growing parameters.
+ */
+export async function segmentLabels(
+  image: ObiaImage,
+  params: RegionGrowingParams,
+): Promise<{ labels: Uint8Array; tool: string; args: string[] }> {
+  if (!image.bands.length) {
+    throw new ObiaError("no-bands", "Choose at least one band to segment.");
+  }
+  const { paths, input } = stageBands(image.bands);
+  const tool = "image_segmentation";
+  const args = regionGrowingArgs(paths, params);
+  const files = await runTool(tool, args, input);
+  const labels = files["segments.tif"];
+  if (!labels) throw new Error(`${tool} did not write a segment raster.`);
+  return { labels, tool, args };
+}
+
+/**
  * Segment an image into objects with seeded region growing and polygonize the
  * labels. Runs entirely in the browser.
  *
@@ -279,15 +330,7 @@ export async function segmentImage(
   image: ObiaImage,
   params: RegionGrowingParams,
 ): Promise<ObiaSegmentation> {
-  if (!image.bands.length) {
-    throw new ObiaError("no-bands", "Choose at least one band to segment.");
-  }
-  const { paths, input } = stageBands(image.bands);
-  const tool = "image_segmentation";
-  const args = regionGrowingArgs(paths, params);
-  const files = await runTool(tool, args, input);
-  const labels = files["segments.tif"];
-  if (!labels) throw new Error(`${tool} did not write a segment raster.`);
+  const { labels, tool, args } = await segmentLabels(image, params);
 
   const polygonFiles = await runTool(
     "segments_to_polygons",
