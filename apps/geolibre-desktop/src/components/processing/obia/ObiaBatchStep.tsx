@@ -5,9 +5,13 @@ import {
   classifyRandomForestTransfer,
   collectSamples,
   computeObjectFeatures,
+  decodeLabelGrid,
+  objectAdjacency,
+  runRuleset,
   isContextField,
   segmentImage,
   tableForAllObjects,
+  type ObiaClassification,
   type ObiaFeatureTable,
   type ObiaReadArea,
   type ObiaToolCall,
@@ -18,6 +22,7 @@ import { useCallback, useMemo, useRef, useState, type ReactElement } from "react
 import { useTranslation } from "react-i18next";
 import type { FeatureCollection } from "geojson";
 import { obiaErrorMessage } from "../../../lib/obia/obia-errors";
+import { parseRuleset, rulesetFields } from "../../../lib/obia/obia-ruleset-run";
 import {
   DEFAULT_OBIA_NATIVE_PARAMS,
   isNativeMethod,
@@ -100,6 +105,35 @@ export function ObiaBatchStep(): ReactElement | null {
     const samples = collectSamples(sourceObjects);
     const settings = classification.settings;
     let failedOn: string | null = null;
+    // A ruleset reads only features and the object graph, so it applies as is.
+    const rulesetOn = async (
+      table: ObiaFeatureTable,
+      labels: Uint8Array,
+      defaultClass: string,
+    ): Promise<ObiaClassification> => {
+      const parsed = parseRuleset(
+        settings.ruleset,
+        table.fields,
+        classes.map((item) => item.name),
+      );
+      if ("error" in parsed) throw new Error(t("obia.ruleset.invalid", { error: parsed.error }));
+      const grid = await decodeLabelGrid(labels);
+      const { predictions } = runRuleset(
+        table,
+        objectAdjacency(grid),
+        classes.map((item) => item.name),
+        parsed.ruleset,
+      );
+      for (const id of table.rows.keys())
+        if (!predictions.has(id)) predictions.set(id, defaultClass);
+      return {
+        predictions,
+        fields: [],
+        imputed: {},
+        trainingCount: 0,
+        call: { tool: "obia/ruleset", args: [JSON.stringify(parsed.ruleset)] },
+      };
+    };
     // Re-segmenting while the batch runs clears the batch records and makes
     // this workflow stale, so stop rather than record runs against it.
     const stale = () =>
@@ -113,7 +147,7 @@ export function ObiaBatchStep(): ReactElement | null {
         // The whole image, at the finest level that fits the pixel limit.
         const info = await obiaSourceInfo(target);
         if (!info) throw new Error(t("obia.batch.error.readImage"));
-        let segmented: { objects: FeatureCollection; objectCount: number };
+        let segmented: { objects: FeatureCollection; objectCount: number; labels: Uint8Array };
         let measuredTable: ObiaFeatureTable;
         let area: ObiaReadArea;
         let pixelSize: number;
@@ -165,21 +199,19 @@ export function ObiaBatchStep(): ReactElement | null {
           measuredTable = measured.table;
         }
         const table = tableForAllObjects(measuredTable, segmented.objects);
+        const defaultClass = settings.defaultClass.trim() || "unclassified";
         const result =
-          settings.method === "random-forest"
-            ? await classifyRandomForestTransfer(
-                features.table,
-                samples,
-                table,
-                { fields: classification.fields, trees: settings.trees },
-                run,
-              )
-            : await classifyByRules(
-                table,
-                settings.rules,
-                settings.defaultClass.trim() || "unclassified",
-                run,
-              );
+          settings.method === "ruleset"
+            ? await rulesetOn(table, segmented.labels, defaultClass)
+            : settings.method === "random-forest"
+              ? await classifyRandomForestTransfer(
+                  features.table,
+                  samples,
+                  table,
+                  { fields: classification.fields, trees: settings.trees },
+                  run,
+                )
+              : await classifyByRules(table, settings.rules, defaultClass, run);
         calls.push(result.call);
         // Checked before adding anything: past here nothing awaits, so the
         // layer and its batch record are added together or not at all.
@@ -250,7 +282,15 @@ export function ObiaBatchStep(): ReactElement | null {
     classification &&
     (classification.settings.method === "rules"
       ? classification.settings.rules.some((rule) => isContextField(rule.field))
-      : classification.fields.some(isContextField)),
+      : classification.settings.method === "ruleset"
+        ? rulesetFields(classification.settings.ruleset).some(isContextField)
+        : classification.fields.some(isContextField)),
+  );
+
+  // A ruleset run from the current classification started from classes other
+  // images do not have.
+  const fromCurrent = Boolean(
+    classification?.settings.method === "ruleset" && classification.settings.rulesetFromCurrent,
   );
 
   if (!segmentation || !features || !classification) return null;
@@ -270,9 +310,11 @@ export function ObiaBatchStep(): ReactElement | null {
             ? "obia.batch.inheritUnsupported"
             : usesContext
               ? "obia.batch.contextUnsupported"
-              : classification.settings.method === "random-forest"
-                ? "obia.batch.hintForest"
-                : "obia.batch.hintRules",
+              : fromCurrent
+                ? "obia.batch.fromCurrentUnsupported"
+                : classification.settings.method === "random-forest"
+                  ? "obia.batch.hintForest"
+                  : "obia.batch.hintRules",
         )}
       </p>
       {targets.length === 0 ? (
@@ -305,7 +347,8 @@ export function ObiaBatchStep(): ReactElement | null {
             !selected.length ||
             level !== 1 ||
             classification.settings.method === "inherit" ||
-            usesContext
+            usesContext ||
+            fromCurrent
           }
           className="gap-2"
           data-testid="obia-batch-run"

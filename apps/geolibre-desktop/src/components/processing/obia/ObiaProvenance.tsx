@@ -121,18 +121,31 @@ export function ObiaProvenance(): ReactElement | null {
           entry(t("obia.steps.classify"), [
             when(classification.finishedAt),
             code(commandLine(classification.call.tool, classification.call.args)),
-            classification.settings.method === "inherit"
-              ? t("obia.provenance.inherit", { level: session.level + 1 })
-              : classification.settings.method === "random-forest"
-                ? t("obia.provenance.forest", {
-                    trees: classification.settings.trees,
-                    count: classification.trainingCount,
-                    fields: classification.fields.length,
-                  })
-                : t("obia.provenance.rules", {
-                    count: classification.settings.rules.length,
-                    defaultClass: classification.settings.defaultClass,
-                  }),
+            classification.settings.method === "ruleset"
+              ? t("obia.provenance.ruleset", {
+                  count: (() => {
+                    try {
+                      const processes = (
+                        JSON.parse(classification.settings.ruleset) as { processes?: unknown }
+                      ).processes;
+                      return Array.isArray(processes) ? processes.length : 0;
+                    } catch {
+                      return 0;
+                    }
+                  })(),
+                })
+              : classification.settings.method === "inherit"
+                ? t("obia.provenance.inherit", { level: session.level + 1 })
+                : classification.settings.method === "random-forest"
+                  ? t("obia.provenance.forest", {
+                      trees: classification.settings.trees,
+                      count: classification.trainingCount,
+                      fields: classification.fields.length,
+                    })
+                  : t("obia.provenance.rules", {
+                      count: classification.settings.rules.length,
+                      defaultClass: classification.settings.defaultClass,
+                    }),
             env(classification.env),
           ])}
         {batches.map((run) =>
