@@ -158,7 +158,8 @@ export interface ObiaBatchRun {
   finishedAt: string;
 }
 
-export type ObiaClassifierMethod = "random-forest" | "rules";
+/** Random forest, threshold rules, or each object's parent's class (inheritance). */
+export type ObiaClassifierMethod = "random-forest" | "rules" | "inherit";
 
 /** Classifier settings the Classify step edits. */
 export interface ObiaClassifierSettings {
@@ -247,6 +248,11 @@ interface ObiaSessionState {
   setFeatureOptions: (patch: Partial<ObiaFeatureOptions>) => void;
   /** New features clear the classification built on the previous ones. */
   setFeatures: (run: ObiaFeatureRun | null) => void;
+  /**
+   * Add columns to the current features (context features), recording the
+   * call; the classification is kept, since it is still what it was.
+   */
+  extendFeatures: (table: ObiaFeatureTable, call: ObiaToolCall) => void;
   setClasses: (classes: ObiaClass[]) => void;
   setLabelRole: (role: ObiaSampleRole) => void;
   setClassifier: (patch: Partial<ObiaClassifierSettings>) => void;
@@ -351,6 +357,23 @@ export const useObiaSession = create<ObiaSessionState>((set) => ({
       classification: null,
       levels: s.levels.filter((record) => record.level < s.level),
     })),
+  extendFeatures: (table, call) =>
+    set((s) => {
+      if (!s.features) return {};
+      // A classification reading a field the new table no longer has (a
+      // context field of a renamed class, say) is stale.
+      const cls = s.classification;
+      const reads = !cls
+        ? []
+        : cls.settings.method === "rules"
+          ? cls.settings.rules.map((rule) => rule.field)
+          : cls.fields;
+      const stale = reads.some((field) => !table.fields.includes(field));
+      return {
+        features: { ...s.features, table, calls: [...s.features.calls, call] },
+        ...(stale ? { classification: null } : {}),
+      };
+    }),
   setClasses: (classes) => set({ classes }),
   setLabelRole: (labelRole) => set({ labelRole }),
   setClassifier: (patch) => set((s) => ({ classifier: { ...s.classifier, ...patch } })),
