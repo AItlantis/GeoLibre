@@ -116,6 +116,40 @@ a benchmark of the engine on a 4-band Sentinel-2 scene, 16.8 million pixels
 took about 2 minutes to segment and 1 minute to measure, while the whole
 47-million-pixel scene took about 10 minutes and over 7 GB of memory.
 
+### Import from other software
+
+Under **Import from other software** (below the Segment step) the workbench
+takes in what another OBIA tool, such as eCognition, exported. Add the vector
+files to the map first; they then appear in the layer lists.
+
+- **Objects**: a polygon layer becomes the objects, as if segmented. Its
+  polygons are burned onto the image chosen under **Segment** (a pixel belongs
+  to a polygon when its center is inside; the whole image is read, from an
+  overview when it is over the pixel limit). The object ids come from a field
+  holding distinct positive whole numbers up to 16,777,216 (for example the
+  exported object ids; renumber larger ones first), or are numbered in order. Polygons covering no pixel center are left
+  out, and the step says how many. The original attributes stay on the
+  objects. After a reload the labels are rebuilt by burning the objects again.
+- **Samples**: a point (or polygon, by a point inside it) layer labels the
+  objects under it, with the class in a field you choose and the role
+  (training or validation) from a field or the role you choose. When samples
+  disagree on an object, the first one wins and the step says how many
+  objects that affected. Classes it names that the workbench does not have yet
+  are added; a numeric class field gives classes named `1`, `2` and so on.
+- **Class list**: a JSON list of `{"name": ..., "color": "#rrggbb"}` (or
+  `{"classes": [...]}`), or a CSV with `name` and `color` columns. Classes the
+  workbench has take the file's colors; new ones are added.
+- **Feature table**: a CSV with a `segment_id` column and one column per
+  feature, such as exported object features. They join the measured features
+  (replacing any of the same name), so rules and the classifier can use them.
+  Rows whose `segment_id` matches no object are left out, and the step says
+  how many.
+- **Level mapping**: a CSV of `child_id,parent_id` rows (by those headers, or
+  child then parent in the first two columns; a file with no header row works
+  too) builds the level above the current one from the mapping instead of by
+  merging. Objects the mapping leaves out become their own parent, and the step
+  says how many; a child given two different parents is rejected.
+
 ## 2. Measure
 
 Once objects exist, **Measure** computes per-object features on the original
