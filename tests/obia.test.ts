@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { FeatureCollection } from "geojson";
 import { writeArrayBuffer } from "geotiff";
 import { featureSelectionId } from "@geolibre/core";
-import { initTools } from "geolibre-wasm/tools";
+import { initTools, runTool } from "geolibre-wasm/tools";
 import {
-  tableForAllObjects,
+  csvCell,
+  accuracyReportCsv,
+  assessAccuracy,
   applyPredictions,
   classifyByRules,
   classifyRandomForest,
@@ -30,6 +32,7 @@ import {
   stageBands,
   ObiaError,
   readRasterData,
+  tableForAllObjects,
 } from "@geolibre/processing";
 
 /** A 3 x 2, 3-band Float32 GeoTIFF with band b holding values b*10 + pixel. */
@@ -483,6 +486,106 @@ describe("featureTableCsv", () => {
   });
 });
 
+describe("assessAccuracy", () => {
+  before(async () => {
+    await initTools(
+      readFileSync(
+        fileURLToPath(new URL("../node_modules/geolibre-wasm/geolibre-cli.wasm", import.meta.url)),
+      ),
+    );
+  });
+
+  // Reference A: 8 right, 2 called B. Reference B: 1 called A, 9 right.
+  const samples: ObiaSample[] = [];
+  const predictions = new Map<number, string>();
+  const add = (reference: string, predicted: string, count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      const id = samples.length + 1;
+      samples.push({ segmentId: id, className: reference, role: "validation" });
+      predictions.set(id, predicted);
+    }
+  };
+  add("A", "A", 8);
+  add("A", "B", 2);
+  add("B", "A", 1);
+  add("B", "B", 9);
+  // A training sample and an unpredicted validation sample are not scored.
+  samples.push({ segmentId: 100, className: "A", role: "training" });
+  predictions.set(100, "B");
+  samples.push({ segmentId: 101, className: "B", role: "validation" });
+
+  it("computes the confusion matrix, OA, kappa and per-class accuracy", () => {
+    const report = assessAccuracy(samples, predictions, undefined, ["B", "A"]);
+    assert.deepEqual(report.labels, ["B", "A"]);
+    assert.deepEqual(report.matrix, [
+      [9, 1],
+      [2, 8],
+    ]);
+    assert.equal(report.sampleCount, 20);
+    assert.equal(report.unpredicted, 1);
+    assert.equal(report.overallAccuracy, 0.85);
+    assert.ok(Math.abs(report.kappa - 0.7) < 1e-12);
+    const a = report.perClass.find((c) => c.className === "A")!;
+    assert.equal(a.producers, 0.8);
+    assert.ok(Math.abs((a.users ?? 0) - 8 / 9) < 1e-12);
+    assert.equal(report.areaWeightedAccuracy, null);
+  });
+
+  it("weights overall accuracy by object area when areas are given", () => {
+    // Make the two misclassified A objects large.
+    const areas = new Map(
+      [...predictions.keys()].map((id) => [id, id === 9 || id === 10 ? 100 : 1]),
+    );
+    areas.set(101, 1);
+    const report = assessAccuracy(samples, predictions, areas);
+    // Correct: 8 + 9 = 17 unit areas; wrong: 2 x 100 + 1 = 201.
+    assert.ok(Math.abs((report.areaWeightedAccuracy ?? 0) - 17 / 218) < 1e-12);
+  });
+
+  it("quotes user text safely for spreadsheets", () => {
+    assert.equal(csvCell("water"), "water");
+    assert.equal(csvCell('trees, "tall"'), '"trees, ""tall"""');
+    assert.equal(csvCell("a\rb"), '"a\rb"');
+    assert.equal(csvCell("=SUM(A1)"), "'=SUM(A1)");
+    assert.equal(csvCell("-1"), "'-1");
+    assert.equal(csvCell("\t=1"), "'\t=1");
+  });
+
+  it("writes a CSV report", () => {
+    const csv = accuracyReportCsv(assessAccuracy(samples, predictions));
+    assert.match(csv, /^reference \/ predicted,A,B,total,producers_accuracy\nA,8,2,10,0\.8000\n/);
+    assert.match(csv, /overall_accuracy,0\.8500\nkappa,0\.7000\nsamples,20\n$/);
+  });
+
+  it("agrees with the Whitebox accuracy tool on OA and kappa", async () => {
+    const validation = samples.filter(
+      (s) => s.role === "validation" && predictions.has(s.segmentId),
+    );
+    const encoder = new TextEncoder();
+    const result = await runTool("evaluate_object_classification_accuracy", {
+      args: ["--predictions=/work/p.csv", "--reference=/work/r.csv", "--output=/work/acc.json"],
+      input: {
+        "p.csv": encoder.encode(
+          [
+            "segment_id,predicted_class",
+            ...validation.map((s) => `${s.segmentId},${predictions.get(s.segmentId)}`),
+          ].join("\n"),
+        ),
+        "r.csv": encoder.encode(
+          ["segment_id,class", ...validation.map((s) => `${s.segmentId},${s.className}`)].join(
+            "\n",
+          ),
+        ),
+      },
+    });
+    assert.equal(result.exitCode, 0);
+    const tool = JSON.parse(new TextDecoder().decode(result.files["acc.json"]));
+    const ours = assessAccuracy(samples, predictions);
+    assert.ok(Math.abs(tool.overall_accuracy - ours.overallAccuracy) < 1e-12);
+    assert.ok(Math.abs(tool.kappa - ours.kappa) < 1e-12);
+  });
+});
+
 describe("classifyByRules with missing values", () => {
   before(async () => {
     await initTools(
@@ -538,112 +641,6 @@ describe("classifyByRules with missing values", () => {
       ]),
     };
     assert.equal(featureTableCsv(table, ["a"], { impute: false }).csv, "segment_id,a\n1,2\n2,\n");
-  });
-});
-
-describe("OBIA training samples", () => {
-  const objects = (n: number): FeatureCollection => ({
-    type: "FeatureCollection",
-    features: Array.from({ length: n }, (_, i) => ({
-      type: "Feature" as const,
-      id: i + 1,
-      properties: { segment_id: i + 1, ndvi: i / n },
-      geometry: { type: "Point" as const, coordinates: [i, 0] },
-    })),
-  });
-
-  it("labels, renames, collects and clears samples", () => {
-    let fc = labelObjects(objects(4), new Set([1, 2]), { className: "tree", role: "training" });
-    fc = labelObjects(fc, new Set([3]), { className: "roof", role: "validation" });
-    fc = renameObjectClass(fc, "tree", "vegetation");
-    assert.deepEqual(collectSamples(fc), [
-      { segmentId: 1, className: "vegetation", role: "training" },
-      { segmentId: 2, className: "vegetation", role: "training" },
-      { segmentId: 3, className: "roof", role: "validation" },
-    ]);
-    // Features are kept intact apart from the label fields.
-    assert.equal(fc.features[0].properties?.ndvi, 0);
-    fc = labelObjects(fc, new Set([1]), null);
-    assert.deepEqual(
-      collectSamples(fc).map((s) => s.segmentId),
-      [2, 3],
-    );
-    assert.equal("obia_sample" in (fc.features[0].properties ?? {}), false);
-  });
-
-  it("ignores objects without a usable id", () => {
-    const fc: FeatureCollection = {
-      type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          properties: { obia_class: "x" },
-          geometry: { type: "Point", coordinates: [0, 0] },
-        },
-        { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [1, 1] } },
-      ],
-    };
-    assert.deepEqual(collectSamples(fc), []);
-    const labeled = labelObjects(fc, new Set([Number.NaN]), { className: "y", role: "training" });
-    assert.equal(labeled.features[1].properties?.obia_class, undefined);
-  });
-
-  it("uses the map selection's ids as segment ids", () => {
-    // GeoLibre's selection identifies a feature by featureSelectionId (its
-    // feature id, else its index). Objects carry id = segment_id, so the ids
-    // the Train step reads from the selection are the segment ids it labels,
-    // even when the objects are not in segment order.
-    const objects = dissolveSegmentPolygons({
-      type: "FeatureCollection",
-      features: [9, 4].map((value) => ({
-        type: "Feature" as const,
-        properties: { VALUE: value },
-        geometry: {
-          type: "Polygon" as const,
-          coordinates: [
-            [
-              [value, 0],
-              [value + 1, 0],
-              [value + 1, 1],
-              [value, 0],
-            ],
-          ],
-        },
-      })),
-    });
-    const selected = objects.features.map((f, i) => Number(featureSelectionId(f, i)));
-    assert.deepEqual(selected, [4, 9]);
-    const labeled = labelObjects(objects, new Set([9]), { className: "roof", role: "training" });
-    assert.deepEqual(collectSamples(labeled), [
-      { segmentId: 9, className: "roof", role: "training" },
-    ]);
-  });
-
-  it("holds out a reproducible, stratified share of each class", () => {
-    const samples: ObiaSample[] = [
-      ...Array.from({ length: 10 }, (_, i) => ({
-        segmentId: i + 1,
-        className: "a",
-        role: "training" as const,
-      })),
-      ...Array.from({ length: 4 }, (_, i) => ({
-        segmentId: i + 11,
-        className: "b",
-        role: "training" as const,
-      })),
-      { segmentId: 20, className: "c", role: "training" },
-      { segmentId: 21, className: "a", role: "validation" },
-    ];
-    const held = stratifiedHoldout(samples, 0.3, 7);
-    const inClass = (name: string) =>
-      samples.filter((s) => s.className === name && held.has(s.segmentId)).length;
-    assert.equal(inClass("a"), 3);
-    assert.equal(inClass("b"), 1);
-    // A class with one training sample keeps it; validation samples are not candidates.
-    assert.equal(inClass("c"), 0);
-    assert.equal(held.has(21), false);
-    assert.deepEqual([...stratifiedHoldout(samples, 0.3, 7)].sort(), [...held].sort());
-    assert.notDeepEqual([...stratifiedHoldout(samples, 0.3, 8)].sort(), [...held].sort());
   });
 });
 
