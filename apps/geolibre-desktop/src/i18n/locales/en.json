@@ -7417,7 +7417,8 @@
       "train": "Label samples",
       "classify": "Classify",
       "accuracy": "Assess accuracy",
-      "export": "Export"
+      "export": "Export",
+      "batch": "Apply to other images"
     },
     "image": "Image",
     "imagePlaceholder": "Choose a raster layer",
@@ -7448,6 +7449,8 @@
       "tooManyBands_one": "{{count}} band of this image needs more memory than the in-browser workbench allows. Clip the image to a smaller area.",
       "tooManyBands_other": "{{count}} bands of this image need more memory than the in-browser workbench allows. Select fewer bands, or clip the image.",
       "noSuchBand": "The image has no band {{index}}.",
+      "missingFields_one": "This image lacks {{count}} of the features the classifier uses. Measure it with the same feature options.",
+      "missingFields_other": "This image lacks {{count}} of the features the classifier uses. Measure it with the same feature options.",
       "sourceMissing": "The image these objects were segmented from is no longer in the project. Segment again.",
       "sourceChanged": "The image no longer segments into the same objects, so it changed since the objects were made. Segment again.",
       "failed": "Segmentation failed."
@@ -7567,6 +7570,24 @@
         "failed": "Export failed."
       }
     },
+    "batch": {
+      "hintForest": "Segment, measure and classify other images with the same bands and settings. The random forest is trained on this image's training samples, so the other images must have the same bands in the same order.",
+      "hintRules": "Segment, measure and classify other images with the same bands, settings and rules.",
+      "noTargets": "Add another raster layer to apply this workflow to it.",
+      "images": "Images",
+      "runNone": "Apply",
+      "run_one": "Apply to {{count}} image",
+      "run_other": "Apply to {{count}} images",
+      "running": "Image {{index}} of {{total}}…",
+      "result_one": "{{count}} object ({{summary}})",
+      "result_other": "{{count}} objects ({{summary}})",
+      "error": {
+        "failed": "Could not apply the workflow.",
+        "readImage": "Could not read the image.",
+        "onImage": "{{name}}: {{message}}",
+        "changed": "The image was segmented again while applying, so the run stopped."
+      }
+    },
     "provenance": {
       "title": "Provenance",
       "image": "Image",
@@ -7582,7 +7603,14 @@
       "rules_other": "{{count}} rules, default class {{defaultClass}}",
       "copy": "Copy as JSON",
       "copied": "Copied.",
-      "copyFailed": "Could not copy to the clipboard."
+      "copyFailed": "Could not copy to the clipboard.",
+      "batch": "Applied to {{name}}"
+    },
+    "progress": {
+      "starting": "Starting… {{seconds}} s",
+      "step": "Running {{tool}}… {{seconds}} s",
+      "cancel": "Cancel",
+      "cancelled": "Cancelled."
     }
   },
   "pluginPanel": {

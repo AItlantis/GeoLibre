@@ -14,7 +14,14 @@ import { useObiaSession, type ObiaAddRaster } from "../../../lib/obia/obia-sessi
 import { obiaErrorMessage } from "../../../lib/obia/obia-errors";
 import { obiaLayerLocation, obiaRunEnv } from "../../../lib/obia/obia-persistence";
 import { obiaSourceBands, obiaSourceBytes, obiaSourceKey } from "../../../lib/obia/obia-source";
-import { ObiaNumberField, ObiaStatus, ObiaStepHeading } from "./ObiaFields";
+import {
+  ObiaNumberField,
+  ObiaRunProgress,
+  ObiaStatus,
+  ObiaStepHeading,
+  isObiaCancel,
+  useObiaRun,
+} from "./ObiaFields";
 
 interface ObiaSegmentStepProps {
   mapControllerRef: React.RefObject<MapEngine | null>;
@@ -64,6 +71,7 @@ export function ObiaSegmentStep({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const runningRef = useRef(false);
+  const progress = useObiaRun();
 
   // Default to the first image layer so a single-raster project needs no pick.
   useEffect(() => {
@@ -132,10 +140,11 @@ export function ObiaSegmentStep({
     runningRef.current = true;
     setRunning(true);
     setError(null);
+    const run = progress.begin();
     try {
       const image = await obiaSourceBands(sourceLayer, bandIndexes);
       if (!image) throw new Error(t("obia.error.readImage"));
-      const result = await segmentImage(image, params);
+      const result = await segmentImage(image, params, run);
       const name = t("obia.layerName", { name: sourceLayer.name });
       // Fingerprint before adding the layer, so a failure here leaves nothing behind.
       const { hash: labelsHash } = await fingerprintSegmentLabels(result.labels);
@@ -180,8 +189,13 @@ export function ObiaSegmentStep({
         );
       }
     } catch (err) {
-      setError(obiaErrorMessage(err, t, t("obia.error.failed")));
+      setError(
+        isObiaCancel(err)
+          ? t("obia.progress.cancelled")
+          : obiaErrorMessage(err, t, t("obia.error.failed")),
+      );
     } finally {
+      progress.end();
       runningRef.current = false;
       setRunning(false);
     }
@@ -195,6 +209,7 @@ export function ObiaSegmentStep({
     onAddRaster,
     mapControllerRef,
     setSegmentation,
+    progress,
     t,
   ]);
 
@@ -323,6 +338,11 @@ export function ObiaSegmentStep({
               {running ? t("obia.running") : t("obia.run")}
             </Button>
           </div>
+          <ObiaRunProgress
+            step={progress.step}
+            startedAt={progress.startedAt}
+            onCancel={progress.cancel}
+          />
         </>
       )}
 

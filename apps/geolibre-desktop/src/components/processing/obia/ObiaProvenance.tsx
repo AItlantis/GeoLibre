@@ -23,7 +23,7 @@ export function ObiaProvenance(): ReactElement | null {
     const timer = setTimeout(() => setCopyStatus("idle"), 3000);
     return () => clearTimeout(timer);
   }, [copyStatus]);
-  const { segmentation, features, classification, splits } = session;
+  const { segmentation, features, classification, splits, batches } = session;
   if (!segmentation) return null;
 
   const when = (iso: string) => {
@@ -116,6 +116,17 @@ export function ObiaProvenance(): ReactElement | null {
                 }),
             env(classification.env),
           ])}
+        {batches.map((run) =>
+          entry(
+            t("obia.provenance.batch", { name: run.source.name }),
+            [
+              when(run.finishedAt),
+              run.source.location ?? null,
+              ...run.calls.map((call) => code(commandLine(call.tool, call.args))),
+              env(run.env),
+            ].filter(Boolean),
+          ),
+        )}
       </dl>
       <div className="mt-2 flex items-center gap-2">
         <Button
