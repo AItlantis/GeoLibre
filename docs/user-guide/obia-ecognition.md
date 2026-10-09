@@ -3,9 +3,11 @@
 This page maps eCognition concepts and algorithms to the
 [Object-Based Analysis](obia.md) workbench, so you can tell which parts of an
 eCognition land-cover workflow carry over, which need rework, and which are not
-available. It is a manual translation guide: the workbench does not read
-eCognition rulesets (`.dcp`) or projects (`.dpr`). Bring results over with
-[Import from other software](obia.md#import-from-other-software) instead.
+available. The workbench reads the classification part of eCognition rule
+sets (`.dcp`) and projects (`.dpr`), see
+[Importing a rule set](#importing-a-rule-set); the rest is translated by hand
+with the tables below, and results come over with
+[Import from other software](obia.md#import-from-other-software).
 
 Legend: **Yes** works the same way; **Partly** is available with the
 differences noted; **No** is not available.
@@ -50,8 +52,10 @@ differences noted; **No** is not available.
 | Nearest neighbor / standard NN | Random forest | **Partly**: a different classifier on the same samples |
 | Random trees, SVM, decision tree (classifier algorithm) | Random forest | **Partly** |
 | Assign class (threshold) | Threshold rules, or a ruleset `assign` with conditions | **Yes** |
-| Membership functions (larger than, smaller than, about range) | Ruleset `fuzzy` with `larger`, `smaller`, `about` | **Partly**: linear ramps only, no sigmoid or custom curves |
-| Logical terms and, or, mean | `combine`: `and` (min), `or` (max), `mean` | **Yes** |
+| Membership functions (larger than, smaller than, about range, sigmoids, custom) | Ruleset `fuzzy` with `larger`, `smaller`, `about`, or `curve` (eCognition's own points) | **Yes** |
+| Thresholds in class descriptions | `threshold` memberships | **Yes** |
+| Remove classification | Ruleset `unassign` | **Yes** |
+| Logical terms and, or, mean | `combine`: `and` (min), `or` (max), `mean` | **Yes** (the importer reads and and or) |
 | Minimum membership value | `minMembership` | **Yes** |
 | Class hierarchy inheritance | Inherit from level above; `parent_is_<class>` in rules | **Partly**: class-to-level inheritance, not inheritance of class descriptions |
 | Process tree, domains (level, class filter, conditions) | Ruleset processes with a `domain` (classes and conditions) on the level you work on | **Partly**: a domain cannot name another level |
@@ -71,14 +75,153 @@ differences noted; **No** is not available.
    [Import from other software](obia.md#import-from-other-software): objects
    (with the id field), the feature table, the level mapping, the class list
    and the samples.
-3. Rebuild the rules: threshold rules or a ruleset over the imported and
-   measured features, using the tables above to find the equivalents. Where
-   an algorithm is marked **No**, keep that part's result from eCognition
-   (import its objects or classes) rather than recreating it.
+3. Import the rule set (see below), then rebuild what did not convert: a
+   ruleset or threshold rules over the imported and measured features, using
+   the tables above to find the equivalents. Where an algorithm is marked
+   **No**, keep that part's result from eCognition (import its objects or
+   classes) rather than recreating it.
 4. Check the result against eCognition's with
    [Assess accuracy](obia.md#6-assess-accuracy), using validation samples
    from the eCognition classification.
 
-Validating whole rulesets automatically against eCognition reference outputs
-needs real exported rulesets and their results; that work is tracked in
-[#3053](https://github.com/opengeos/GeoLibre/issues/3053).
+## Importing a rule set
+
+Under [Import from other software](obia.md#import-from-other-software),
+**eCognition rule set** reads a `.dcp` rule set or a `.dpr` project (from
+eCognition / Definiens Developer 7 onwards; encrypted rule sets cannot be
+read; files up to 128 MB) and converts its process tree:
+
+| eCognition | Converted to |
+| --- | --- |
+| Execute child processes | Its children, in order; a loop when it repeats (a count, or "while something changes", up to 1000 passes) |
+| Assign class | `assign` (`unassign` for unclassified) |
+| Remove classification | `unassign` |
+| Classification (class descriptions) | `fuzzy`: each active class's description, membership functions as `curve`, thresholds as `threshold`, combined by and(min) or or(max); the class hierarchy's minimum membership |
+| Image object domain: class filter, conditions joined by "and" | The process's `domain` |
+
+Features become the workbench's fields where it computes the same thing:
+`Mean <layer>`, `Standard deviation <layer>`, `Max. pixel value <layer>` and
+`Min. pixel value <layer>` (by the layer's band), `Brightness`, `Area` (in
+pixels), `Number of pixels`, `Border length` (in pixels), `Rel. border to
+<class>` (`nb_border_<class>`), `Existence of <class> (0)` (a neighbor of the
+class: `nb_border_<class>` above 0), `Existence of super objects <class> (1)`
+(`parent_is_<class>`, after context features) and a customized normalized
+difference of two layer means (as `ndvi` or `ndwi` when its layers are read
+from the bands Measure uses for them). Any other feature
+keeps its eCognition name: import a feature table exported from eCognition
+with that column and the ruleset can use it.
+
+Not converted, and listed with the reason: segmentation (redo it under
+Segment), export and display processes, conditions joined by "or" or compared
+with a variable, other domains (pixel level, linked objects, maps), nearest
+neighbor and other operators in class descriptions, variables and arrays,
+merging, growing and shrinking objects, level management, samples and
+supervised classification, and any algorithm not in the table. The converted
+processes all run on the level you work on, whatever level the rule set
+named.
+
+How much of a rule set converts depends on how much of it is classification
+logic. Over public rule sets (a container process counts as converted when
+any of its children does):
+
+| Rule set | Processes | Converted | Mostly not converted |
+| --- | --- | --- | --- |
+| [Buildings and water, Hamden NY](https://github.com/khdelphine/eCognition_rulesets) | 54 | 39 | merge region |
+| [Laughing gull nests](https://figshare.com/articles/dataset/14214182) | 64 | 45 | merge region, level management |
+| [Water, seed growing](https://sees-rsrc.science.uq.edu.au/CRSSIS_old/OOIA/process_tree_library.htm) | 27 | 14 | segmentation, merge region |
+| [Historical imagery, NAIP](https://github.com/mveitzel/historical-imagery) | 20 | 7 | segmentation, merge region |
+| [Seafloor geomorphology](https://github.com/GeologicalMethodical/eCognition_Developer_Ruleset) | 22 | 9 | segmentation, object resizing |
+| [NSW estuarine habitats](https://figshare.com/articles/software/27297483) | 240 | 35 | manual classification, variables, levels |
+| [Yalova land cover](https://github.com/peterhofmann1/Yalova-S-2-LULC) | 2,813 | 191 | supervised classification, samples, maps |
+| [Field boundaries](https://github.com/fkroeber/field_boundary_delineation) | 292 | 11 | variables, layer arithmetic, levels |
+
+## Validation pilot
+
+To see how far a translated eCognition workflow gets, the workbench was run
+against an eCognition result.
+
+- **Data:** a Landsat 7 ETM+ scene (September 1999) of upland North Wales,
+  1001 × 1001 pixels at 15 m: the panchromatic band plus the six
+  multispectral bands resampled to it, the layers and resolution the
+  eCognition project used. The reference is that project's 18-class
+  eCognition land-cover classification of the same area (24,807 objects on
+  the grid).
+- **Ruleset:** a six-class threshold ruleset from an eCognition training
+  course (water and non-vegetation by NDVI, forest, improved grassland and
+  bog/heath by band means and NDVI, then a catch-all class), translated by
+  hand. The 18 reference classes are grouped into its six for comparison.
+
+### Classification
+
+Agreement with the eCognition classification, by area:
+
+| Run | Agreement | Kappa |
+| --- | --- | --- |
+| Translated ruleset, whole scene | 64.8% | 0.52 |
+| Translated ruleset, held-out blocks | 64.3% | 0.52 |
+| Random forest, 6 classes, held-out blocks | 47% to 51% | 0.24 to 0.35 |
+| Random forest, 18 classes, held-out blocks | 15% to 17% | 0.07 to 0.10 |
+
+Per class, the translated ruleset reached a producer's/user's accuracy of
+0.90/0.95 for water, 0.76/0.81 for forest, 0.66/0.87 for bog/heath and
+0.85/0.49 for improved grassland. The catch-all class was the weakest
+(0.20/0.24), which the course itself expects of this ruleset.
+
+The random forest was trained in 2.5 km checkerboard blocks and checked in
+the others, with eCognition's classes moved onto the workbench's objects at
+one point per eCognition object. That transfer, not the classifier, limits it.
+scikit-learn's random forest, trained on the same features and labels,
+reached an out-of-bag accuracy of only 0.61 (6 classes) and 0.24 (18
+classes), and agreed with the workbench's forest on 76% of the objects.
+
+### Segmentation
+
+Each method's objects, compared with eCognition's objects (multiresolution
+segmentation with a shape weight of 0.1):
+
+- **Class purity:** the area-weighted share of an object in its main
+  eCognition class.
+- **Object purity:** the same share for the main eCognition object.
+- **Kept whole:** the share of an eCognition object in its largest
+  workbench object.
+
+A chessboard of square objects of a similar size is the baseline.
+
+| Method | Objects | Class purity | Object purity | Kept whole | Time |
+| --- | --- | --- | --- | --- | --- |
+| Region growing (browser), threshold 0.8, minimum 10 px | 20,057 | 0.719 | 0.678 | 0.384 | 19 s |
+| Region growing (browser), threshold 0.5, minimum 10 px | 35,176 | 0.759 | 0.742 | 0.214 | 26 s |
+| Region growing at threshold 0.8, then a coarser level at scale 3 | 22,566 | 0.722 | 0.682 | 0.379 | 39 s, plus measuring |
+| SLIC (native), size 40 | 27,495 | 0.788 | 0.777 | 0.190 | 1.1 s |
+| Felzenszwalb (native), scale 30 | 28,330 | 0.790 | 0.776 | 0.210 | 1.2 s |
+| Felzenszwalb (native), scale 100 | 26,270 | 0.785 | 0.769 | 0.229 | 1.3 s |
+| Chessboard 6 × 6 (baseline) | 27,889 | 0.753 | 0.745 | 0.174 | |
+| Chessboard 7 × 7 (baseline) | 20,449 | 0.733 | 0.723 | 0.193 | |
+
+Every method gave the same objects when run again. Native runs peaked at
+about 580 MB, including the Python process.
+
+Boundary agreement within one pixel (F1) was 0.64 to 0.71 for the methods,
+against 0.59 to 0.62 for the chessboard. At this resolution the eCognition
+objects are so small that boundary agreement tells the methods apart only a
+little.
+
+The native methods produce purer objects than the baseline. The browser's
+region growing, at its default threshold, does not: it keeps eCognition's
+objects whole best but mixes classes in its larger objects. Merging its
+objects into a coarser level does not change that.
+
+### Conclusions
+
+- **Recommended workflow:**
+  1. Segment with SLIC or Felzenszwalb on the desktop, or with region growing
+     at a lower threshold in the browser.
+  2. Measure the objects.
+  3. Import or translate the eCognition classification rules, check what did
+     not convert, and assess the result against the eCognition output.
+- **What carries over:** the classification logic (thresholds, membership
+  functions, class order and domains) translates directly and gives similar
+  results.
+- **What does not:** eCognition's segmentation, whose objects no method here
+  reproduces, and processes that work across levels. These are the main
+  differences to expect.
