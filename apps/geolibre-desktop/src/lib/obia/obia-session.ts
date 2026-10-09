@@ -63,6 +63,11 @@ export interface ObiaSegmentationRun {
   /** A native method's parameters (`params` holds region growing's). */
   nativeParams?: ObiaNativeParams;
   /**
+   * For a coarser level: how it was built by merging the level below's
+   * objects. Absent for level 1, the segmentation itself.
+   */
+  merge?: ObiaLevelMerge;
+  /**
    * The sidecar job that segmented natively, whose labels the sidecar reuses
    * to measure while it keeps them. Not saved: it does not outlive the
    * sidecar.
@@ -89,6 +94,28 @@ export interface ObiaSegmentationRun {
   params: RegionGrowingParams;
   env: ObiaRunEnv;
   finishedAt: string;
+}
+
+/** How a coarser level was built from the level below. */
+export interface ObiaLevelMerge {
+  /** The level whose objects were merged. */
+  fromLevel: number;
+  scale: number;
+  /** Bands whose statistics drove the merge. */
+  bands: number[];
+}
+
+/**
+ * One level of the object hierarchy, while another level is the one the
+ * workbench steps work on. Level 1 is the segmentation; each level above
+ * merges the objects of the level below, so its objects contain them.
+ */
+export interface ObiaLevelRecord {
+  level: number;
+  segmentation: ObiaSegmentationRun;
+  features: ObiaFeatureRun | null;
+  classification: ObiaClassificationRun | null;
+  splits: ObiaSplitRecord[];
 }
 
 /** Object measurements written onto the objects layer. */
@@ -170,7 +197,12 @@ export type ObiaSessionData = Pick<
   | "classification"
   | "splits"
   | "batches"
+  | "level"
+  | "levels"
 >;
+
+/** The deepest object hierarchy the workbench builds and restores. */
+export const OBIA_MAX_LEVELS = 32;
 
 /** Which part of the image to segment. */
 export type ObiaAreaMode = "image" | "view";
@@ -197,6 +229,10 @@ interface ObiaSessionState {
   splits: ObiaSplitRecord[];
   /** The workflow applied to other images, oldest first. */
   batches: ObiaBatchRun[];
+  /** The hierarchy level the steps work on (1 = the segmentation). */
+  level: number;
+  /** The other levels, by level number. */
+  levels: ObiaLevelRecord[];
   setSourceLayerId: (id: string) => void;
   setBandIndexes: (bands: number[]) => void;
   setAreaMode: (mode: ObiaAreaMode) => void;
@@ -215,10 +251,16 @@ interface ObiaSessionState {
   setLabelRole: (role: ObiaSampleRole) => void;
   setClassifier: (patch: Partial<ObiaClassifierSettings>) => void;
   setClassification: (run: ObiaClassificationRun | null) => void;
+  /** Attach rebuilt label bytes to a stashed level, keeping its runs. */
+  setLevelLabels: (level: number, finishedAt: string, labels: Uint8Array) => void;
   /** Attach rebuilt label bytes to the current segmentation, keeping its runs. */
   setSegmentationLabels: (finishedAt: string, labels: Uint8Array) => void;
   addSplit: (split: ObiaSplitRecord) => void;
   addBatch: (run: ObiaBatchRun) => void;
+  /** Make a newly built level the one the steps work on. */
+  addLevel: (record: ObiaLevelRecord) => void;
+  /** Work on another level, keeping the current one's results. */
+  switchLevel: (level: number) => void;
   /** Replace the whole session, e.g. with state restored from a project. */
   restore: (data: ObiaSessionData) => void;
 }
@@ -250,7 +292,22 @@ export function emptyObiaSession(): ObiaSessionData {
     classification: null,
     splits: [],
     batches: [],
+    level: 1,
+    levels: [],
   };
+}
+
+/** The active level's results, as a record to stash. */
+function activeRecord(s: ObiaSessionData): ObiaLevelRecord | null {
+  return s.segmentation
+    ? {
+        level: s.level,
+        segmentation: s.segmentation,
+        features: s.features,
+        classification: s.classification,
+        splits: s.splits,
+      }
+    : null;
 }
 
 /**
@@ -273,15 +330,39 @@ export const useObiaSession = create<ObiaSessionState>((set) => ({
     })),
   setParams: (patch) => set((s) => ({ params: { ...s.params, ...patch } })),
   // A new segmentation also starts a new set of samples, so earlier splits go.
+  // A new segmentation is a new level 1: the levels built on the old one go.
   setSegmentation: (segmentation) =>
-    set({ segmentation, features: null, classification: null, splits: [], batches: [] }),
+    set({
+      segmentation,
+      features: null,
+      classification: null,
+      splits: [],
+      batches: [],
+      level: 1,
+      levels: [],
+    }),
   setFeatureOptions: (patch) => set((s) => ({ featureOptions: { ...s.featureOptions, ...patch } })),
-  // New features make the classification built on the old ones stale.
-  setFeatures: (features) => set({ features, classification: null }),
+  // New features make the classification built on the old ones stale, and
+  // the levels built from them (their features came from these): those are
+  // dropped from the hierarchy.
+  setFeatures: (features) =>
+    set((s) => ({
+      features,
+      classification: null,
+      levels: s.levels.filter((record) => record.level < s.level),
+    })),
   setClasses: (classes) => set({ classes }),
   setLabelRole: (labelRole) => set({ labelRole }),
   setClassifier: (patch) => set((s) => ({ classifier: { ...s.classifier, ...patch } })),
   setClassification: (classification) => set({ classification }),
+  setLevelLabels: (level, finishedAt, labels) =>
+    set((s) => ({
+      levels: s.levels.map((record) =>
+        record.level === level && record.segmentation.finishedAt === finishedAt
+          ? { ...record, segmentation: { ...record.segmentation, labels } }
+          : record,
+      ),
+    })),
   setSegmentationLabels: (finishedAt, labels) =>
     set((s) =>
       s.segmentation?.finishedAt === finishedAt
@@ -290,5 +371,36 @@ export const useObiaSession = create<ObiaSessionState>((set) => ({
     ),
   addSplit: (split) => set((s) => ({ splits: [...s.splits, split] })),
   addBatch: (run) => set((s) => ({ batches: [...s.batches, run] })),
+  addLevel: (record) =>
+    set((s) => {
+      const current = activeRecord(s);
+      return {
+        levels: [...s.levels, ...(current ? [current] : [])]
+          .filter((item) => item.level !== record.level)
+          .sort((a, b) => a.level - b.level),
+        level: record.level,
+        segmentation: record.segmentation,
+        features: record.features,
+        classification: record.classification,
+        splits: record.splits,
+      };
+    }),
+  switchLevel: (level) =>
+    set((s) => {
+      const target = s.levels.find((item) => item.level === level);
+      if (!target || level === s.level) return {};
+      const current = activeRecord(s);
+      return {
+        levels: [
+          ...s.levels.filter((item) => item.level !== level),
+          ...(current ? [current] : []),
+        ].sort((a, b) => a.level - b.level),
+        level,
+        segmentation: target.segmentation,
+        features: target.features,
+        classification: target.classification,
+        splits: target.splits,
+      };
+    }),
   restore: (data) => set({ ...data }),
 }));
