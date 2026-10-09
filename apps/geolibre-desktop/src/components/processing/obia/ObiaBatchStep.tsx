@@ -16,7 +16,12 @@ import { useTranslation } from "react-i18next";
 import { obiaErrorMessage } from "../../../lib/obia/obia-errors";
 import { obiaLayerLocation, obiaRunEnv } from "../../../lib/obia/obia-persistence";
 import { useObiaSession, type ObiaBatchRun } from "../../../lib/obia/obia-session";
-import { obiaSourceBands } from "../../../lib/obia/obia-source";
+import {
+  obiaSourceBands,
+  obiaSourceInfo,
+  planObiaArea,
+  wholeImageWindow,
+} from "../../../lib/obia/obia-source";
 import { predictionStylePatch } from "./ObiaClassifyStep";
 import {
   ObiaRunProgress,
@@ -90,7 +95,13 @@ export function ObiaBatchStep(): ReactElement | null {
         failedOn = target.name;
         setCurrent({ index: index + 1, total: chosen.length });
         const calls: ObiaToolCall[] = [];
-        const image = await obiaSourceBands(target, segmentation.bandIndexes);
+        // The whole image, at the finest level that fits the pixel limit.
+        const info = await obiaSourceInfo(target);
+        if (!info) throw new Error(t("obia.batch.error.readImage"));
+        const { area, pixelSize, fits } = planObiaArea(info, wholeImageWindow(info));
+        // Refuse before reading anything: even the coarsest overview is too large.
+        if (!fits) throw new Error(t("obia.batch.error.tooLarge"));
+        const image = await obiaSourceBands(target, segmentation.bandIndexes, area);
         if (!image) throw new Error(t("obia.batch.error.readImage"));
         // Reading the image takes no signal, so honour a Cancel made meanwhile.
         if (run.signal?.aborted) throw new DOMException("Cancelled.", "AbortError");
@@ -142,6 +153,8 @@ export function ObiaBatchStep(): ReactElement | null {
         addBatch({
           targetLayerId: target.id,
           source: { name: target.name, ...(location ? { location } : {}) },
+          area,
+          pixelSize,
           objectsLayerId,
           objectCount: segmented.objectCount,
           classCounts,
