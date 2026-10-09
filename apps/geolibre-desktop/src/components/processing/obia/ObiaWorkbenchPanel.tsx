@@ -7,6 +7,7 @@ import type { ObiaAddRaster } from "../../../lib/obia/obia-session";
 import { clearObiaSourceCache } from "../../../lib/obia/obia-source";
 import { ObiaAccuracyStep } from "./ObiaAccuracyStep";
 import { ObiaClassifyStep } from "./ObiaClassifyStep";
+import { ObiaExportStep } from "./ObiaExportStep";
 import { ObiaMeasureStep } from "./ObiaMeasureStep";
 import { ObiaSegmentStep } from "./ObiaSegmentStep";
 import { ObiaTrainStep } from "./ObiaTrainStep";
@@ -20,8 +21,8 @@ interface ObiaWorkbenchPanelProps {
  * panel (see `lib/obia/obia-panel.ts`). It runs the OBIA pipeline on the WASM
  * tool runner, one section per step: segment a raster layer into objects (one
  * polygon per object, `id` = `segment_id`), measure them, label training and
- * validation samples, classify them, and assess the accuracy. Each later step
- * appears once the one before it has run.
+ * validation samples, classify them, assess the accuracy, and export the
+ * result. Each later step appears once the one before it has run.
  */
 export function ObiaWorkbenchPanel({ mapControllerRef }: ObiaWorkbenchPanelProps): ReactElement {
   const { t } = useTranslation();
@@ -51,6 +52,7 @@ export function ObiaWorkbenchPanel({ mapControllerRef }: ObiaWorkbenchPanelProps
       <ObiaTrainStep />
       <ObiaClassifyStep />
       <ObiaAccuracyStep />
+      <ObiaExportStep onAddRaster={addRaster} />
     </div>
   );
 }

@@ -36,6 +36,22 @@ its feature id) is the object's label, so the attribute table, selection and
 the later workbench steps all refer to the same objects. Tick **Also add the
 label raster to the map** to add the label raster itself.
 
+### About the algorithm
+
+The method is Whitebox's seeded region growing (`image_segmentation`). It is
+not eCognition's multiresolution segmentation, so an eCognition scale
+parameter does not carry over: tune the threshold and minimum size on your own
+imagery. The Whitebox catalog's other segmentation tools (SLIC superpixels,
+Felzenszwalb graph, marker watershed) are wrappers around this same region
+growing with a remapped threshold, which is why the workbench offers it under
+its real name.
+
+### Limits
+
+The workbench processes up to about 16.7 million pixels (4096 × 4096) per
+image. Clip a larger scene to your area of interest first, for example with
+**Processing → GeoLibre Toolbox → Raster → Clip by extent**.
+
 ## 2. Measure
 
 Once objects exist, **Measure** computes per-object features on the original
@@ -126,18 +142,17 @@ For an honest score, label validation samples spread across the scene rather
 than next to training samples, and do not tune the classifier on them
 repeatedly; otherwise they stop being independent.
 
-### About the algorithm
+## 6. Export
 
-The method is Whitebox's seeded region growing (`image_segmentation`). It is
-not eCognition's multiresolution segmentation, so an eCognition scale
-parameter does not carry over: tune the threshold and minimum size on your own
-imagery. The Whitebox catalog's other segmentation tools (SLIC superpixels,
-Felzenszwalb graph, marker watershed) are wrappers around this same region
-growing with a remapped threshold, which is why the workbench offers it under
-its real name.
+The objects layer is already the vector result: each object's
+`obia_predicted` property holds its class, so its layer menu exports the
+classification to GeoJSON, GeoPackage, Shapefile and the other vector formats
+(and **Processing → GeoLibre Toolbox → Vector → Dissolve** merges objects by
+class). The Export step also burns the classes onto the image's pixel grid:
 
-### Limits
-
-The workbench processes up to about 16.7 million pixels (4096 × 4096) per
-image. Clip a larger scene to your area of interest first, for example with
-**Processing → GeoLibre Toolbox → Raster → Clip by extent**.
+- **Add classified raster** adds a color rendering in the class colors.
+- **Save class codes (GeoTIFF)** saves a single-band Cloud-Optimized GeoTIFF of
+  class codes on the source image's grid and CRS, with 0 as NoData. Codes follow
+  the class list (the first class is 1), so a class keeps its code from run to
+  run; a rules default class outside the list comes after.
+- **Save legend (CSV)** saves the code, class name and color of each class.
