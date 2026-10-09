@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { TestudoGenerationMount, TestudoGenerationResourceCache } from "../packages/plugins/src/shared/testudo-generation-resources";
-import { TestudoPersistentNetwork } from "../packages/plugins/src/shared/testudo-persistent-network";
+import { TESTUDO_NETWORK_LAYERS, TestudoPersistentNetwork } from "../packages/plugins/src/shared/testudo-persistent-network";
 import type { TestudoFeatureContext, TestudoMapHandle } from "../packages/plugins/src/shared/testudo-feature-session";
 import type { NetworkKpiGeometry } from "../packages/plugins/src/plugins/network-kpi-data";
 import { selectScenarioPathIndex } from "../packages/plugins/src/shared/scenario-path-index";
@@ -36,7 +36,7 @@ test("persistent network rejects a late mount from an old package generation", a
 test("persistent network geometry toggles update the owned layer visibility", () => {
   const network = new TestudoPersistentNetwork();
   const changed: Array<[string, string, unknown]> = [];
-  const map = { getLayer: () => ({}), setLayoutProperty: (id: string, key: string, value: unknown) => changed.push([id, key, value]) };
+  const map = { getLayer: () => ({}), getSource: () => ({}), removeLayer: () => {}, removeSource: () => {}, setLayoutProperty: (id: string, key: string, value: unknown) => changed.push([id, key, value]) };
   (network as unknown as { map: typeof map }).map = map;
   assert.deepEqual(network.setVisible("sections", false), { showSections: false, showLanes: true, showTurns: true, showNodes: true });
   assert.deepEqual(network.setVisible("lanes", false), { showSections: false, showLanes: false, showTurns: true, showNodes: true });
@@ -75,19 +75,26 @@ test("persistent network reattaches once after map replacement and style reload"
   const mountState = (network as unknown as { mountState: { mount(generation: number, current: () => boolean, apply: () => void): Promise<boolean> } }).mountState;
   await mountState.mount(9, () => true, () => {});
   const featureContext: TestudoFeatureContext = { tviewId: "main", packageId: "pkg", versionId: "v1", pluginId: "network-kpi", generation: 9 };
-  const geometry = { sections: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }] }, lanes: { type: "FeatureCollection", features: [] }, turns: { type: "FeatureCollection", features: [] }, nodes: { type: "FeatureCollection", features: [] } } as NetworkKpiGeometry;
+  const geometry = { sections: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }] }, lanes: { type: "FeatureCollection", features: [{ type: "Feature", properties: { width: 3 }, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }] }, turns: { type: "FeatureCollection", features: [] }, nodes: { type: "FeatureCollection", features: [] } } as NetworkKpiGeometry;
   const owned = network as unknown as { context: TestudoFeatureContext; generation: number; geometry: NetworkKpiGeometry; isCurrent: () => boolean };
   owned.context = featureContext; owned.generation = 9; owned.geometry = geometry; owned.isCurrent = () => true;
   network.setVisible("sections", false);
   const firstMap = new FakeMap();
   network.reconcileMap(firstMap);
-  assert.equal(firstMap.layers.size, 1);
+  assert.equal(firstMap.layers.size, 2);
+  const sectionLayer = firstMap.layers.get(TESTUDO_NETWORK_LAYERS.sections)!;
+  const laneLayer = firstMap.layers.get(TESTUDO_NETWORK_LAYERS.lanes)!;
+  assert.equal(sectionLayer.maxzoom, 17);
+  assert.equal(laneLayer.minzoom, 17);
+  assert.match(JSON.stringify((sectionLayer.paint as Record<string, unknown>)["line-width"]), /total_width/);
+  assert.match(JSON.stringify((sectionLayer.paint as Record<string, unknown>)["line-width"]), /num_lanes/);
+  assert.match(JSON.stringify((laneLayer.paint as Record<string, unknown>)["line-width"]), /width/);
   const replacementMap = new FakeMap();
   network.reconcileMap(replacementMap);
-  assert.equal(replacementMap.layers.size, 1);
+  assert.equal(replacementMap.layers.size, 2);
   replacementMap.reloadStyle();
-  assert.equal(replacementMap.layers.size, 1);
-  assert.equal(replacementMap.sources.size, 1);
+  assert.equal(replacementMap.layers.size, 2);
+  assert.equal(replacementMap.sources.size, 2);
   assert.equal(replacementMap.visibility.get("testudo-network-sections"), "none");
   assert.deepEqual(network.getVisibility(), { showSections: false, showLanes: true, showTurns: true, showNodes: true });
   network.clear();
@@ -132,4 +139,25 @@ test("vehicle playback stays registered without evicting or consuming a DuckDB s
   assert.deepEqual(getActiveDuckDbLayers(), ["vehicle-playback", "emissions-h3"]);
   assert.deepEqual(disposed, ["network-kpi"]);
   __resetDuckDbLayerRegistryForTests();
+});
+
+
+test("Paths geometry preset restores user visibility after successful or interrupted transitions", () => {
+  const network = new TestudoPersistentNetwork();
+  const changed: Array<[string, string, unknown]> = [];
+  const map = { getLayer: () => ({}), getSource: () => ({}), removeLayer: () => {}, removeSource: () => {}, setLayoutProperty: (id: string, key: string, value: unknown) => changed.push([id, key, value]) };
+  (network as unknown as { map: typeof map }).map = map;
+  network.setVisible("lanes", false);
+  network.setVisible("nodes", false);
+  const beforePaths = network.getVisibility();
+  assert.deepEqual(network.setPathsMode(true, 12), { showSections: true, showLanes: false, showTurns: true, showNodes: false });
+  // Re-entering the same Paths generation must not replace the saved user state.
+  network.setPathsMode(true, 12);
+  assert.deepEqual(network.setPathsMode(false, 12), beforePaths);
+  network.setPathsMode(true, 12);
+  // A stale generation cannot restore settings into the active package.
+  network.setPathsMode(false, 11);
+  assert.deepEqual(network.getVisibility(), { showSections: true, showLanes: false, showTurns: true, showNodes: false });
+  network.clear();
+  assert.deepEqual(network.getVisibility(), { showSections: true, showLanes: true, showTurns: true, showNodes: true });
 });

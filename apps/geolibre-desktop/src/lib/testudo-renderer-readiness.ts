@@ -88,6 +88,33 @@ export async function waitForTestudoRenderer(
   }
 }
 
+/** Wait for the single renderer epoch requested by a native handoff transaction. */
+export async function waitForTestudoRendererEpoch(
+  readiness: TestudoRendererReadinessRef,
+  renderer: TestudoRenderer,
+  expectedEpoch: number,
+  signal: AbortSignal,
+  timeoutMs = 10_000,
+): Promise<TestudoRendererReadiness> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (signal.aborted) throw new Error("The map action was cancelled while the renderer was starting.");
+    const current = readiness.current;
+    if (current.epoch > expectedEpoch) throw new Error("The renderer handoff was superseded before the map action could start.");
+    if (current.epoch === expectedEpoch) {
+      if (current.renderer !== renderer) throw new Error("The renderer handoff selected a different renderer.");
+      if (current.error) throw new Error((renderer === "cesium" ? "Cesium" : "MapLibre") + " failed to start: " + current.error);
+      if (current.ready) return current;
+    }
+    if (Date.now() >= deadline) throw new Error((renderer === "cesium" ? "Cesium" : "MapLibre") + " did not become ready in time. Try again after the renderer switch.");
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); reject(new Error("The map action was cancelled while the renderer was starting.")); };
+      const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, 40);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+}
+
 /** Describe renderer-specific limitations before opening an action dialog. */
 export function testudoActionUnavailableReason(action: TestudoNativeAction, engine: MapEngine): string | null {
   if (action === "annotations" && !engine.capabilities.nativeMapInstance) {

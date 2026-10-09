@@ -57,3 +57,25 @@ test("missing timeline metadata fails closed", () => {
   assert.equal(result.aggregateAvailable, false);
   assert.equal(result.reason, "missing-timeline");
 });
+
+test("one sampled interval preserves nonzero origin, aggregate zero, and full simulation duration", () => {
+  const single = deriveSimulationTimeline({ initialTimeSeconds: 28_800, durationSeconds: 900, intervalDurationSeconds: 900, intervalCount: 1, source: "SIM_INFO" });
+  assert.equal(scenarioIntervalTime(0, single), null);
+  assert.equal(scenarioIntervalTime(1, single), 28_800);
+  assert.equal(single?.durationSeconds, 900);
+  assert.equal(single?.finalTimeSeconds, 29_700);
+  const matched = matchScenarioIntervals([0, 1], single, [0, 1], single);
+  assert.deepEqual(matched.intervals, [{ entA: 1, entB: 1, timeSeconds: 28_800 }]);
+  assert.equal(matched.aggregateAvailable, true);
+});
+
+test("sparse comparison intervals match by sampled time while retaining aggregate semantics", () => {
+  const a = timeline(7_200, 60, 3);
+  const b = timeline(7_200, 30, 6);
+  const result = matchScenarioIntervals([0, 1, 3], a, [0, 1, 3, 5], b);
+  assert.deepEqual(result.intervals, [
+    { entA: 1, entB: 1, timeSeconds: 7_200 },
+    { entA: 3, entB: 5, timeSeconds: 7_320 },
+  ]);
+  assert.equal(result.aggregateAvailable, true);
+});

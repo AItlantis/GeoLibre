@@ -431,7 +431,7 @@ export class TestudoFeatureBridge {
       throw new Error("Playback state belongs to a stale Testudo package.");
     }
     return session.playback?.getPlaybackState(tviewId, expected) ?? {
-      available: false, loading: false, playing: false, tick: 0, maxTick: 0, speed: 1, dt: 0, loop: false,
+      available: false, loading: false, playing: false, tick: 0, maxTick: 0, speed: 1, dt: 0, loop: false, canPlay: false, timeline: { currentTimeSeconds: null, sampledStartSeconds: null, sampledEndSeconds: null, simulationDurationSeconds: null, isAggregate: false },
     };
   }
 

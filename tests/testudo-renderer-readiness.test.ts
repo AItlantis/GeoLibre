@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isCurrentTestudoNativeAction, mapViewFromMapLibre, waitForTestudoRenderer, type TestudoRendererReadinessRef } from "../apps/geolibre-desktop/src/lib/testudo-renderer-readiness";
+import { isCurrentTestudoNativeAction, mapViewFromMapLibre, waitForTestudoRenderer, waitForTestudoRendererEpoch, type TestudoRendererReadinessRef } from "../apps/geolibre-desktop/src/lib/testudo-renderer-readiness";
 
 test("renderer handoff captures the live MapLibre camera and visible bounds", () => {
   const view = mapViewFromMapLibre({
@@ -59,4 +59,30 @@ test("renderer readiness waiter reports timeout and startup errors", async () =>
   await assert.rejects(waitForTestudoRenderer(readiness, { renderer: "maplibre", epoch: 2 }, new AbortController().signal, 20), /did not become ready/i);
   readiness.current = { ...readiness.current, error: "canvas unavailable" };
   await assert.rejects(waitForTestudoRenderer(readiness, { renderer: "maplibre", epoch: 2 }, new AbortController().signal, 500), /failed to start: canvas unavailable/i);
+});
+
+
+test("renderer handoff waiter accepts only the requested next epoch", async () => {
+  const readiness: TestudoRendererReadinessRef = { current: { renderer: "cesium", epoch: 7, ready: true, error: null } };
+  const waiting = waitForTestudoRendererEpoch(readiness, "maplibre", 8, new AbortController().signal, 500);
+  setTimeout(() => { readiness.current = { renderer: "maplibre", epoch: 8, ready: false, error: null }; }, 20);
+  setTimeout(() => { readiness.current = { renderer: "maplibre", epoch: 8, ready: true, error: null }; }, 50);
+  assert.deepEqual(await waiting, { renderer: "maplibre", epoch: 8, ready: true, error: null });
+});
+
+test("renderer handoff waiter rejects supersession, error, abort, and timeout", async () => {
+  const readiness: TestudoRendererReadinessRef = { current: { renderer: "cesium", epoch: 7, ready: true, error: null } };
+  const superseded = waitForTestudoRendererEpoch(readiness, "maplibre", 8, new AbortController().signal, 300);
+  setTimeout(() => { readiness.current = { renderer: "cesium", epoch: 9, ready: false, error: null }; }, 20);
+  await assert.rejects(superseded, /superseded/i);
+  readiness.current = { renderer: "cesium", epoch: 7, ready: true, error: null };
+  const failed = waitForTestudoRendererEpoch(readiness, "maplibre", 8, new AbortController().signal, 300);
+  setTimeout(() => { readiness.current = { renderer: "maplibre", epoch: 8, ready: false, error: "canvas failed" }; }, 20);
+  await assert.rejects(failed, /failed to start: canvas failed/i);
+  readiness.current = { renderer: "cesium", epoch: 7, ready: true, error: null };
+  const controller = new AbortController();
+  const aborted = waitForTestudoRendererEpoch(readiness, "maplibre", 8, controller.signal, 300);
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(aborted, /cancelled/i);
+  await assert.rejects(waitForTestudoRendererEpoch(readiness, "maplibre", 8, new AbortController().signal, 20), /did not become ready/i);
 });

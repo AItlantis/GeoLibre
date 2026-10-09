@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import path from "node:path";
-import { pickDefaultDid, type CatalogEntry } from "./parquet-catalog";
+import { pickDefaultDid, planNetworkKpiCatalog, type CatalogEntry } from "./parquet-catalog";
 
 // This test deliberately exercises the catalog contract without importing the
 // browser-only DuckDB worker module. Browser integration covers the WASM path;
@@ -54,8 +54,19 @@ test("pickDefaultDid returns null for an empty catalog", () => {
   assert.equal(pickDefaultDid([]), null);
 });
 
+test("Parquet catalog distinguishes complete, sections-only, empty, missing, and corrupt declarations", () => {
+  const sections: CatalogEntry = { table: "MISECT", did: 7, path: "results/MISECT/did=7/part.parquet", row_count: 12 };
+  const lanes: CatalogEntry = { table: "MILANE", did: 7, path: "results/MILANE/did=7/part.parquet", row_count: 24 };
+  assert.equal(planNetworkKpiCatalog([sections, lanes], 7).outcome, "complete");
+  assert.equal(planNetworkKpiCatalog([sections], 7).outcome, "sections-only");
+  assert.equal(planNetworkKpiCatalog([{ ...sections, row_count: 0 }], 7).outcome, "valid-empty");
+  assert.equal(planNetworkKpiCatalog([lanes], 7).outcome, "missing-misect");
+  assert.equal(planNetworkKpiCatalog([{ ...sections, path: undefined }], 7).outcome, "invalid-misect-path");
+  assert.equal(planNetworkKpiCatalog([sections, { ...lanes, path: undefined }], 7).outcome, "invalid-milane-path");
+});
+
 test("network KPI query construction keeps MISECT and MILANE unions separate", () => {
-  const source = fs.readFileSync(path.join(process.cwd(), "src/plugins/network-kpi-parquet-data.ts"), "utf8");
+  const source = fs.readFileSync(path.join(process.cwd(), "packages/plugins/src/plugins/network-kpi-parquet-data.ts"), "utf8");
   assert.match(source, /const misect = subquery\("MISECT"\)/);
   assert.match(source, /const milane = subquery\("MILANE"\)/);
   assert.match(source, /FROM \$\{misect\} x/);

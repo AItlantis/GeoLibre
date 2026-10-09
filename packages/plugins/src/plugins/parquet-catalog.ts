@@ -34,3 +34,18 @@ export function pickDefaultDid(catalog: CatalogEntry[]): number | null {
   if (!rowCountByDid.size) return dids[0] ?? null;
   return dids.find((d) => (rowCountByDid.get(d) ?? 0) > 0) ?? dids[0] ?? null;
 }
+
+export type NetworkKpiCatalogOutcome = "complete" | "sections-only" | "valid-empty" | "missing-misect" | "invalid-misect-path" | "invalid-milane-path";
+export interface NetworkKpiCatalogPlan { outcome: NetworkKpiCatalogOutcome; misect: CatalogEntry[]; milane: CatalogEntry[]; }
+
+/** Classify declared Parquet tables before querying so optional MILANE cannot mask a broken required MISECT partition. */
+export function planNetworkKpiCatalog(catalog: readonly CatalogEntry[], did: number | null): NetworkKpiCatalogPlan {
+  const selected = catalog.filter((entry) => catalogDid(entry) === did);
+  const misect = selected.filter((entry) => String(entry.table ?? "").toUpperCase() === "MISECT");
+  const milane = selected.filter((entry) => String(entry.table ?? "").toUpperCase() === "MILANE");
+  if (!misect.length) return { outcome: "missing-misect", misect, milane };
+  if (misect.some((entry) => typeof entry.path !== "string" || !entry.path.trim())) return { outcome: "invalid-misect-path", misect, milane };
+  if (milane.some((entry) => typeof entry.path !== "string" || !entry.path.trim())) return { outcome: "invalid-milane-path", misect, milane };
+  if (misect.every((entry) => entry.row_count === 0)) return { outcome: "valid-empty", misect, milane };
+  return { outcome: milane.length ? "complete" : "sections-only", misect, milane };
+}

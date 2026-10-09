@@ -79,6 +79,7 @@ function harness() {
   const context: Record<string, unknown> = {
     settings: { scenarioA: 0, scenarioB: 0, mode: "diff" as string },
     provider: { id: "provider" },
+    playback: { sync: () => undefined },
     status: { error: null as string | null },
     geometry: { sections: "geometry-A-initial" },
     geometryB: { sections: "geometry-B-initial" },

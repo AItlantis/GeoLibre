@@ -246,6 +246,8 @@ export interface VehicleManifestScenario {
   index: number;
   /** Stable id, from the animation's own `id`/`name`, else `scenario_<n>`. */
   id: string;
+  /** Stable identity for this animation variant; separate from scenario scid and replication did. */
+  variantId?: string;
   /** Human label for the dropdown. */
   label: string;
   /** Parent scenario shown as the optgroup label in the datasource selector. */
@@ -289,6 +291,13 @@ function animationPath(animation: Record<string, unknown>): string | undefined {
 function animationId(animation: Record<string, unknown>, index: number): string {
   const rawId = animation.id ?? animation.fzp_name ?? animation.name ?? animation.path;
   return typeof rawId === "string" && rawId.trim() ? rawId.trim() : `scenario_${index}`;
+}
+
+function stableAnimationVariantId(animation: Record<string, unknown>, index: number): string {
+  const path = animationPath(animation);
+  if (path) return path;
+  const explicit = animation.id ?? animation.fzp_name ?? animation.name;
+  return typeof explicit === "string" && explicit.trim() ? `animation:${explicit.trim()}` : `root-animation:${index}`;
 }
 
 function animationMatchesScenario(
@@ -344,6 +353,7 @@ export function listVehicleManifestScenarios(
           variants.push({
             index: variants.length,
             id,
+            variantId: declared.manifestPath,
             label: fzpName ?? scenarioLabel(rootAnimation ?? { name: id }, metadata, variants.length),
             scenarioName: scenario.name,
             fzpName,
@@ -371,6 +381,7 @@ export function listVehicleManifestScenarios(
           variants.push({
             index: variants.length,
             id: animationId(animation, variants.length),
+            variantId: stableAnimationVariantId(animation, rootIndex),
             label: animationId(animation, variants.length),
             scenarioName: scenario.name,
             fzpName: animationId(animation, variants.length),
@@ -428,6 +439,7 @@ export function listVehicleManifestScenarios(
     return {
       index,
       id: animationId(animation, index),
+      variantId: stableAnimationVariantId(animation, index),
       label: scenarioLabel(animation, metadata, index),
       fzpName: animationId(animation, index),
       nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
@@ -536,7 +548,8 @@ export function parseVehicleManifest(
     ? 0
     : Math.min(Math.max(0, Math.trunc(scenarioIndex) || 0), animations.length - 1);
   const scope = flat ? root : animations[selectedIndex];
-  const metadata = { ...((root.metadata ?? {}) as Record<string, unknown>), ...((scope.metadata ?? {}) as Record<string, unknown>) };
+  const chunkRoot = (chunkSource ?? {}) as Record<string, unknown>;
+  const metadata = { ...((root.metadata ?? {}) as Record<string, unknown>), ...((scope.metadata ?? {}) as Record<string, unknown>), ...((chunkRoot.metadata ?? {}) as Record<string, unknown>) };
 
   const dt = Math.max(0.0001, safeNumber(metadata.dt, 1));
   const nTicks = Math.max(1, safeInt(metadata.n_ticks, 1));
@@ -548,7 +561,7 @@ export function parseVehicleManifest(
     ?? metadata.start_time
     ?? metadata.from_time;
   const initialTimeSeconds = initialTimeRaw == null ? 0 : safeNumber(initialTimeRaw, 0);
-  const rawBounds = (metadata.bounds ?? null) as Record<string, unknown> | null;
+  const rawBounds = (metadata.bounds ?? chunkRoot.bounds ?? null) as Record<string, unknown> | null;
   const bounds: [number, number, number, number] | null = rawBounds
     ? [
         safeNumber(rawBounds.min_lon, Number.NaN),
@@ -558,9 +571,8 @@ export function parseVehicleManifest(
       ]
     : null;
 
-  const chunkRoot = (chunkSource ?? {}) as Record<string, unknown>;
-  // The per-scenario catalog is chunk-only; metadata and geometry remain
-  // authoritative in the original package manifest.
+  // The selected per-animation manifest supplies its own chunks and may also
+  // carry metadata when the root catalog has no matching animation entry.
   const rawChunks = Array.isArray(chunkRoot.chunks)
     ? (chunkRoot.chunks as RawChunkEntry[])
     : (Array.isArray(scope.chunks) ? (scope.chunks as RawChunkEntry[]) : []);
@@ -607,7 +619,7 @@ export function parseVehicleManifest(
     bounds: bounds && bounds.every(Number.isFinite) ? bounds : null,
     chunks,
     // Geometry can be declared per-scenario or once at the package root.
-    geometry: parseGeometrySources(scope.geometry ?? root.geometry, manifestUrl),
+    geometry: parseGeometrySources(scope.geometry ?? chunkRoot.geometry ?? root.geometry, manifestUrl),
     scenarioIndex: selectedIndex,
   };
 }

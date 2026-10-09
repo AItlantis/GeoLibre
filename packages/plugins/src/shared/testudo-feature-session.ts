@@ -3,6 +3,14 @@
  * controls. Each session belongs to one Testudo view, not to the map currently
  * focused by the user.
  */
+export interface TestudoPlaybackTimeline {
+  currentTimeSeconds: number | null;
+  sampledStartSeconds: number | null;
+  sampledEndSeconds: number | null;
+  simulationDurationSeconds: number | null;
+  isAggregate: boolean;
+}
+
 export interface TestudoPlaybackState {
   available: boolean;
   loading: boolean;
@@ -12,6 +20,8 @@ export interface TestudoPlaybackState {
   speed: number;
   dt: number;
   loop: boolean;
+  canPlay: boolean;
+  timeline: TestudoPlaybackTimeline;
   /** Capability currently shown by the Testudo shell. */
   activeCapability?: TestudoCapabilityKey;
   /** Per-capability support for the shared timeline. */
@@ -21,6 +31,11 @@ export interface TestudoPlaybackState {
 export interface TestudoScenario {
   id: string;
   label: string;
+  /** Original model scenario identity; differs from the selectable animation-variant ID. */
+  scenarioId?: string | number;
+  /** Original replication identity, kept separate from scenario and variant IDs. */
+  did?: number;
+  variantId?: string;
   replications?: Array<{ id: number; label?: string }>;
 }
 

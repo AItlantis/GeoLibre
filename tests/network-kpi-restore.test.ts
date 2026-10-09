@@ -35,6 +35,8 @@ function harness() {
     database: { close() { calls.closed++; } } as { close(): void } | null,
     pendingManifest: null as object | null,
     loadToken: 4,
+    readToken: 0,
+    syncIntervalTimer() {},
     networkKpiLayerVisible: true,
     engine: { setPackage() { calls.cleared++; }, applySettings() {} },
     normalizeNetworkKpiSettings: (state: object | undefined, base: object) => ({ ...base, ...state }),

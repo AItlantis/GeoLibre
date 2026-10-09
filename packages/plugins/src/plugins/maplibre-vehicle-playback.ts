@@ -2,10 +2,10 @@ import type { Map as MapLibreMap } from "maplibre-gl";
 import * as maplibregl from "maplibre-gl";
 import { createIdentifyPopupElement } from "@geolibre/map";
 import type { Layer } from "@deck.gl/core";
-import { mercatorMetersPerPixelAtZoom0 } from "@geolibre/core";
 import type { GeoLibreAppAPI, GeoLibreDeckGL, GeoLibrePlugin } from "../types";
 import type { CesiumSceneHandle } from "@geolibre/map";
 import { deriveSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
+import { assertScenarioSelectionSucceeded } from "../shared/scenario-selection";
 import { ensureSharedDeckOverlay, setSharedDeckLayers } from "./shared-deck-overlay";
 import {
   articulatedVehicleFootprints,
@@ -465,98 +465,9 @@ const NETWORK_LAYER_IDS = [
 
 const EMPTY_FEATURE_COLLECTION = { type: "FeatureCollection", features: [] } as const;
 
-/**
- * Assumed width of one traffic lane, in meters, when a feature carries no real
- * width data.
- *
- * Testudo's own exporter uses a road-class-dependent fallback when it computes
- * `total_width`; this plugin only ever sees the result, so where that property
- * is absent entirely (older exports carry `num_lanes` but no `total_width`) the
- * flat 3 m per lane below is the best reconstruction available here.
- */
-const FALLBACK_LANE_WIDTH_M = 3;
-
-/** Last-resort width for a feature with neither width nor lane-count data. */
-const FALLBACK_SECTION_WIDTH_M = FALLBACK_LANE_WIDTH_M;
-
-// Largest zoom MapLibre renders; the upper stop of the width interpolation.
-const MAX_MERCATOR_ZOOM = 24;
-
-/**
- * Wrap a ground-meters width expression as a zoom-driven `line-width`, so the
- * line keeps a constant REAL-WORLD width instead of a constant pixel width.
- *
- * This is the same construction as `metersWidthExpression` in
- * `@geolibre/core`'s `vector-color`, which the vector style pipeline uses for
- * QGIS-style "map units" strokes — `["interpolate", ["exponential", 2],
- * ["zoom"], 0, w0, 24, w0 * 2^24]`. It is reimplemented here rather than called
- * because that helper takes a scalar number, while these network layers need
- * the meters value to come from each feature's own properties; the per-feature
- * `["get", ...]` expression is therefore divided by the zoom-0 ground
- * resolution inside the stops.
- *
- * MapLibre rejects `["zoom"]` anywhere below the top level of a paint
- * expression, which is exactly why the data-driven part has to sit inside the
- * stop VALUES like this rather than wrapping an interpolate of its own.
- *
- * Referenced to the equator, like the core helper: Mercator stretches distances
- * toward the poles, so the on-screen width grows with latitude in step with the
- * basemap underneath it.
- *
- * @param metersExpression - A MapLibre expression evaluating to ground meters
- * @returns A MapLibre `interpolate` expression array
- */
-export function metersLineWidthExpression(metersExpression: unknown): unknown[] {
-  const metersPerPixelAtZoom0 = mercatorMetersPerPixelAtZoom0();
-  const widthAtZoom0 = ["/", metersExpression, metersPerPixelAtZoom0];
-  return [
-    "interpolate",
-    ["exponential", 2],
-    ["zoom"],
-    0,
-    widthAtZoom0,
-    MAX_MERCATOR_ZOOM,
-    ["*", widthAtZoom0, 2 ** MAX_MERCATOR_ZOOM],
-  ];
-}
-
-/**
- * Ground width in meters of a section feature, from the real data Testudo's
- * exporter writes onto it.
- *
- * Preference order, most direct first:
- *
- * 1. `total_width` — the exporter's own already-summed per-lane widths, which
- *    already applies its road-class-dependent fallback for lanes with no width
- *    of their own. Confirmed present on current exports (values 3–77 m).
- * 2. `num_lanes` × {@link FALLBACK_LANE_WIDTH_M} — older exports carry the lane
- *    count but no `total_width` at all, so this reconstructs it.
- * 3. A single fallback lane, for a feature carrying neither.
- *
- * Both properties are read through `["to-number", ..., 0]` and then rejected
- * when they come back 0, so a null, a missing key and an explicit zero all fall
- * through to the next source rather than collapsing the line to nothing.
- */
-export function sectionWidthMetersExpression(): unknown {
-  return [
-    "max", 0.1,
-    ["case", [">", ["to-number", ["get", "total_width"], 0], 0], ["to-number", ["get", "total_width"], 0], [">", ["to-number", ["get", "num_lanes"], 0], 0], ["*", ["to-number", ["get", "num_lanes"], 0], FALLBACK_LANE_WIDTH_M], FALLBACK_SECTION_WIDTH_M],
-  ];
-}
-
-/**
- * Ground width in meters of a single lane feature.
- *
- * Lane features carry their own `width` directly (confirmed present on current
- * exports), so there is no lane count to multiply here — one feature is one
- * lane. A missing or zero width falls back to {@link FALLBACK_LANE_WIDTH_M}.
- */
-export function laneWidthMetersExpression(): unknown {
-  return [
-    "max", 0.1,
-    ["case", [">", ["to-number", ["get", "width"], 0], 0], ["to-number", ["get", "width"], 0], FALLBACK_LANE_WIDTH_M],
-  ];
-}
+/** Ground-width expressions are shared with the persistent Testudo network layers. */
+import { metersLineWidthExpression, sectionWidthMetersExpression, laneWidthMetersExpression, FALLBACK_LANE_WIDTH_M } from "../shared/map-ground-width";
+export { metersLineWidthExpression, sectionWidthMetersExpression, laneWidthMetersExpression, FALLBACK_LANE_WIDTH_M } from "../shared/map-ground-width";
 
 /**
  * Ground width in meters of a turn (lane-to-lane movement) feature.
@@ -1470,8 +1381,8 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     pending.scenarios[scenarioIndex],
   );
   const loaded = pending.directory
-    ? new VehiclePlaybackData(parseVehicleManifest(pending.raw, null, scenarioIndex, animationManifest), source)
-    : new VehiclePlaybackData(parseVehicleManifest(pending.raw, pending.url, scenarioIndex, animationManifest), source);
+    ? new VehiclePlaybackData(parseVehicleManifest(pending.raw, null, pending.scenarios[scenarioIndex]?.rootAnimationIndex ?? scenarioIndex, animationManifest), source)
+    : new VehiclePlaybackData(parseVehicleManifest(pending.raw, pending.url, pending.scenarios[scenarioIndex]?.rootAnimationIndex ?? scenarioIndex, animationManifest), source);
 
   if (token !== loadToken) {
     loaded.destroy();
@@ -1540,8 +1451,12 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
  */
 export async function setVehiclePlaybackScenario(scenarioIndex: number): Promise<void> {
   const pending = pendingManifest;
-  if (!pending || scenarioIndex === status.scenarioIndex) return;
-  if (scenarioIndex < 0 || scenarioIndex >= pending.scenarios.length) return;
+  if (!pending) throw new Error("No vehicle playback package is loaded.");
+  if (scenarioIndex === status.scenarioIndex) {
+    assertScenarioSelectionSucceeded(status, "Vehicle playback");
+    return;
+  }
+  if (scenarioIndex < 0 || scenarioIndex >= pending.scenarios.length) throw new Error("Vehicle playback scenario index is out of range.");
 
   const token = (loadToken += 1);
   settings = { ...settings, playing: false, tick: 0 };
@@ -1550,12 +1465,14 @@ export async function setVehiclePlaybackScenario(scenarioIndex: number): Promise
   patchStatus({ loading: true, error: null, vehicleCount: 0, loadedFraction: 0, loadedChunks: 0, totalChunks: 0, loadingChunks: 0, failedChunks: 0 });
   try {
     await adoptScenario(scenarioIndex, token);
+    if (token !== loadToken) throw new Error("Vehicle playback scenario selection was superseded.");
   } catch (error) {
-    if (token !== loadToken) return;
+    if (token !== loadToken) throw new Error("Vehicle playback scenario selection was superseded.");
     patchStatus({
       loading: false,
       error: error instanceof Error ? error.message : String(error),
     });
+    throw error;
   }
 }
 

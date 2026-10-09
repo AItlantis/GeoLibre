@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveIntervalPlayback, normalizePlaybackSemantics, stepInterval, stepPlaybackIndex, toggleAggregateInterval } from "./useIntervalPlayback";
+import { createIntervalPlaybackController, deriveIntervalPlayback, normalizePlaybackSemantics, stepInterval, stepPlaybackIndex, toggleAggregateInterval } from "./useIntervalPlayback";
 
 test("deriveIntervalPlayback filters out the aggregate sentinel", () => {
   const result = deriveIntervalPlayback([0, 10, 20, 30], 20);
@@ -56,4 +56,31 @@ test("toggleAggregateInterval unchecked falls back to the first real interval", 
 
 test("toggleAggregateInterval unchecked with no real intervals falls back to 0", () => {
   assert.equal(toggleAggregateInterval([0], false), 0);
+});
+
+test("real interval clock starts, reschedules for speed, pauses, and disposes cleanly", async () => {
+  let ticks = 0;
+  const clock = createIntervalPlaybackController(() => { ticks += 1; });
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    clock.sync(true, 100);
+    await wait(230);
+    assert.ok(ticks >= 1, "Play starts the clock");
+    const beforePause = ticks;
+    clock.sync(false, 100);
+    await wait(150);
+    assert.equal(ticks, beforePause, "Pause clears its timer");
+    clock.sync(true, 500);
+    const beforeSpeedUp = ticks;
+    await wait(120);
+    clock.sync(true, 50);
+    await wait(130);
+    assert.ok(ticks > beforeSpeedUp, "Speed changes replace the current timer");
+    clock.dispose();
+    const beforeDispose = ticks;
+    await wait(120);
+    assert.equal(ticks, beforeDispose, "close/dispose leaves no active timer");
+  } finally {
+    clock.dispose();
+  }
 });

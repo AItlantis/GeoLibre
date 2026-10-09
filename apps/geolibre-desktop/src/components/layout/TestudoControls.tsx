@@ -29,6 +29,10 @@ const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectab
   { id: "density", label: "Density", plugin: "network-kpi" },
 ];
 const empty: TestudoViewerState = { package: null, selectedPlugin: null, assistantOpen: false, capabilities: [], availableModes: [], status: "empty" };
+function intervalSampleTimes(intervals: number[], timeline: { initialTimeSeconds: number | null; intervalDurationSeconds: number | null } | null | undefined) {
+  if (timeline?.initialTimeSeconds == null || timeline.intervalDurationSeconds == null) return [];
+  return intervals.filter(value => Number.isFinite(value) && value > 0).map(value => ({ value, timeSeconds: timeline.initialTimeSeconds! + (value - 1) * timeline.intervalDurationSeconds! }));
+}
 function isVehicleDirectoryHandle(value: unknown): value is VehicleDirectoryHandle {
   if (!value || typeof value !== "object") return false;
   const handle = value as Partial<VehicleDirectoryHandle> & { kind?: unknown };
@@ -99,6 +103,8 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     let directory: VehicleDirectoryHandle | null = null;
     let bootstrap: TestudoBootstrap | null = null;
     let declaredScenarioIds: Array<string | number> = [];
+    let declaredScenarioRoster: NonNullable<TestudoFeatureSession["scenarios"]> = [];
+    let declaredVariantScenarioRoster: NonNullable<TestudoFeatureSession["scenarios"]> = [];
     let environmentScenarioPairs: Array<{ scid: string | number; did: string | number }> = [];
     let preferredMode: TestudoDemoMode | undefined;
     let declaredAvailableModes: TestudoDemoMode[] = [];
@@ -115,7 +121,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     let comparisonDeclared = false;
     let standaloneEsriVisible = false;
     const scenarioAdapters = plugins.createScenarioSelectionAdapters({ setNetworkKpiScenario: plugins.setNetworkKpiScenario,
-      setVehiclePlaybackScenario: plugins.setVehiclePlaybackScenario, setScenarioComparisonSettings: plugins.setScenarioComparisonSettings });
+      setVehiclePlaybackScenario: plugins.setVehiclePlaybackScenario, setScenarioComparisonSettings: async ({ scenarioA, scenarioB }) => plugins.selectScenarioComparisonPair(scenarioA, scenarioB) });
     const seenLocalPackageRequests = new Set<string>();
     let readyTimer: ReturnType<typeof setInterval> | undefined;
     let mapControlsTimer: ReturnType<typeof setInterval> | undefined;
@@ -124,14 +130,14 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       open: async (_bootstrap, context) => {
         bridgePluginId = context.pluginId as TestudoSelectablePluginId | null;
         const isCurrent = (tviewId: string, expectedGeneration: number) => tviewId === "main" && featureBridge.sessions.isCurrent({ tviewId, generation: expectedGeneration });
-        const vehiclePlayback = plugins.createVehiclePlaybackAdapter({ getStatus: plugins.getVehiclePlaybackStatus, getSettings: plugins.getVehiclePlaybackSnapshot,
+        const vehiclePlayback = plugins.createVehiclePlaybackAdapter({ getStatus: () => { const status = plugins.getVehiclePlaybackStatus(); return { ...status, available: status.scenarios.length > 0, initialTimeSeconds: status.timeline?.initialTimeSeconds ?? null, simulationDurationSeconds: status.timeline?.durationSeconds ?? null }; }, getSettings: plugins.getVehiclePlaybackSnapshot,
           setTick: plugins.setVehiclePlaybackTick, setSettings: plugins.setVehiclePlaybackSettings, setScenario: plugins.setVehiclePlaybackScenario,
-          subscribe: plugins.subscribeVehiclePlaybackStatus }, isCurrent, context);
-        const kpiPlayback = plugins.createNetworkKpiPlaybackAdapter({ getStatus: () => { const status = plugins.getNetworkKpiStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds }; }, getSettings: plugins.getNetworkKpiSnapshot,
+          subscribe: listener => plugins.subscribeToPlaybackSources([plugins.subscribeVehiclePlayback, plugins.subscribeVehiclePlaybackStatus], listener) }, isCurrent, context);
+        const kpiPlayback = plugins.createNetworkKpiPlaybackAdapter({ getStatus: () => { const status = plugins.getNetworkKpiStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds, sampleTimes: intervalSampleTimes(status.intervals, status.timeline), simulationDurationSeconds: status.timeline?.durationSeconds ?? null }; }, getSettings: plugins.getNetworkKpiSnapshot,
           setSettings: plugins.setNetworkKpiSettings, stepNetworkKpiInterval: plugins.stepNetworkKpiInterval, setScenario: plugins.setNetworkKpiScenario,
           subscribe: plugins.subscribeNetworkKpiStatus }, isCurrent, context);
         const emissionsPlayback = plugins.createNetworkKpiPlaybackAdapter({
-          getStatus: () => { const status = plugins.getEmissionsH3Status(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds }; },
+          getStatus: () => { const status = plugins.getEmissionsH3Status(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds, sampleTimes: intervalSampleTimes(status.intervals, status.timeline), simulationDurationSeconds: status.timeline?.durationSeconds ?? null }; },
           getSettings: () => { const settings = plugins.getEmissionsH3Snapshot(); return { interval: settings.interval, intervalPlaying: settings.intervalPlaying, playbackSpeed: settings.playbackSpeed, loop: settings.loop }; },
           setSettings: plugins.setEmissionsH3Settings, stepNetworkKpiInterval: plugins.stepEmissionsH3Interval,
           setScenario: plugins.setEmissionsH3Scenario, subscribe: plugins.subscribeEmissionsH3Status,
@@ -142,7 +148,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           setSettings: plugins.setPathAnalysisSettings, stepNetworkKpiInterval: plugins.stepPathAnalysisInterval,
           subscribe: plugins.subscribePathAnalysis,
         }, isCurrent, context);
-        const comparisonPlayback = plugins.createScenarioComparisonPlaybackAdapter({ getStatus: () => { const status = plugins.getScenarioComparisonStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, matchedIntervals: status.matchedIntervals, dt: status.timelineA?.intervalDurationSeconds }; }, getSettings: plugins.getScenarioComparisonSnapshot,
+        const comparisonPlayback = plugins.createScenarioComparisonPlaybackAdapter({ getStatus: () => { const status = plugins.getScenarioComparisonStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, matchedIntervals: status.matchedIntervals, dt: status.timelineA?.intervalDurationSeconds, simulationDurationSeconds: status.timelineA?.durationSeconds ?? status.timelineB?.durationSeconds ?? null }; }, getSettings: plugins.getScenarioComparisonSnapshot,
           setSettings: plugins.setScenarioComparisonSettings, stepScenarioComparisonInterval: plugins.stepScenarioComparisonInterval,
           subscribe: plugins.subscribeScenarioComparisonStatus }, isCurrent, context);
         const playback: NonNullable<TestudoFeatureSession["playback"]> = {
@@ -164,33 +170,46 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           return bridgePluginId === "vehicle-playback" ? vehiclePlayback : bridgePluginId === "scenario-comparison" ? comparisonPlayback
             : bridgePluginId === "emissions-h3" ? emissionsPlayback : bridgePluginId === "path-analysis" ? pathPlayback : kpiPlayback;
         }
-        const scenarios = () => {
-          if (bridgePluginId === "vehicle-playback") return plugins.getVehiclePlaybackStatus().scenarios.flatMap(row => row.scid === undefined || row.scid === null ? [] : [{ id: String(row.scid), label: String(row.label ?? row.scid) }]);
-          if (bridgePluginId === "scenario-comparison") return plugins.getScenarioComparisonStatus().scenarios.flatMap(row => row.scid === undefined || row.scid === null ? [] : [{ id: String(row.scid), label: String(row.label ?? row.scid) }]);
-          if (bridgePluginId === "emissions-h3") return plugins.getEmissionsH3Status().scenarios.map(row => ({ id: String(row.id), label: row.label }));
-          if (bridgePluginId === "path-analysis") return declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` }));
-          return plugins.getNetworkKpiStatus().scenarios.flatMap(row => row.scid === undefined || row.scid === null ? [] : [{ id: String(row.scid), label: String(row.label ?? row.scid) }]);
-        };
+        const scenarios = () => scenarioRosterForPlugin(bridgePluginId);
         const capabilities = (packageBootstrap.capabilities ?? []).filter(item => ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"].includes(item.id));
         const session: TestudoFeatureSession = {
           context, capabilities, availableModes: current.availableModes as TestudoFeatureSession["availableModes"], selectedMode: current.selectedMode as TestudoFeatureSession["selectedMode"],
           scenarios: scenarios(), playback,
-          selectPlugin: async id => { bridgePluginId = id as TestudoSelectablePluginId; return id; },
+          selectPlugin: async id => { bridgePluginId = id as TestudoSelectablePluginId; syncScenarioRoster(bridgePluginId); return id; },
           applyPreset: id => id,
           selectScenario: async id => {
-            const index = scenarios().findIndex(row => row.id === id);
-            if (index < 0) throw new Error(`Scenario ${id} is unavailable for ${bridgePluginId}.`);
-            if (bridgePluginId === "vehicle-playback") await scenarioAdapters.vehiclePlayback(index);
-            else if (bridgePluginId === "scenario-comparison") {
+            const row = scenarios().find(item => item.id === id);
+            if (!row) throw new Error(`Scenario ${id} is unavailable for ${bridgePluginId}.`);
+            if (bridgePluginId === "vehicle-playback") {
+              const variantIndex = plugins.vehiclePlaybackVariantIndex(plugins.getVehiclePlaybackStatus().scenarios, id);
+              if (variantIndex < 0) throw new Error(`Scenario ${id} has no animation variant.`);
+              await scenarioAdapters.vehiclePlayback(variantIndex);
+            } else if (bridgePluginId === "scenario-comparison") {
+              const comparisonScenarios = plugins.getScenarioComparisonStatus().scenarios;
+              const scenarioIndex = comparisonScenarios.findIndex(item => String(item.scid) === String(row.scenarioId ?? row.id));
+              if (scenarioIndex < 0) throw new Error(`Scenario ${id} is unavailable for comparison.`);
               const prior = plugins.getScenarioComparisonSnapshot();
-              scenarioAdapters.comparison(index, prior.scenarioB);
-            } else if (bridgePluginId === "emissions-h3") await plugins.setEmissionsH3Scenario(index);
-            else if (bridgePluginId === "path-analysis") await plugins.setPathAnalysisScenario(id);
-            else await scenarioAdapters.networkKpi(index);
+              await scenarioAdapters.comparison(scenarioIndex, prior.scenarioB);
+              const comparisonStatus = plugins.getScenarioComparisonStatus();
+              if (comparisonStatus.error) throw new Error(comparisonStatus.error);
+            } else if (bridgePluginId === "emissions-h3") {
+              const scenarioIndex = plugins.getEmissionsH3Status().scenarios.findIndex(item => item.id === id);
+              if (scenarioIndex < 0) throw new Error(`Scenario ${id} is unavailable for emissions.`);
+              await plugins.setEmissionsH3Scenario(scenarioIndex);
+            } else if (bridgePluginId === "path-analysis") await plugins.setPathAnalysisScenario(id);
+            else {
+              const scenarioIndex = plugins.getNetworkKpiStatus().scenarios.findIndex(item => String(item.scid) === String(row.scenarioId ?? row.id));
+              if (scenarioIndex < 0) throw new Error(`Scenario ${id} is unavailable for network KPI.`);
+              await scenarioAdapters.networkKpi(scenarioIndex);
+            }
+            syncScenarioRoster(bridgePluginId);
             return id;
           },
           setViewMode: mode => mode,
-          setKpiGeometry: (geometry, visible) => persistentNetwork.setVisible(geometry, visible),
+          setKpiGeometry: (geometry, visible) => {
+            if (useAppStore.getState().primaryRenderer === "cesium") throw new Error("Network geometry controls require the MapLibre renderer.");
+            return persistentNetwork.setVisible(geometry, visible);
+          },
           getKpiGeometryState: () => persistentNetwork.getVisibility(),
           setMapControl: (controlId, visible) => {
             if (controlId === "legend") {
@@ -313,7 +332,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     const unsubscribePlayback = featureBridge.subscribePlayback((tviewId, playback) => {
       const session = featureBridge.sessions.get(tviewId);
       if (session && featureBridge.sessions.isCurrent({ tviewId, generation: session.context.generation })) {
-        emit("testudoPlaybackChanged", { ...playback, tviewId });
+        bridgePluginId = session.context.pluginId as TestudoSelectablePluginId | null;
+        syncScenarioRoster(bridgePluginId);
+        emit("testudoPlaybackChanged", { ...playback, tviewId, generation: session.context.generation });
       }
     });
     const relayReplies = new Map<string, (reply: plugins.TestudoGeoAIReply & { requestId: string; tviewId: string; generation: number }) => void>();
@@ -443,6 +464,31 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     const closeAllPlugins = () => { for (const id of ids) handlers[id].close(); };
     const syncAssistantOpen = () => update({ assistantOpen: plugins.isGeoAiChatPanelVisible() });
     const unsubscribeAssistantPanel = plugins.subscribeGeoAiChatPanel(syncAssistantOpen);
+    const scenarioRosterForPlugin = (pluginId: TestudoSelectablePluginId | null): NonNullable<TestudoFeatureSession["scenarios"]> => {
+      const uniqueByScenario = (rows: Array<{ scid?: string | number; label?: string; did?: string | number; id?: string }>) => [...new Map(rows.flatMap(row => row.scid === undefined || row.scid === null ? [] : [[String(row.scid), { id: String(row.scid), label: String(row.label ?? row.scid), scenarioId: row.scid, ...(Number.isSafeInteger(Number(row.did)) ? { did: Number(row.did) } : {}) }] as const])).values()];
+      if (pluginId === "vehicle-playback") { const loaded = plugins.getVehiclePlaybackStatus().scenarios; return declaredVariantScenarioRoster.length ? declaredVariantScenarioRoster : plugins.vehiclePlaybackScenarioRoster(loaded); }
+      if (pluginId === "scenario-comparison") { const rows = plugins.getScenarioComparisonStatus().scenarios; return rows.length ? uniqueByScenario(rows.map(row => ({ scid: row.scid, label: row.label }))) : declaredScenarioRoster; }
+      if (pluginId === "emissions-h3") { const rows = plugins.getEmissionsH3Status().scenarios; return rows.length ? rows.map(row => ({ id: String(row.id), label: row.label, ...(row.scid !== undefined ? { scenarioId: row.scid } : {}) })) : declaredScenarioRoster; }
+      if (pluginId === "path-analysis") return declaredScenarioRoster;
+      if (pluginId === "network-kpi") { const rows = plugins.getNetworkKpiStatus().scenarios; return rows.length ? uniqueByScenario(rows.map(row => ({ scid: row.scid, label: row.label, did: plugins.getNetworkKpiSnapshot().did ?? undefined }))) : declaredScenarioRoster; }
+      return declaredScenarioRoster;
+    };
+    const selectedScenarioForPlugin = (pluginId: TestudoSelectablePluginId | null, roster = scenarioRosterForPlugin(pluginId)): string | undefined => {
+      if (pluginId === "vehicle-playback") { const row = plugins.getVehiclePlaybackStatus().scenarios[plugins.getVehiclePlaybackStatus().scenarioIndex]; return row ? plugins.vehiclePlaybackVariantSelectionId(row) : roster[0]?.id; }
+      if (pluginId === "scenario-comparison") { const index = plugins.getScenarioComparisonSnapshot().scenarioA; const row = plugins.getScenarioComparisonStatus().scenarios[index]; return row?.scid === undefined ? roster[0]?.id : String(row.scid); }
+      if (pluginId === "network-kpi") { const status = plugins.getNetworkKpiStatus(); const row = status.scenarios[status.scenarioIndex]; return row?.scid === undefined ? roster[0]?.id : String(row.scid); }
+      if (pluginId === "emissions-h3") { const status = plugins.getEmissionsH3Status(); return status.scenarios.find(row => row.index === status.scenarioIndex)?.id ?? roster[0]?.id; }
+      return roster[0]?.id;
+    };
+    const syncScenarioRoster = (pluginId: TestudoSelectablePluginId | null) => {
+      const roster = scenarioRosterForPlugin(pluginId); const selectedScenarioId = selectedScenarioForPlugin(pluginId, roster);
+      const shellRoster = roster.map(({ id, label }) => ({ id, label }));
+      const session = featureBridge.sessions.get("main");
+      const sessionMatches = Boolean(session && session.selectedScenarioId === selectedScenarioId && plugins.scenarioRosterMatches(session.scenarios ?? [], roster));
+      if (session && !sessionMatches) { session.scenarios = roster; session.selectedScenarioId = selectedScenarioId; }
+      if (current.selectedScenarioId === selectedScenarioId && plugins.scenarioRosterMatches(current.scenarios ?? [], shellRoster)) return current;
+      return update({ scenarios: shellRoster, selectedScenarioId });
+    };
     const select = async (id: TestudoSelectablePluginId) => {
       if (!selectableIds.includes(id)) throw new Error("Unknown map plugin");
       const capability = current.capabilities.find(item => item.id === id);
@@ -451,6 +497,8 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (!directory) throw new Error("Select a package first.");
       const version = generation;
       const selection = ++selectionGeneration;
+      const leavingPaths = current.selectedMode === "paths" && id !== "path-analysis";
+      if (leavingPaths) persistentNetwork.setPathsMode(false, featureBridge.sessions.get("main")?.context.generation ?? generation);
       // Map-mode changes replace map plugins without closing the independent GeoAI panel.
       closeMapPlugins();
       update({ selectedPlugin: id, selectedMode: undefined, status: "loading", error: undefined });
@@ -505,6 +553,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       }
       bridgePluginId = id;
       if (bridgeInstalled) await featureBridge.selectPlugin("main", id);
+      syncScenarioRoster(id);
       return update({ status: "ready" });
     };
     const applyScenarioAnalysisAction = async (event: Event) => {
@@ -518,6 +567,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         await select("network-kpi");
         const selected = await plugins.selectNetworkKpiScenarioId(detail.scenario_id as string | number);
         if (!selected) return;
+        syncScenarioRoster(bridgePluginId);
         if (typeof detail.section_id === "string" || (typeof detail.section_id === "number" && Number.isSafeInteger(detail.section_id))) {
           plugins.highlightNetworkKpiSection(detail.section_id as string | number);
         }
@@ -583,11 +633,15 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         ...(pairB >= 0 ? { scenarioB: String(pair[pairB]?.scid ?? pairB) } : {}),
         ...(mode === "comparison" ? { showDifference: comparisonSettings?.mode === "diff" } : {}),
       } : current.style;
+      const activeSessionGeneration = featureBridge.sessions.get("main")?.context.generation ?? generation;
+      if (mode === "paths") persistentNetwork.setPathsMode(true, activeSessionGeneration);
+      else if (current.selectedMode === "paths") persistentNetwork.setPathsMode(false, activeSessionGeneration);
       const updated = update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
+      syncScenarioRoster(target.plugin);
       if (bridgeInstalled) await featureBridge.setViewMode("main", mode);
       if (bridgeInstalled) {
         const session = featureBridge.sessions.get("main");
-        if (session) emit("testudoPlaybackChanged", { ...featureBridge.getPlaybackState("main", session.context.generation), tviewId: "main" });
+        if (session) emit("testudoPlaybackChanged", { ...featureBridge.getPlaybackState("main", session.context.generation), tviewId: "main", generation: session.context.generation });
       }
       return updated;
     };
@@ -648,7 +702,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       comparisonDeclared = false;
       preferredMode = undefined;
       declaredAvailableModes = [];
-      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; environmentScenarioPairs = [];
+      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; declaredScenarioRoster = []; declaredVariantScenarioRoster = []; environmentScenarioPairs = [];
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
       plugins.resetGeoAiBuildings();
@@ -709,7 +763,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       const pkg = getGeolibrePackage(raw);
       environmentScenarioPairs = pkg?.viewModes.environment?.scenarioDidPair ?? [];
       const packageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
-      declaredScenarioIds = packageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined);
+      declaredScenarioIds = [...new Set(packageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined))];
+      declaredVariantScenarioRoster = plugins.vehiclePlaybackScenarioRoster(packageScenarios);
+      declaredScenarioRoster = plugins.testudoScenarioCatalog(pkg?.scenarios ?? []);
       let hasMatchedComparison = false;
       if (pkg?.viewModes.comparison && pkg.scenarios.length > 1) {
         handlers["scenario-comparison"].open(app);
@@ -742,19 +798,22 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
       });
       declaredAvailableModes = [...availableModes];
+      const initialMode = availableModes.includes("animation") ? "animation" : availableModes[0];
+      const initialPlugin = payload.selectedPlugin ?? (initialMode ? (modes.find(item => item.id === initialMode)?.plugin ?? pluginForTestudoMode(initialMode)) : undefined);
+      const initialScenarioRoster = scenarioRosterForPlugin(initialPlugin ?? null);
+      const initialScenarioId = selectedScenarioForPlugin(initialPlugin ?? null, initialScenarioRoster);
       const matchedReason = "Scenario comparison is unavailable: this package has no matched simulation intervals.";
       comparisonDeclared = hasMatchedComparison;
-      update({ availableModes, viewModes: pkg?.viewModes, timeAxis: pkg?.timeAxis ?? undefined, scenarios: declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` })), selectedScenarioId: declaredScenarioIds.length ? String(declaredScenarioIds[0]) : undefined,
+      update({ availableModes, viewModes: pkg?.viewModes, timeAxis: pkg?.timeAxis ?? undefined, scenarios: initialScenarioRoster.map(({ id, label }) => ({ id, label })), selectedScenarioId: initialScenarioId,
         capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: hasMatchedComparison, reason: hasMatchedComparison ? undefined : matchedReason }
           : item.id === "emissions-h3" && pkg?.viewModes.environment ? { ...item, available: hasUsableEmissions, reason: hasUsableEmissions ? undefined : "No declared scenario has usable emissions rows." } : item) });
       const installedSession = featureBridge.sessions.get("main");
       if (installedSession) {
         installedSession.capabilities = current.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
         installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
-        installedSession.scenarios = declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` }));
+        installedSession.scenarios = initialScenarioRoster;
+        installedSession.selectedScenarioId = initialScenarioId;
       }
-      const initialMode = availableModes.includes("animation") ? "animation" : availableModes[0];
-      const initialPlugin = payload.selectedPlugin ?? (initialMode ? (modes.find(item => item.id === initialMode)?.plugin ?? pluginForTestudoMode(initialMode)) : undefined);
       if (!initialPlugin) throw new Error("This package has no supported viewer data");
       const modeForPlugin: Partial<Record<TestudoSelectablePluginId, TestudoDemoMode>> = { "vehicle-playback": "animation", "network-kpi": "results", "scenario-comparison": "comparison", "emissions-h3": "environment", "path-analysis": "paths", "geoai-buildings": "environment" };
       const requestedMode = payload.selectedPlugin ? modeForPlugin[payload.selectedPlugin] : initialMode;
@@ -772,10 +831,12 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         // Validate before discarding the previous selection; cancellation never enters this function.
         const raw = await readLocalNetworkKpiManifestJson(selected);
         const pkg = getGeolibrePackage(raw);
-        declaredScenarioIds = listVehicleManifestScenarios(raw, { includeAnimationVariants: true })
-          .map(item => item.scid).filter((id): id is string | number => id !== undefined);
         if (!pkg) throw new Error("Choose a built Testudo package containing manifest.json and geolibre/package.json. Raw models must be built first.");
         reset(); directory = selected; environmentScenarioPairs = pkg.viewModes.environment?.scenarioDidPair ?? [];
+        const localPackageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
+        declaredScenarioIds = [...new Set(localPackageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined))];
+        declaredVariantScenarioRoster = plugins.vehiclePlaybackScenarioRoster(localPackageScenarios);
+        declaredScenarioRoster = plugins.testudoScenarioCatalog(pkg.scenarios);
         // Local folder loads have no Testudo session (no origin or chat credential), so GeoAI
         // cannot reach the Testudo chat routes here — the alias intentionally never matches a
         // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
@@ -804,7 +865,12 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           paths: capabilities.some(item => item.id === "path-analysis" && item.available) && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
         });
         declaredAvailableModes = [...availableModes];
-        update({ package: { packageId: crypto.randomUUID(), versionId: null, label: selected.name, origin: "local" }, capabilities, availableModes, viewModes: pkg.viewModes, timeAxis: pkg.timeAxis ?? undefined, scenarios: declaredScenarioIds.map(id => ({ id: String(id), label: `Scenario ${id}` })), selectedScenarioId: declaredScenarioIds.length ? String(declaredScenarioIds[0]) : undefined, status: "loading" });
+        const initial = availableModes[0];
+        if (!initial) throw new Error("This folder declares no supported viewer datasets");
+        const initialPlugin = pluginForTestudoMode(initial);
+        const initialScenarioRoster = scenarioRosterForPlugin(initialPlugin);
+        const initialScenarioId = selectedScenarioForPlugin(initialPlugin, initialScenarioRoster);
+        update({ package: { packageId: crypto.randomUUID(), versionId: null, label: selected.name, origin: "local" }, capabilities, availableModes, viewModes: pkg.viewModes, timeAxis: pkg.timeAxis ?? undefined, scenarios: initialScenarioRoster.map(({ id, label }) => ({ id, label })), selectedScenarioId: initialScenarioId, status: "loading" });
         const localBootstrap = { packageId: current.package!.packageId, versionId: "local", label: selected.name,
           origin: "published" as const, manifestPath: "manifest.json", nativeManifestPath: "geolibre/package.json",
           artifactEndpoint: "", capabilities: capabilities.filter(item => featureCapabilityIds.includes(item.id)), presets: [] };
@@ -843,11 +909,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         if (installedSession) {
           installedSession.capabilities = current.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
           installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
-          installedSession.scenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true })
-            .flatMap(item => item.scid === undefined ? [] : [{ id: String(item.scid), label: String(item.label ?? item.scid) }]);
+          installedSession.scenarios = initialScenarioRoster;
+          installedSession.selectedScenarioId = initialScenarioId;
         }
-        const initial = availableModes[0];
-        if (!initial) throw new Error("This folder declares no supported viewer datasets");
         await selectMode(initial);
       } catch (error) { update({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
       finally { busy = false; }
@@ -959,7 +1023,10 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             const generationExpected = request.payload?.generation;
             if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Scenario command targets an unsupported TView.");
             if (generationExpected !== undefined && generationExpected !== generation) throw new Error("Scenario command belongs to a stale package generation.");
-            const scenarioId = await featureBridge.selectScenario("main", String(request.payload?.scenarioId), generationExpected as number | undefined);
+            const selectionId = await featureBridge.selectScenario("main", String(request.payload?.scenarioId), generationExpected as number | undefined);
+            syncScenarioRoster(bridgePluginId);
+            const selectedScenario = featureBridge.sessions.get("main")?.scenarios?.find(row => row.id === selectionId);
+            const scenarioId = String(selectedScenario?.scenarioId ?? selectionId);
             if (current.viewModes?.environment) {
               const emissionsStatus = plugins.getEmissionsH3Status();
               const emissionsIndex = emissionsStatus.scenarios.findIndex(row => String(row.id) === scenarioId);
@@ -972,10 +1039,10 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
               const activeSession = featureBridge.sessions.get("main");
               if (activeSession) { activeSession.availableModes = availableModes; activeSession.capabilities = capabilities.filter(item => featureCapabilityIds.includes(item.id)) as TestudoFeatureSession["capabilities"]; }
               const selectedMode = current.selectedMode;
-              update({ selectedScenarioId: scenarioId, availableModes, capabilities });
+              update({ selectedScenarioId: selectionId, availableModes, capabilities });
               if (scenarioModeState.selectedMode && scenarioModeState.selectedMode !== selectedMode) await selectMode(scenarioModeState.selectedMode, false);
-            } else update({ selectedScenarioId: scenarioId });
-            return { scenarioId };
+            } else update({ selectedScenarioId: selectionId });
+            return { scenarioId: selectionId, modelScenarioId: selectedScenario?.scenarioId };
           }
           if (request.type === "testudoSetStyle") {
             if (request.payload?.tviewId !== "main" || request.payload?.generation !== generation) throw new Error("Style command belongs to a stale package generation.");
@@ -1009,8 +1076,10 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             const scenarioA = Number(request.payload?.scenarioA); const scenarioB = Number(request.payload?.scenarioB);
             const scenarioCount = plugins.getScenarioComparisonStatus().scenarios.length;
             if (!Number.isSafeInteger(scenarioA) || scenarioA < 0 || scenarioA >= scenarioCount || !Number.isSafeInteger(scenarioB) || scenarioB < 0 || scenarioB >= scenarioCount) throw new Error("Comparison scenario indexes are invalid.");
-            scenarioAdapters.comparison(scenarioA, scenarioB);
-            const scenarios = plugins.getScenarioComparisonStatus().scenarios;
+            await scenarioAdapters.comparison(scenarioA, scenarioB);
+            const comparisonStatus = plugins.getScenarioComparisonStatus();
+            if (comparisonStatus.error) throw new Error(comparisonStatus.error);
+            const scenarios = comparisonStatus.scenarios;
             const style = current.style ?? { display: "ramp" as const, metric: "flow_delta", interval: 0, maxHeightM: 100 };
             const echoedStyle = comparisonStyleState({ ...style, scenarioA, scenarioB }, scenarios, style.showDifference ?? true);
             update({ style: echoedStyle });
@@ -1089,7 +1158,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
                 if (settled) return;
                 settled = true;
                 reject(new Error("The requested map action did not receive a response."));
-              }, 5000);
+              }, 15_000);
               const respond = (result: import("../../lib/testudo-protocol").TestudoNativeActionResult) => {
                 if (settled) return;
                 settled = true;

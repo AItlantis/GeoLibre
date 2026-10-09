@@ -92,7 +92,7 @@ export interface TestudoTViewInfo { tviewId: string; generation: number; loaded:
 export interface TestudoActiveTView { tviewId: string | null }
 export interface TestudoScopedPayload { tviewId: string; generation?: number }
 export interface TestudoCameraView { center: [number, number]; zoom: number; bearing?: number; pitch?: number }
-export interface TestudoPlaybackState { available: boolean; loading: boolean; playing: boolean; tick: number; maxTick: number; speed: number; dt: number; loop: boolean }
+export interface TestudoPlaybackState { available: boolean; loading: boolean; playing: boolean; tick: number; maxTick: number; speed: number; dt: number; loop: boolean; canPlay: boolean; timeline: { currentTimeSeconds: number | null; sampledStartSeconds: number | null; sampledEndSeconds: number | null; simulationDurationSeconds: number | null; isAggregate: boolean } }
 export interface TestudoGeoAIRequest {
   requestId: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;

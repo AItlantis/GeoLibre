@@ -54,7 +54,7 @@ export interface AddDataOptions {
 export type EmbedEventMap = {
   ready: { version: string; challenge?: string };
   testudoStateChanged: TestudoViewerState;
-  testudoPlaybackChanged: TestudoPlaybackState & { tviewId: string };
+  testudoPlaybackChanged: TestudoPlaybackState & { tviewId: string; generation: number };
   testudoMapControlStateChanged: TestudoMapControlState & { tviewId: string; generation: number };
   testudoArtifactRequest: TestudoArtifactRequest & { challenge: string };
   testudoGeoAIRequest: TestudoGeoAIRequest;

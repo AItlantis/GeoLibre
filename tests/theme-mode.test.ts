@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { getInitialThemeMode } from "../apps/geolibre-desktop/src/hooks/useThemeMode";
+import { getInitialThemeMode, hostedThemeFromMessage } from "../apps/geolibre-desktop/src/hooks/useThemeMode";
 
 const originalWindow = (globalThis as { window?: unknown }).window;
 
@@ -59,5 +59,17 @@ describe("getInitialThemeMode", () => {
   it("returns light when window is undefined (SSR)", () => {
     delete (globalThis as { window?: unknown }).window;
     assert.equal(getInitialThemeMode(), "light");
+  });
+});
+
+
+describe("hosted Testudo theme messages", () => {
+  it("accepts theme updates only from the embedding parent and expected origin", () => {
+    const parent = {} as MessageEventSource;
+    const message = { source: parent, origin: "https://testudo.local", data: { source: "testudo", type: "testudoThemeChanged", theme: "dark" } };
+    assert.equal(hostedThemeFromMessage(message, parent, "https://testudo.local"), "dark");
+    assert.equal(hostedThemeFromMessage({ ...message, source: {} as MessageEventSource }, parent, "https://testudo.local"), null);
+    assert.equal(hostedThemeFromMessage({ ...message, origin: "https://other.local" }, parent, "https://testudo.local"), null);
+    assert.equal(hostedThemeFromMessage({ ...message, data: { ...message.data, theme: "neon" } }, parent, "https://testudo.local"), null);
   });
 });

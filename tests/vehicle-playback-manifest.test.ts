@@ -72,6 +72,29 @@ test("vehicle playback exposes package animation variants and loads each declare
   assert.notEqual(parsed.chunks[0]?.url, "chunks/shared.json");
 });
 
+test("animation variants with a shared SCID keep unique identity and use their selected root metadata", async () => {
+  const raw = attachGeolibrePackage({
+    metadata: { dt: 9, n_ticks: 99, bounds: { min_lon: 0, min_lat: 0, max_lon: 9, max_lat: 9 } },
+    animations: [
+      { name: "AM", path: "chunks/am/animation.json", scid: 7, metadata: { dt: 0.5, n_ticks: 11, bounds: { min_lon: 1, min_lat: 2, max_lon: 3, max_lat: 4 } } },
+      { name: "PM", path: "chunks/pm/animation.json", scid: 7, metadata: { dt: 2, n_ticks: 4, bounds: { min_lon: 5, min_lat: 6, max_lon: 7, max_lat: 8 } } },
+    ],
+  }, { scenarios: [{ name: "Scenario", scid: 7, replications: [{ did: 70 }], animations: [
+    { name: "AM", manifestPath: "chunks/am/animation.json", scid: 7, did: 70 },
+    { name: "PM", manifestPath: "chunks/pm/animation.json", scid: 7, did: 70 },
+  ] }] });
+  const variants = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
+  assert.equal(variants[0]?.scid, variants[1]?.scid);
+  assert.equal(variants[0]?.did, variants[1]?.did);
+  assert.notEqual(variants[0]?.variantId, variants[1]?.variantId);
+  const pm = variants[1]!;
+  const parsed = parseVehicleManifest(raw, null, pm.rootAnimationIndex ?? pm.index, { chunks: [{ index: 0, path: "chunks/pm/0.json", start_tick: 0, end_tick: 8 }] });
+  assert.equal(parsed.dt, 2);
+  assert.equal(parsed.maxTick, 3);
+  assert.deepEqual(parsed.bounds, [5, 6, 7, 8]);
+  assert.equal(parsed.chunks[0]?.url, "chunks/pm/0.json");
+});
+
 test("vehicle playback keeps named root manifests usable when package metadata has no animation list", () => {
   const raw = attachGeolibrePackage({
     animations: [{ name: "AM_FZP", path: "chunks/AM_FZP/animation.json", scid: 42 }],

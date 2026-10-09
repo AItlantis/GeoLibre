@@ -7,7 +7,7 @@ import { DuckDBDataProtocol } from "@duckdb/duckdb-wasm";
 import type { NetworkKpiPackageSource } from "./network-kpi-data";
 import { deriveSimulationTimeline, readSimulationTimeline as readProviderSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
 import { laneKey, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample } from "./network-kpi-data";
-import { catalogDid, pickDefaultDid, type CatalogEntry } from "./parquet-catalog";
+import { catalogDid, pickDefaultDid, planNetworkKpiCatalog, type CatalogEntry } from "./parquet-catalog";
 import { openTestudoDatasetProvider, setTestudoDatasetSessionKey, type TestudoDatasetProvider } from "./testudo-dataset-provider";
 import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
 import { TestudoGenerationResourceCache } from "../shared/testudo-generation-resources";
@@ -102,7 +102,7 @@ export class ParquetResultsDatabase {
   private entries(did: number | null): CatalogEntry[] {
     // The partition is used only to locate the relevant file. The query below
     // still filters on the writer-provided `did` column explicitly.
-    return this.catalog.filter((e) => catalogDid(e) === did && (e.table === "MISECT" || e.table === "MILANE") && typeof e.path === "string");
+    return this.catalog.filter((e) => catalogDid(e) === did && ["MISECT", "MILANE"].includes(String(e.table ?? "").toUpperCase()) && typeof e.path === "string");
   }
   async readSimulationTimeline(did: number | null = null): Promise<SimulationTimeline | null> {
     if (this.closed) throw new Error("The results database is closed.");
@@ -121,8 +121,7 @@ export class ParquetResultsDatabase {
         return deriveSimulationTimeline({ initialTimeSeconds: number("from_time", "initial_time"), durationSeconds: number("duration", "simulation_duration"), intervalCount: number("simstatintervals", "totalstatintervals"), source: "SIM_INFO" });
       } finally { await con.close(); }
     } catch (error) {
-      this.parquetDisabled = true;
-      console.warn("[GeoLibre] network-kpi: Parquet is unavailable; using the SQLite compatibility fallback.", error);
+      console.warn("[GeoLibre] network-kpi: SIM_INFO Parquet timing unavailable; trying SQLite compatibility fallback.", error);
       return this.readFallbackTimeline(did);
     }
   }
@@ -137,27 +136,32 @@ export class ParquetResultsDatabase {
     const all = this.catalog;
     const dids = [...new Set(all.map(catalogDid).filter(Number.isFinite))].sort((a,b)=>a-b);
     const did = options.did ?? pickDefaultDid(all);
-    const entries = this.entries(did);
+    const catalogPlan = planNetworkKpiCatalog(this.catalog, did);
+    if (catalogPlan.outcome === "missing-misect") throw new Error("Network KPI results catalog has no MISECT partition for did " + String(did) + ".");
+    if (catalogPlan.outcome === "invalid-misect-path") throw new Error("Network KPI MISECT partition for did " + String(did) + " has no Parquet file path.");
+    if (catalogPlan.outcome === "invalid-milane-path") throw new Error("Network KPI MILANE partition for did " + String(did) + " has no Parquet file path.");
+    const entries = [...catalogPlan.misect, ...catalogPlan.milane];
     // Query the files through the handles registered above. Using the original
     // HTTP URLs here bypasses DuckDB-WASM's registered-file protocol and causes
     // `read_parquet` to fail with a misleading "function signature mismatch"
     // in the browser, even though the catalog and Parquet bytes are valid.
     const byTable = new Map<string, string[]>();
     for (const e of entries) {
-      const table = e.table ?? "MISECT";
+      const table = String(e.table ?? "MISECT").toUpperCase();
       byTable.set(table, [...(byTable.get(table) ?? []), await this.register(e)]);
     }
     const db = this.db; const con = await db.connect(); const runQuery = async (label: string, sql: string) => { try { return rows(await con.query(sql)); } catch (error) { throw new Error(`Network KPI ${label} query failed: ${error instanceof Error ? error.message : String(error)}`); } };
     try {
       const subquery = (table: string) => {
         const files = byTable.get(table) ?? [];
+        if (!files.length) return "";
         return files.length === 1
           ? `read_parquet(${q(files[0])})`
           : `read_parquet([${files.map(q).join(",")}])`;
       };
       const misect = subquery("MISECT");
       const milane = subquery("MILANE");
-      if (!misect) return { sections: new Map(), lanes: new Map(), intervals: [], sids: [], did, sid: options.sid ?? 0, interval: options.interval ?? 0, dids };
+      if (!misect) throw new Error("Network KPI results catalog has no MISECT Parquet table for did " + String(did) + ".");
       const didSql = did === null ? "NULL" : String(did);
       const meta = await runQuery("metadata", `SELECT did, sid, ent FROM ${misect} x WHERE did = ${didSql} LIMIT 2000000`);
       const sids = [...new Set(meta.map(r=>Number(r.sid)).filter(Number.isFinite))].sort((a,b)=>a-b);
@@ -179,20 +183,20 @@ export class ParquetResultsDatabase {
           ? `SELECT oid, AVG(flow) flow, AVG(speed) speed, AVG(density) density, AVG(dtime) dtime FROM ${misect} x WHERE ${baseWhere} AND ent <> 0 GROUP BY oid`
           : `SELECT oid, flow, speed, density, dtime FROM ${misect} x WHERE ${baseWhere} AND ent = ${resultInterval}`
       ));
-      if (!milane) console.warn("[GeoLibre][network-kpi] MILANE partition unavailable; continuing with sections only");
-      const laneRows = rows(await con.query(
-        synthesize
+      let laneRows: Row[] = [];
+      if (milane) {
+        const laneSql = synthesize
           ? `SELECT oid, lane, AVG(flow) flow, AVG(speed) speed, AVG(density) density, AVG(dtime) dtime FROM ${milane} x WHERE ${baseWhere} AND ent <> 0 GROUP BY oid,lane`
-          : `SELECT oid, lane, flow, speed, density, dtime FROM ${milane} x WHERE ${baseWhere} AND ent = ${resultInterval}`
-      ));
+          : `SELECT oid, lane, flow, speed, density, dtime FROM ${milane} x WHERE ${baseWhere} AND ent = ${resultInterval}`;
+        try { laneRows = rows(await con.query(laneSql)); }
+        catch (error) { throw new Error("Network KPI MILANE Parquet query failed: " + (error instanceof Error ? error.message : String(error))); }
+      }
       const value = (r: Row, k: string) => { const n=Number(r[k]); return Number.isFinite(n) && n >= 0 ? n : null; };
       const sections = new Map<number,KpiRow>(); for (const r of sectionRows) sections.set(Number(r.oid), {flow:value(r,"flow"),speed:value(r,"speed"),density:value(r,"density"),delay:value(r,"dtime")});
       const lanes = new Map<string,KpiRow>(); for (const r of laneRows) lanes.set(laneKey(Number(r.oid), Number(r.lane)-1), {flow:value(r,"flow"),speed:value(r,"speed"),density:value(r,"density"),delay:value(r,"dtime")});
       return { sections, lanes, intervals, sids, did, sid, interval: resultInterval, dids };
     } catch (error) {
-      this.parquetDisabled = true;
-      console.warn("[GeoLibre] network-kpi: Parquet query unavailable; using the SQLite compatibility fallback.", error);
-      return this.readFallback(options);
+      throw error instanceof Error ? error : new Error(String(error));
     } finally { await con.close(); }
   }
 
@@ -205,8 +209,10 @@ export class ParquetResultsDatabase {
     if (!Number.isFinite(oid)) return [];
     if (this.parquetDisabled) return this.readFallbackSectionTimeSeries(oid, options);
     const did = options.did ?? pickDefaultDid(this.catalog);
-    const entries = this.entries(did).filter((entry) => String(entry.table ?? "").toUpperCase() === "MISECT");
-    if (!entries.length) return [];
+    const declared = this.catalog.filter((entry) => catalogDid(entry) === did && String(entry.table ?? "").toUpperCase() === "MISECT");
+    if (!declared.length) throw new Error("Network KPI results catalog has no MISECT partition for section time series.");
+    if (declared.some((entry) => typeof entry.path !== "string" || !entry.path.trim())) throw new Error("Network KPI MISECT catalog entry has no Parquet file path.");
+    const entries = declared;
     try {
       const handles = await Promise.all(entries.map((entry) => this.register(entry)));
       const table = handles.length === 1
@@ -226,9 +232,7 @@ export class ParquetResultsDatabase {
         await con.close();
       }
     } catch (error) {
-      this.parquetDisabled = true;
-      console.warn("[GeoLibre] network-kpi: section time-series Parquet query failed; using the SQLite compatibility fallback.", error);
-      return this.readFallbackSectionTimeSeries(oid, options);
+      throw new Error("Network KPI MISECT section time-series Parquet query failed: " + (error instanceof Error ? error.message : String(error)));
     }
   }
 

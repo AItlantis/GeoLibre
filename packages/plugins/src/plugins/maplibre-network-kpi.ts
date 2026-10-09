@@ -20,6 +20,7 @@ import {
 } from "./network-kpi-data";
 import { ParquetResultsDatabase } from "./network-kpi-parquet-data";
 import type { SimulationTimeline } from "../shared/simulation-timeline";
+import { assertScenarioSelectionSucceeded } from "../shared/scenario-selection";
 import {
   laneWidthMetersExpression,
   metersLineWidthExpression,
@@ -52,6 +53,7 @@ import {
 } from "./network-kpi-ramps";
 import { registerDuckDbLayer, releaseDuckDbLayer } from "../shared/duckdb-layer-registry";
 import { isTestudoLayout } from "../shared/testudo-layout";
+import { createIntervalPlaybackController } from "../shared/useIntervalPlayback";
 
 /**
  * GeoLibre network-kpi plugin.
@@ -673,7 +675,7 @@ let deckGLPending = false;
 let database: ParquetResultsDatabase | null = null;
 let readToken = 0;
 let networkKpiLayerVisible = true;
-let intervalTimer: ReturnType<typeof setInterval> | null = null;
+const intervalPlayback = createIntervalPlaybackController(() => stepNetworkKpiInterval(1));
 
 const panelListeners = new Set<() => void>();
 const stateListeners = new Set<() => void>();
@@ -773,6 +775,9 @@ export function openNetworkKpiPanel(app: GeoLibreAppAPI): void {
  * for a UI the user closed.
  */
 export function closeNetworkKpiPanel(_app?: GeoLibreAppAPI): void {
+  readToken += 1;
+  settings = { ...settings, intervalPlaying: false };
+  syncIntervalTimer();
   detachEngine();
   releaseDuckDbLayer("network-kpi");
   appRef?.unregisterExternalNativeLayer?.(NETWORK_KPI_STORE_LAYER_ID);
@@ -834,16 +839,20 @@ export function subscribeNetworkKpiStatus(listener: () => void): () => void {
  * @returns Whether something actually changed
  */
 export function setNetworkKpiSettings(next: Partial<NetworkKpiSettings>): boolean {
-  const normalized = normalizeNetworkKpiSettings(
+  let normalized = normalizeNetworkKpiSettings(
     { ...settings, ...next },
     DEFAULT_NETWORK_KPI_SETTINGS,
   );
+  if (normalized.intervalPlaying && status.intervals.filter(value => Number.isFinite(value) && value !== 0).length < 2) {
+    normalized = { ...normalized, intervalPlaying: false };
+  }
   if (settingsEqual(normalized, settings)) return false;
   const intervalChanged = normalized.interval !== settings.interval;
-  const intervalPlayingChanged = normalized.intervalPlaying !== settings.intervalPlaying;
+  const intervalPlaybackChanged = normalized.intervalPlaying !== settings.intervalPlaying
+    || normalized.playbackSpeed !== settings.playbackSpeed;
   settings = normalized;
   if (intervalChanged) requeryInterval();
-  if (intervalPlayingChanged) syncIntervalTimer();
+  if (intervalPlaybackChanged) syncIntervalTimer();
   engine?.applySettings(settings);
   notifyState();
   return true;
@@ -859,6 +868,8 @@ function requeryInterval(): void {
     engine?.setPackage(loadedPackage);
   }).catch((error) => {
     if (token !== readToken) return;
+    settings = { ...settings, intervalPlaying: false };
+    syncIntervalTimer();
     patchStatus({ error: error instanceof Error ? error.message : String(error) });
   });
 }
@@ -885,6 +896,9 @@ let pendingManifest: {
 export async function setNetworkKpiManifestUrl(url: string): Promise<void> {
   const trimmed = url.trim();
   const token = (loadToken += 1);
+  settings = { ...settings, intervalPlaying: false };
+  syncIntervalTimer();
+  status = { ...status, timeline: null };
 
   clearLoaded();
   clearNetworkKpiGeometryCache();
@@ -900,7 +914,7 @@ export async function setNetworkKpiManifestUrl(url: string): Promise<void> {
 
   settings = { ...settings, manifestUrl: trimmed };
   notifyState();
-  patchStatus({ loading: true, error: null, featureCount: 0 });
+  patchStatus({ loading: true, error: null, featureCount: 0, timeline: null });
 
   try {
     const raw = await fetchNetworkKpiManifestJson(trimmed);
@@ -915,10 +929,13 @@ export async function setNetworkKpiManifestUrl(url: string): Promise<void> {
     };
     await adoptScenario(0, token);
   } catch (error) {
-    if (token !== loadToken) return;
+    if (token !== loadToken) throw new Error("Network KPI scenario selection was superseded.");
+    settings = { ...settings, intervalPlaying: false };
+    syncIntervalTimer();
     patchStatus({
       loading: false,
       error: error instanceof Error ? error.message : String(error),
+      timeline: null,
       scenarios: [],
     });
   }
@@ -926,6 +943,7 @@ export async function setNetworkKpiManifestUrl(url: string): Promise<void> {
 
 /** Drop the current package, database and engine data. */
 function clearLoaded(): void {
+  readToken += 1;
   database?.close();
   database = null;
   loadedPackage = null;
@@ -933,12 +951,11 @@ function clearLoaded(): void {
 }
 
 function syncIntervalTimer(): void {
-  if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
-  if (settings.intervalPlaying) intervalTimer = setInterval(() => stepNetworkKpiInterval(1), Math.max(100, 1000 / settings.playbackSpeed));
+  intervalPlayback.sync(settings.intervalPlaying, Math.max(100, 1000 / settings.playbackSpeed));
 }
 
 export function toggleNetworkKpiIntervalPlaying(): void {
-  settings = { ...settings, intervalPlaying: !settings.intervalPlaying };
+  settings = { ...settings, intervalPlaying: !settings.intervalPlaying && status.intervals.filter(value => value !== 0).length > 1 };
   syncIntervalTimer();
   notifyState();
 }
@@ -1003,6 +1020,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
   );
 
   let results: NetworkKpiResults | null = null;
+  let timeline: SimulationTimeline | null = null;
   let openError: string | null = null;
   if (manifest.resultsCatalogRelative) {
     try {
@@ -1013,8 +1031,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
       }
       database = db;
       results = await db.read({ interval: settings.interval, did: settings.did });
-      let timeline: SimulationTimeline | null = null; try { timeline = await db.readSimulationTimeline(results.did); } catch (error) { console.warn("[GeoLibre] network-kpi: SIM_INFO timing unavailable", error); }
-      if (timeline) status = { ...status, timeline };
+      try { timeline = await db.readSimulationTimeline(results.did); } catch (error) { console.warn("[GeoLibre] network-kpi: SIM_INFO timing unavailable", error); }
     } catch (error) {
       openError = error instanceof Error ? error.message : String(error);
     }
@@ -1040,6 +1057,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
   patchStatus({
     loading: false,
     error: openError,
+    timeline,
     hasResults: results !== null,
     hasSections: Boolean(geometry.sections),
     hasLanes: Boolean(geometry.lanes),
@@ -1064,10 +1082,16 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
  */
 export async function setNetworkKpiScenario(scenarioIndex: number): Promise<void> {
   const pending = pendingManifest;
-  if (!pending || scenarioIndex === status.scenarioIndex) return;
-  if (scenarioIndex < 0 || scenarioIndex >= pending.scenarios.length) return;
+  if (!pending) throw new Error("No network KPI package is loaded.");
+  if (scenarioIndex === status.scenarioIndex) {
+    assertScenarioSelectionSucceeded(status, "Network KPI");
+    return;
+  }
+  if (scenarioIndex < 0 || scenarioIndex >= pending.scenarios.length) throw new Error("Network KPI scenario index is out of range.");
 
   const token = (loadToken += 1);
+  settings = { ...settings, intervalPlaying: false };
+  syncIntervalTimer();
   // A scenario change points at a different replication catalog, so the
   // previous scenario's `did` (and the interval it was read at, since a
   // different scenario is not guaranteed to have the same interval set)
@@ -1078,15 +1102,22 @@ export async function setNetworkKpiScenario(scenarioIndex: number): Promise<void
   // persist across settings changes, so this reset is scoped to the scenario
   // switch here and does not touch that path.
   settings = { ...settings, did: null, interval: 0 };
-  patchStatus({ loading: true, error: null, featureCount: 0 });
+  status = { ...status, timeline: null };
+  patchStatus({ loading: true, error: null, featureCount: 0, timeline: null });
   try {
     await adoptScenario(scenarioIndex, token);
+    if (token !== loadToken) throw new Error("Network KPI scenario selection was superseded.");
+    assertScenarioSelectionSucceeded(status, "Network KPI");
   } catch (error) {
-    if (token !== loadToken) return;
+    if (token !== loadToken) throw new Error("Network KPI scenario selection was superseded.");
+    settings = { ...settings, intervalPlaying: false };
+    syncIntervalTimer();
     patchStatus({
       loading: false,
       error: error instanceof Error ? error.message : String(error),
+      timeline: null,
     });
+    throw error;
   }
 }
 
@@ -1154,6 +1185,8 @@ export async function loadLocalNetworkKpiFolder(selectedDirectory?: VehicleDirec
   }
 
   const token = (loadToken += 1);
+  settings = { ...settings, intervalPlaying: false };
+  syncIntervalTimer();
   clearLoaded();
   clearNetworkKpiGeometryCache();
   networkKpiLayerVisible = true;
