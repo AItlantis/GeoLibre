@@ -2,10 +2,20 @@ import { shouldZoomToNewLayers, useAppStore, type GeoLibreLayer } from "@geolibr
 import type { MapEngine } from "@geolibre/map";
 import { OBIA_MAX_PIXELS, fingerprintSegmentLabels, segmentImage } from "@geolibre/processing";
 import { Button, Label, Select } from "@geolibre/ui";
+import type { FeatureCollection } from "geojson";
 import { Info, Loader2, Play } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { useObiaSession, type ObiaAddRaster } from "../../../lib/obia/obia-session";
+import {
+  isNativeMethod,
+  nativePixelLimit,
+  nativeSegmentation,
+  obiaLocalPath,
+  obiaNativeStatus,
+  runNativeSegmentation,
+  type ObiaNativeStatus,
+} from "../../../lib/obia/obia-native";
 import { obiaErrorMessage } from "../../../lib/obia/obia-errors";
 import { obiaLayerLocation, obiaRunEnv } from "../../../lib/obia/obia-persistence";
 import {
@@ -17,8 +27,8 @@ import {
   wholeImageWindow,
   type ObiaSourceInfo,
 } from "../../../lib/obia/obia-source";
+import { ObiaAreaNote, ObiaMethodFields } from "./ObiaMethodFields";
 import {
-  ObiaNumberField,
   ObiaRunProgress,
   ObiaStatus,
   ObiaStepHeading,
@@ -61,10 +71,11 @@ export function ObiaSegmentStep({
   const bandIndexes = useObiaSession((s) => s.bandIndexes);
   const setBandIndexes = useObiaSession((s) => s.setBandIndexes);
   const areaMode = useObiaSession((s) => s.areaMode);
+  const method = useObiaSession((s) => s.method);
+  const nativeParams = useObiaSession((s) => s.nativeParams);
   const setAreaMode = useObiaSession((s) => s.setAreaMode);
   const viewBounds = useAppStore((s) => s.mapView.bbox);
   const params = useObiaSession((s) => s.params);
-  const setParams = useObiaSession((s) => s.setParams);
   const segmentation = useObiaSession((s) => s.segmentation);
   const setSegmentation = useObiaSession((s) => s.setSegmentation);
 
@@ -136,8 +147,34 @@ export function ObiaSegmentStep({
     [bandIndexes, setBandIndexes],
   );
 
+  // Native segmentation: the desktop sidecar, on an image from a local file.
+  const [nativeStatus, setNativeStatus] = useState<ObiaNativeStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () =>
+      void obiaNativeStatus().then((status) => {
+        if (cancelled) return;
+        setNativeStatus(status);
+        // The first check starts installing scikit-image: ask again shortly.
+        if (status?.installing) timer = setTimeout(check, 10_000);
+      });
+    check();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+  const localPath = sourceLayer ? obiaLocalPath(sourceLayer) : null;
+  const nativeUsable = Boolean(nativeStatus?.available && localPath);
+  const native = isNativeMethod(method);
+  const maxPixels =
+    native && nativeStatus
+      ? nativePixelLimit(nativeStatus, method, bandIndexes.length)
+      : OBIA_MAX_PIXELS;
+
   // What a run would read: the whole image or the map view's part of it, at
-  // the finest resolution level that fits the workbench's pixel limit.
+  // the finest resolution level that fits the pixel limit.
   const plan = useMemo(() => {
     if (!summary) return null;
     const window =
@@ -146,8 +183,8 @@ export function ObiaSegmentStep({
           ? boundsWindow(summary, viewBounds)
           : null
         : wholeImageWindow(summary);
-    return window ? planObiaArea(summary, window) : null;
-  }, [summary, areaMode, viewBounds]);
+    return window ? planObiaArea(summary, window, maxPixels) : null;
+  }, [summary, areaMode, viewBounds, maxPixels]);
 
   const handleSegment = useCallback(async () => {
     if (runningRef.current || !sourceLayer || !summary) return;
@@ -165,9 +202,36 @@ export function ObiaSegmentStep({
     const run = progress.begin();
     try {
       const { area } = plan;
-      const image = await obiaSourceBands(sourceLayer, bandIndexes, area);
-      if (!image) throw new Error(t("obia.error.readImage"));
-      const result = await segmentImage(image, params, run);
+      let result: {
+        labels: Uint8Array;
+        objects: FeatureCollection;
+        objectCount: number;
+        meanObjectArea: number;
+        tool: string;
+        args: string[];
+      };
+      let size: { width: number; height: number };
+      let nativeJobId: string | undefined;
+      if (isNativeMethod(method)) {
+        if (!localPath) throw new Error(t("obia.native.needsLocalFile"));
+        const request = nativeSegmentation(localPath, bandIndexes, area, method, nativeParams);
+        const out = await runNativeSegmentation(request, run);
+        result = {
+          labels: out.labels,
+          objects: out.objects,
+          objectCount: out.objectCount,
+          meanObjectArea: out.objectCount ? (out.width * out.height) / out.objectCount : 0,
+          tool: out.call.tool,
+          args: out.call.args,
+        };
+        size = { width: out.width, height: out.height };
+        nativeJobId = out.jobId;
+      } else {
+        const image = await obiaSourceBands(sourceLayer, bandIndexes, area);
+        if (!image) throw new Error(t("obia.error.readImage"));
+        result = await segmentImage(image, params, run);
+        size = { width: image.width, height: image.height };
+      }
       const name = t("obia.layerName", { name: sourceLayer.name });
       // Fingerprint before adding the layer, so a failure here leaves nothing behind.
       const { hash: labelsHash } = await fingerprintSegmentLabels(result.labels);
@@ -191,8 +255,7 @@ export function ObiaSegmentStep({
           ...(obiaLayerLocation(sourceLayer) ? { location: obiaLayerLocation(sourceLayer) } : {}),
         },
         bandIndexes: [...bandIndexes],
-        width: image.width,
-        height: image.height,
+        ...size,
         area,
         pixelSize: plan.pixelSize,
         labels: result.labels,
@@ -203,6 +266,16 @@ export function ObiaSegmentStep({
         tool: result.tool,
         args: result.args,
         params: { ...params },
+        method,
+        ...(isNativeMethod(method)
+          ? {
+              nativeParams: {
+                slic: { ...nativeParams.slic },
+                felzenszwalb: { ...nativeParams.felzenszwalb },
+              },
+              nativeJobId,
+            }
+          : {}),
         env: obiaRunEnv(),
         finishedAt: new Date().toISOString(),
       });
@@ -228,6 +301,9 @@ export function ObiaSegmentStep({
     sourceLayer,
     summary,
     plan,
+    method,
+    nativeParams,
+    localPath,
     bandIndexes,
     params,
     addLabels,
@@ -320,45 +396,11 @@ export function ObiaSegmentStep({
                   {t("obia.area.view")}
                 </option>
               </Select>
-              <ObiaAreaNote info={summary} plan={plan} mode={areaMode} />
+              <ObiaAreaNote info={summary} plan={plan} mode={areaMode} maxPixels={maxPixels} />
             </div>
           )}
 
-          <div className="grid gap-1.5">
-            <span className="text-xs font-medium">{t("obia.method")}</span>
-            <span className="text-sm">{t("obia.methodRegionGrowing")}</span>
-            <p className="text-xs text-muted-foreground">{t("obia.methodNote")}</p>
-          </div>
-
-          <div className="grid grid-cols-3 items-end gap-2">
-            <ObiaNumberField
-              id="obia-threshold"
-              label={t("obia.threshold")}
-              value={params.threshold}
-              onChange={(threshold) => setParams({ threshold })}
-              min={0.05}
-              max={5}
-              step={0.05}
-            />
-            <ObiaNumberField
-              id="obia-min-area"
-              label={t("obia.minArea")}
-              value={params.minArea}
-              onChange={(minArea) => setParams({ minArea: Math.round(minArea) })}
-              min={1}
-              step={1}
-            />
-            <ObiaNumberField
-              id="obia-steps"
-              label={t("obia.seedSteps")}
-              value={params.steps}
-              onChange={(steps) => setParams({ steps: Math.round(steps) })}
-              min={1}
-              max={50}
-              step={1}
-            />
-          </div>
-          <p className="-mt-1 text-xs text-muted-foreground">{t("obia.thresholdHint")}</p>
+          <ObiaMethodFields nativeStatus={nativeStatus} nativeUsable={nativeUsable} />
 
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -372,7 +414,14 @@ export function ObiaSegmentStep({
           <div className="flex items-center gap-3">
             <Button
               onClick={() => void handleSegment()}
-              disabled={running || loadingImage || !summary || !bandIndexes.length || !plan?.fits}
+              disabled={
+                running ||
+                loadingImage ||
+                !summary ||
+                !bandIndexes.length ||
+                !plan?.fits ||
+                (native && !nativeUsable)
+              }
               className="gap-2"
               data-testid="obia-segment"
             >
@@ -405,51 +454,5 @@ export function ObiaSegmentStep({
         }
       />
     </section>
-  );
-}
-
-/** One line saying what a run will read, and at which resolution. */
-function ObiaAreaNote({
-  info,
-  plan,
-  mode,
-}: {
-  info: ObiaSourceInfo;
-  plan: ReturnType<typeof planObiaArea> | null;
-  mode: "image" | "view";
-}): ReactElement {
-  const { t, i18n } = useTranslation();
-  const number = (value: number) => value.toLocaleString(i18n.language);
-  let text: string;
-  let warn = false;
-  if (!plan) {
-    text = t(info.toPixel ? "obia.area.outside" : "obia.area.noCrs");
-    warn = true;
-  } else {
-    const { level } = plan.area;
-    const values = {
-      width: number(plan.width),
-      height: number(plan.height),
-      // Significant digits: a geographic pixel size is a small fraction of a degree.
-      size: plan.pixelSize.toLocaleString(i18n.language, { maximumSignificantDigits: 3 }),
-      unit: info.unit ?? "",
-      max: number(OBIA_MAX_PIXELS),
-    };
-    if (!plan.fits) {
-      text = t("obia.area.tooLarge", values);
-      warn = true;
-    } else if (level === 0) {
-      text = t("obia.area.full", values);
-    } else {
-      text = t(mode === "view" ? "obia.area.overviewView" : "obia.area.overview", values);
-    }
-  }
-  return (
-    <p
-      className={warn ? "text-xs text-destructive" : "text-xs text-muted-foreground"}
-      data-testid="obia-area-note"
-    >
-      {text}
-    </p>
   );
 }

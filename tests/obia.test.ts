@@ -11,6 +11,7 @@ import {
   csvCell,
   fingerprintSegmentLabels,
   planImageRead,
+  nativeFeatureTable,
   readImageWindow,
   legendCsv,
   readRasterData,
@@ -675,6 +676,20 @@ describe("reading part of a large image", () => {
     assert.equal(band.resX, 20);
     assert.equal(band.originX, 500020);
     assert.equal(band.originY, 4000000);
+  });
+});
+
+describe("nativeFeatureTable", () => {
+  it("reads the sidecar's features and adds the band-mean indices", () => {
+    const table = nativeFeatureTable(
+      "segment_id,mean_b1,mean_b4,area_px\n1,10,30,12\n2,40,,5\n",
+      [1, 4],
+      { red: 1, nir: 4 },
+    );
+    assert.deepEqual(table.fields, ["mean_b1", "mean_b4", "area_px", "brightness", "ndvi"]);
+    assert.equal(table.rows.get(1)?.ndvi, 0.5);
+    assert.equal(table.rows.get(2)?.mean_b4, null);
+    assert.equal(table.rows.get(2)?.ndvi, null);
   });
 });
 
