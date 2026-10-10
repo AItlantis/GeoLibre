@@ -705,6 +705,24 @@ describe("CesiumLayerSync", () => {
     assert.equal(f.calls.imageryRemoved.length, 0);
   });
 
+  it("draws a wms record whose tile is an ArcGIS REST export from that template", () => {
+    // Earthdata GIS records an ImageServer as `source.url`; GetMap against it
+    // returns no image, so the exportImage template is what draws.
+    const sync = newSync(f);
+    const tile =
+      "https://gis.example/rest/services/X/ImageServer/exportImage?bbox={bbox-epsg-3857}&bboxSR=3857&f=image";
+    sync.sync([
+      mkLayer({
+        id: "img",
+        type: "wms",
+        source: { url: "https://gis.example/rest/services/X/ImageServer", tiles: [tile] },
+      }),
+    ]);
+    assert.equal(f.calls.wmsProviders.length, 0);
+    assert.equal(f.calls.urlProviders.length, 1);
+    assert.equal(String(f.calls.urlProviders[0].url), tile);
+  });
+
   it("treats a wms layer with only a service url as globe-supported", () => {
     // WebMapServiceImageryProvider defaults `layers` to "", so a url is enough —
     // a scripted or hand-edited project without `layers` must not read "2D only".
@@ -935,6 +953,28 @@ describe("CesiumLayerSync", () => {
     sync.sync([mkLayer({ id: "x", type: "xyz", source: { tiles: ["u/{z}/{x}/{y}"] } })]);
     sync.sync([]);
     assert.equal(f.calls.imageryRemoved.length, 1);
+  });
+
+  it("reads a raster record's Esri-style tile template from source.url", async () => {
+    // The Esri Wayback control mirrors its release as a raster record whose
+    // `source.url` is a `{level}/{row}/{col}` template, as ArcGIS reads it.
+    const sync = newSync(f);
+    sync.sync([
+      mkLayer({
+        id: "wayback",
+        type: "raster",
+        source: {
+          type: "raster",
+          url: "https://wayback.example/tile/10/{level}/{row}/{col}",
+        },
+      }),
+    ]);
+    await f.flush();
+    assert.equal(f.calls.urlProviders.length, 1);
+    assert.equal(
+      String(f.calls.urlProviders[0].url),
+      "https://wayback.example/tile/10/{z}/{y}/{x}",
+    );
   });
 
   it("renders an arcgis MapServer layer via ArcGisMapServerImageryProvider.fromUrl", async () => {

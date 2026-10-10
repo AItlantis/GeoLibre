@@ -472,9 +472,30 @@ const CREDENTIAL_PROXY = {
   },
 };
 
+/** An ArcGIS REST export template (`MapServer/export?`, `ImageServer/exportImage?`). */
+const ARCGIS_REST_EXPORT = /\/(?:Map|Image)Server\/export(?:Image)?\?/i;
+
+/** A `{z}`/`{level}` placeholder: a `source.url` that is a tile template. */
+const TILE_TEMPLATE = /\{(?:z|level)\}/;
+
+/**
+ * A raster layer's first tile template, in the `{z}/{x}/{y}` form Cesium's
+ * template provider reads.
+ *
+ * `source.tiles` is the usual home. A raster record whose `source.url` is
+ * itself a template is read too, as the ArcGIS renderer reads it: the Esri
+ * Wayback control mirrors its release that way, with Esri's
+ * `{level}/{row}/{col}` placeholders, which are rewritten here.
+ */
 function firstTile(layer: GeoLibreLayer): string | undefined {
   const tiles = layer.source.tiles;
-  return Array.isArray(tiles) ? str(tiles[0]) : undefined;
+  const tile = Array.isArray(tiles) ? str(tiles[0]) : undefined;
+  const url = layer.type === "raster" ? str(layer.source.url) : undefined;
+  const template = tile ?? (url && TILE_TEMPLATE.test(url) ? url : undefined);
+  return template
+    ?.replaceAll("{level}", "{z}")
+    .replaceAll("{row}", "{y}")
+    .replaceAll("{col}", "{x}");
 }
 
 function tilesetUrl(layer: GeoLibreLayer): string | undefined {
@@ -3036,7 +3057,12 @@ export class CesiumLayerSync {
       // avoid. Defer to the tile template whenever it names a protocol, so the
       // layer falls through to the bridge below (nothing between here and it
       // matches a WMS layer).
-      !protocolScheme(firstTile(layer) ?? "")
+      !protocolScheme(firstTile(layer) ?? "") &&
+      // A "wms" record whose tile is an ArcGIS REST export draws from that
+      // template: Earthdata GIS records an ImageServer as `source.url` and its
+      // `exportImage?bbox={bbox-epsg-3857}` as the tile, so a WMS provider
+      // pointed at the url would request GetMap from a REST endpoint.
+      !ARCGIS_REST_EXPORT.test(firstTile(layer) ?? "")
     ) {
       return { isAsync: false, provider: wmsImageryProvider(Cesium, layer, makeResource) };
     } else if (wmtsCaps) {
