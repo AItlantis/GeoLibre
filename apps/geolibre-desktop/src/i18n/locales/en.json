@@ -8783,6 +8783,7 @@
     "extractSubset": "Extract subset…",
     "stylesMenu": "Styles",
     "exportGeoLibreStyle": "Export GeoLibre URL style",
+    "exportGeoLibreStyleHint": "Export symbology, including fill patterns, for ?data= and ?style= URLs. Feature data is not included; custom point markers are not preserved.",
     "exportMapboxStyle": "Export as Mapbox GL style",
     "exportSldStyle": "Export as OGC SLD",
     "exportQmlStyle": "Export as QGIS QML",
