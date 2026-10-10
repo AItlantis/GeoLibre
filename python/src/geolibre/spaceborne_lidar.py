@@ -298,6 +298,23 @@ def _fill_value(dataset: Any) -> float | None:
         return None
 
 
+def _int_fill(dataset: Any) -> int | None:
+    """An integer dataset's ``_FillValue`` as an exact int, or None when absent or unreadable.
+
+    Read without a float round trip: a uint64 fill such as 2**64 - 1 does not
+    survive one. A malformed attribute (text, NaN) is ignored, not fatal.
+    """
+    raw = dataset.attrs.get("_FillValue")
+    if raw is None:
+        return None
+    try:
+        if hasattr(raw, "size") and getattr(raw, "size", 1) == 1 and hasattr(raw, "item"):
+            raw = raw.item()
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _round_sig(value: float, digits: int = 7) -> float:
     if value == 0 or not math.isfinite(value):
         return value
@@ -586,7 +603,9 @@ def _read_columns(np: Any, group: Any, specs: list[FieldSpec], selected: Any, mi
         picked = raw[selected]
         if raw.dtype.kind in "iu" and raw.dtype.itemsize == 8:
             # 64-bit integers (GEDI shot_number) do not fit a double exactly.
-            fill_int = int(fill) if fill is not None else None
+            # Read the fill as an exact int: a uint64 fill such as 2**64 - 1
+            # does not survive a round trip through float.
+            fill_int = _int_fill(dataset)
             out.append(
                 (
                     key,
