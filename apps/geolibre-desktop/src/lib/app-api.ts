@@ -28,6 +28,7 @@ import type {
   GeoLibreCogLayerOptions,
   GeoLibreCogRenderEngine,
   GeoLibreDeckGL,
+  GeoLibreDownloadFolder,
   GeoLibreExternalNativeLayerRegistration,
   GeoLibreFileDialogOptions,
   GeoLibreRasterWindowOptions,
@@ -68,6 +69,8 @@ import { createPluginLayerStyleActions } from "./plugin-layer-style";
 import { createPluginLocaleApi, type PluginLocaleI18n } from "./plugin-locale";
 import { createPluginHttpSend, createPluginNativeFetch } from "./plugin-native-fetch";
 import { openProjectFromUrlForPlugin } from "./plugin-open-project";
+import { createRemoteDownload, type RemoteDownloadProgress } from "./remote-download";
+import { requestSpaceborneLidarGranule } from "./spaceborne-lidar-handoff";
 import { addPluginWfsLayer } from "./plugin-wfs-layer";
 import {
   browserSaveFallsBackToDownload,
@@ -468,6 +471,14 @@ export function createAppAPI(
       }),
     fetchArrayBuffer: fetchRemoteArrayBuffer,
     nativeFetch: isTauriRuntime() ? pluginNativeFetch() : undefined,
+    downloadRemoteFile: isTauriRuntime()
+      ? createRemoteDownload(invoke, () => new Channel<RemoteDownloadProgress>())
+      : undefined,
+    pickDownloadFolder: isTauriRuntime()
+      ? () => invoke<GeoLibreDownloadFolder | null>("pick_download_folder")
+      : undefined,
+    openSpaceborneLidarGranule: (data: ArrayBuffer, fileName: string) =>
+      requestSpaceborneLidarGranule({ data, fileName }),
     resolvePluginAssetUrl: resolvePluginAssetUrlForLoadedPlugin,
     activatePlugin: async (pluginId: string, state?: unknown) => {
       const activated = await manager.activate(pluginId, api);
