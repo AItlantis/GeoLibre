@@ -30,7 +30,7 @@ export interface TestudoIntervalPlaybackApi {
 export interface TestudoScenarioComparisonApi {
   getStatus(): { loading: boolean; intervals: number[]; error: string | null; matchedIntervals: Array<{ entA: number; timeSeconds: number }>; dt?: number | null; simulationDurationSeconds?: number | null };
   getSettings(): { interval: number; intervalPlaying: boolean; playbackSpeed: number; loop: boolean; scenarioA: number; scenarioB: number };
-  setSettings(settings: { interval?: number; intervalPlaying?: boolean; playbackSpeed?: number; scenarioA?: number; scenarioB?: number }): void;
+  setSettings(settings: { interval?: number; intervalPlaying?: boolean; playbackSpeed?: number; scenarioA?: number; scenarioB?: number }): void | Promise<void>;
   stepScenarioComparisonInterval(direction: 1 | -1): void;
   subscribe?(listener: () => void): () => void;
 }
@@ -152,19 +152,44 @@ export function createScenarioComparisonPlaybackAdapter(api: TestudoScenarioComp
     const time = playbackTime(samples, settings.interval, status.simulationDurationSeconds ?? null);
     return toShellState(status.loading, status.matchedIntervals.length > 0 && !status.error, settings.intervalPlaying, tick, Math.max(0, intervals.length - 1), settings.playbackSpeed, status.dt ?? 1, settings.loop, time, intervals.length > 1);
   };
-  const patch = (id: string, generation: number, change: { intervalPlaying?: boolean; playbackSpeed?: number; interval?: number }) => {
-    assertGeneration(isCurrent, id, generation); api.setSettings(change); return state(id, generation);
-  };
-  const seek = (id: string, generation: number, tick: number) => {
-    assertGeneration(isCurrent, id, generation); const intervals = api.getStatus().intervals.filter(value => Number.isFinite(value) && value !== 0);
-    const index = Math.max(0, Math.min(intervals.length - 1, Math.trunc(tick)));
-    if (intervals.length === 1) api.setSettings({ interval: intervals[0] });
-    else if (intervals.length) { const current = intervals.indexOf(api.getSettings().interval); const direction = index >= current ? 1 : -1; for (let step = current; step !== index; step += direction) api.stepScenarioComparisonInterval(direction); }
+  const apply = async (id: string, generation: number, change: { intervalPlaying?: boolean; playbackSpeed?: number; interval?: number }) => {
+    assertGeneration(isCurrent, id, generation);
+    await api.setSettings(change);
+    assertGeneration(isCurrent, id, generation);
+    const status = api.getStatus();
+    if (status.error) throw new Error(status.error);
     return state(id, generation);
   };
-  return { getPlaybackState: state, play: (id, gen) => state(id, gen).canPlay ? patch(id, gen, { intervalPlaying: true }) : state(id, gen), pause: (id, gen) => patch(id, gen, { intervalPlaying: false }),
-    restart: (id, gen) => { assertGeneration(isCurrent, id, gen); api.setSettings({ intervalPlaying: false }); return seek(id, gen, 0); }, seek,
-    setSpeed: (id, gen, playbackSpeed) => patch(id, gen, { playbackSpeed }),
+  const seek = async (id: string, generation: number, tick: number) => {
+    assertGeneration(isCurrent, id, generation); const intervals = api.getStatus().intervals.filter(value => Number.isFinite(value) && value !== 0);
+    const index = Math.max(0, Math.min(intervals.length - 1, Math.trunc(tick)));
+    if (intervals.length) return apply(id, generation, { interval: intervals[index] });
+    return state(id, generation);
+  };
+  const play = async (id: string, generation: number) => {
+    assertGeneration(isCurrent, id, generation);
+    const current = state(id, generation);
+    if (!current.canPlay) return current;
+    if (api.getSettings().interval === 0) {
+      const status = api.getStatus();
+      const realIntervals = status.intervals.filter(value => Number.isFinite(value) && value !== 0);
+      const firstMatched = status.matchedIntervals.find(item => Number.isFinite(item.entA) && item.entA !== 0 && realIntervals.includes(item.entA));
+      if (!firstMatched) throw new Error(status.error ?? "No matched comparison interval is available for playback.");
+      // Loading the first real interval can be asynchronous. Keep playback paused
+      // until that data has committed, then start from the selected interval.
+      await apply(id, generation, { intervalPlaying: false, interval: firstMatched.entA });
+      assertGeneration(isCurrent, id, generation);
+    }
+    return apply(id, generation, { intervalPlaying: true });
+  };
+  const restart = async (id: string, generation: number) => {
+    assertGeneration(isCurrent, id, generation);
+    await apply(id, generation, { intervalPlaying: false });
+    return seek(id, generation, 0);
+  };
+  return { getPlaybackState: state, play, pause: (id, gen) => apply(id, gen, { intervalPlaying: false }),
+    restart, seek,
+    setSpeed: (id, gen, playbackSpeed) => apply(id, gen, { playbackSpeed }),
     subscribe: listener => subscribePlaybackSnapshot(api.subscribe, isCurrent, scope,
       () => state(scope.tviewId, scope.generation), listener) };
 }

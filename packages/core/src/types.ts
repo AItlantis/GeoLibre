@@ -1465,6 +1465,14 @@ export interface SecondaryMapView {
   layerVisibility: Record<string, boolean>;
 }
 
+/** Ephemeral pane chrome owned by a plugin-driven comparison view. */
+export interface ComparisonMapPresentation {
+  owner: string;
+  secondaryPaneId: string;
+  primaryLabel: string;
+  secondaryLabel: string;
+}
+
 /** The default single-map grid (one pane, sync enabled so it turns on cleanly). */
 export const DEFAULT_MAP_GRID_LAYOUT: MapGridLayout = {
   rows: 1,

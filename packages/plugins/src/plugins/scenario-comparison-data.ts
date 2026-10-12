@@ -54,6 +54,7 @@ export function buildScenarioComparisonRows(a: readonly ComparisonInput[], b: re
       flow: first?.flow ?? null,
       density: first?.density ?? null,
       speed: first?.speed ?? null,
+      delay: first?.delay ?? null,
       flow_delta: fd,
       density_delta: dd,
       speed_delta: delta(other?.speed, first?.speed),

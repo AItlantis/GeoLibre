@@ -1,4 +1,4 @@
-import { cesiumIonAssetId, isCesiumOnlyLayer, useAppStore, type MapRendererKind } from "@geolibre/core";
+import { cesiumIonAssetId, isCesiumOnlyLayer, useAppStore, type ComparisonMapPresentation, type MapRendererKind } from "@geolibre/core";
 import {
   CesiumCanvas,
   isArcgisSupportedLayer,
@@ -32,10 +32,12 @@ function PaneLabel({
   value,
   onChange,
   ariaLabel,
+  readOnly = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   ariaLabel: string;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -46,7 +48,8 @@ function PaneLabel({
       <input
         type="text"
         value={value}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={readOnly ? undefined : (event) => onChange(event.target.value)}
+        readOnly={readOnly}
         aria-label={ariaLabel}
         placeholder={t("mapGrid.labelPlaceholder")}
         className="pointer-events-auto h-7 w-32 max-w-[40%] rounded-md border border-input map-glass px-2 text-center text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none"
@@ -78,6 +81,7 @@ export function MapGrid({ children }: MapGridProps) {
   const cols = useAppStore((s) => s.mapLayout.cols);
   const secondaryMapViews = useAppStore((s) => s.secondaryMapViews);
   const primaryMapLabel = useAppStore((s) => s.primaryMapLabel);
+  const comparisonPresentation = useAppStore((s) => s.comparisonMapPresentation);
   const setPrimaryMapLabel = useAppStore((s) => s.setPrimaryMapLabel);
   const cesiumToken = useCesiumIonToken();
   const hasIonAssetLayer = useAppStore((s) =>
@@ -100,13 +104,14 @@ export function MapGrid({ children }: MapGridProps) {
       <div className="relative isolate min-h-0 min-w-0 overflow-hidden bg-background">
         {children}
         <PaneLabel
-          value={primaryMapLabel}
+          value={comparisonPresentation?.primaryLabel ?? primaryMapLabel}
           onChange={setPrimaryMapLabel}
           ariaLabel={t("mapGrid.labelLabel", { number: 1 })}
+          readOnly={Boolean(comparisonPresentation)}
         />
       </div>
       {secondaryMapViews.map((pane, index) => (
-        <SecondaryMapPane key={pane.id} viewId={pane.id} index={index} cesiumToken={cesiumToken} hasIonAssetLayer={hasIonAssetLayer} />
+        <SecondaryMapPane key={pane.id} viewId={pane.id} index={index} cesiumToken={cesiumToken} hasIonAssetLayer={hasIonAssetLayer} comparisonPresentation={comparisonPresentation?.secondaryPaneId === pane.id ? comparisonPresentation : null} />
       ))}
     </div>
   );
@@ -122,9 +127,10 @@ interface SecondaryMapPaneProps {
    */
   cesiumToken?: string;
   hasIonAssetLayer: boolean;
+  comparisonPresentation: ComparisonMapPresentation | null;
 }
 
-function SecondaryMapPane({ viewId, index, cesiumToken, hasIonAssetLayer }: SecondaryMapPaneProps) {
+function SecondaryMapPane({ viewId, index, cesiumToken, hasIonAssetLayer, comparisonPresentation }: SecondaryMapPaneProps) {
   const { t } = useTranslation();
   const removeSecondaryMapView = useAppStore((s) => s.removeSecondaryMapView);
   const setSecondaryMapLabel = useAppStore((s) => s.setSecondaryMapLabel);
@@ -161,11 +167,12 @@ function SecondaryMapPane({ viewId, index, cesiumToken, hasIonAssetLayer }: Seco
         </div>
       ) : null}
       <PaneLabel
-        value={label}
+        value={comparisonPresentation?.secondaryLabel ?? label}
         onChange={(value) => setSecondaryMapLabel(viewId, value)}
         ariaLabel={t("mapGrid.labelLabel", { number: index + 2 })}
+        readOnly={Boolean(comparisonPresentation)}
       />
-      <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
+      {!comparisonPresentation ? <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
         {/* Every renderer draws the shared layers, so the per-pane
             layer-visibility toggle applies to each of them. */}
         <PaneLayerToggle viewId={viewId} index={index} renderer={renderer} />
@@ -214,7 +221,7 @@ function SecondaryMapPane({ viewId, index, cesiumToken, hasIonAssetLayer }: Seco
         >
           <X className="h-4 w-4" />
         </button>
-      </div>
+      </div> : null}
     </div>
   );
 }

@@ -5,9 +5,8 @@ import { depthOcclusionParameters, ensureSharedDeckOverlay, setSharedDeckLayers 
 import { buildScenarioComparisonRows, defaultScenarioComparisonPair, type ComparisonInput, type ComparisonRow } from "./scenario-comparison-data";
 import { COMPARISON_CONTINUOUS_RAMPS, comparisonCategoricalRamp, comparisonDifferenceColor, comparisonThresholdDefault, isComparisonDifferenceMetric, isComparisonMetric, type ComparisonMetric } from "./comparison-ramps";
 import { matchScenarioIntervals, type MatchedScenarioInterval } from "./scenario-comparison-timeline";
-import { createNetworkKpiDirectorySource, createNetworkKpiHttpSource, fetchNetworkKpiManifestJson, laneKey, loadNetworkKpiGeometry, parseNetworkKpiManifest, readLocalNetworkKpiManifestJson, type NetworkKpiDirectoryHandle, type NetworkKpiGeometry, type NetworkKpiPackageSource, type NetworkKpiResults } from "./network-kpi-data";
+import { createNetworkKpiDirectorySource, createNetworkKpiHttpSource, fetchNetworkKpiManifestJson, laneKey, loadNetworkKpiGeometry, parseNetworkKpiManifest, readLocalNetworkKpiManifestJson, type NetworkFeatureCollection, type NetworkKpiDirectoryHandle, type NetworkKpiGeometry, type NetworkKpiPackageSource, type NetworkKpiResults } from "./network-kpi-data";
 import { supportsLocalPackageFolders } from "./vehicle-playback-data";
-import { bufferLineToRing } from "./network-kpi-geometry";
 import { listVehicleManifestScenarios, type VehicleManifestScenario } from "./vehicle-playback-data";
 import { openTestudoDatasetProvider, type TestudoDatasetProvider, type TestudoDatasetQueryResult } from "./testudo-dataset-provider";
 import type { GeolibreReplication } from "./geolibre-package-loader";
@@ -16,7 +15,9 @@ import { createIntervalPlaybackController, stepInterval } from "../shared/useInt
 import { assertScenarioSelectionSucceeded } from "../shared/scenario-selection";
 import { boundedFingerprint, liveIdentityState, testudoLiveDiagnosticsEnabled } from "../shared/testudo-live-diagnostics";
 import { installOpenedResourceIfCurrent } from "../shared/opened-resource";
-import { elevationByKpi, KPI_RAMPS, type NetworkKpiMetric } from "./network-kpi-ramps";
+import { activeRamp, elevationByKpi, LOD_ZOOM_THRESHOLD, type NetworkKpiMetric } from "./network-kpi-ramps";
+import { getNetworkKpiSnapshot } from "./maplibre-network-kpi";
+import { buildLaneGeometryRows, buildSectionGeometryRows } from "./network-kpi-geometry";
 import { readSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
 import { declutterMapLabels, formatRoundedDifference, lineMidpoint, passesComparisonDifferenceFilter } from "../shared/map-labels";
 import { mountTestudoComparisonGeometry } from "../shared/testudo-persistent-network";
@@ -46,13 +47,43 @@ const SECTION_KPI_COLUMNS = ["oid", "flow", "speed", "density", "dtime", "sid", 
 const LANE_KPI_COLUMNS = ["oid", "lane", "flow", "speed", "density", "dtime", "sid", "ent", "did"];
 const intervalCache = new Map<string, number[]>();
 let sidePaneId:string|null=null; let sideLayerIds:string[]=[];
+let sidePrimarySectionLayerId:string|null=null;let sidePrimaryLaneLayerId:string|null=null;
+let sideSecondarySectionLayerId:string|null=null;let sideSecondaryLaneLayerId:string|null=null;
+let sidePrimaryHasLaneRows=false;let sideSecondaryHasLaneRows=false;
+let sidePrimaryZoomHandler:(()=>void)|null=null;let sideSecondaryZoomHandler:(()=>void)|null=null;
+let sidePrimaryZoomMap:any=null;let sideSecondaryZoomMap:any=null;
 let sidePrimaryGeometryDispose:(()=>void)|null=null; let sideSecondaryGeometryDispose:(()=>void)|null=null;
 let sideSecondaryMap:TestudoMapHandle|null=null; let comparisonMapEventsBound=false;
 let sideBySideLifecycle=0; let sideBySideRetryTimer:ReturnType<typeof setTimeout>|null=null;
-const onComparisonMapReady=(event:Event)=>{const detail=(event as CustomEvent<{viewId?:unknown;map?:unknown}>).detail;if(typeof detail?.viewId!=="string"||detail.viewId!==sidePaneId||!detail.map)return;sideSecondaryGeometryDispose?.();sideSecondaryMap=detail.map as TestudoMapHandle;sideSecondaryGeometryDispose=mountTestudoComparisonGeometry(sideSecondaryMap,geometryB,`testudo-comparison-${detail.viewId}`);};
-const onComparisonMapDisposed=(event:Event)=>{const detail=(event as CustomEvent<{viewId?:unknown;map?:unknown}>).detail;if(detail?.viewId===sidePaneId&&detail.map===sideSecondaryMap){sideSecondaryGeometryDispose?.();sideSecondaryGeometryDispose=null;sideSecondaryMap=null;}};
+const onComparisonMapReady=(event:Event)=>{const detail=(event as CustomEvent<{viewId?:unknown;map?:unknown}>).detail;if(typeof detail?.viewId!=="string"||detail.viewId!==sidePaneId||!detail.map)return;sideSecondaryGeometryDispose?.();sideSecondaryMap=detail.map as TestudoMapHandle;sideSecondaryGeometryDispose=mountTestudoComparisonGeometry(sideSecondaryMap,geometryB,`testudo-comparison-${detail.viewId}`);bindSideBySideZoomHandlers();};
+const onComparisonMapDisposed=(event:Event)=>{const detail=(event as CustomEvent<{viewId?:unknown;map?:unknown}>).detail;if(detail?.viewId===sidePaneId&&detail.map===sideSecondaryMap){const store=useAppStore.getState();if(store.comparisonMapPresentation?.owner==="scenario-comparison"&&store.comparisonMapPresentation.secondaryPaneId===sidePaneId)store.setComparisonMapPresentation(null);unbindSideBySideZoomHandlers();sideSecondaryGeometryDispose?.();sideSecondaryGeometryDispose=null;sideSecondaryMap=null;}};
 function bindComparisonMapEvents(){if(comparisonMapEventsBound)return;window.addEventListener("testudo-comparison-map-ready",onComparisonMapReady);window.addEventListener("testudo-comparison-map-disposed",onComparisonMapDisposed);comparisonMapEventsBound=true;}
 function unbindComparisonMapEvents(){if(!comparisonMapEventsBound)return;window.removeEventListener("testudo-comparison-map-ready",onComparisonMapReady);window.removeEventListener("testudo-comparison-map-disposed",onComparisonMapDisposed);comparisonMapEventsBound=false;}
+function applySideBySideLodVisibility():void{
+ const store=useAppStore.getState();
+ const primaryZoom=(appRef?.getMap?.() as TestudoMapHandle|null|undefined)?.getZoom?.()??0;
+ const secondaryZoom=sideSecondaryMap?.getZoom?.()??0;
+ const primaryUsesLanes=primaryZoom>=LOD_ZOOM_THRESHOLD&&sidePrimaryHasLaneRows;
+ const secondaryUsesLanes=secondaryZoom>=LOD_ZOOM_THRESHOLD&&sideSecondaryHasLaneRows;
+ if(sidePrimarySectionLayerId)store.setLayerVisibility(sidePrimarySectionLayerId,layerVisible&&!primaryUsesLanes);
+ if(sidePrimaryLaneLayerId)store.setLayerVisibility(sidePrimaryLaneLayerId,layerVisible&&primaryUsesLanes);
+ if(sidePaneId&&sideSecondarySectionLayerId)store.setSecondaryLayerVisibility(sidePaneId,sideSecondarySectionLayerId,layerVisible&&!secondaryUsesLanes);
+ if(sidePaneId&&sideSecondaryLaneLayerId)store.setSecondaryLayerVisibility(sidePaneId,sideSecondaryLaneLayerId,layerVisible&&secondaryUsesLanes);
+}
+function unbindSideBySideZoomHandlers():void{
+ if(sidePrimaryZoomMap&&sidePrimaryZoomHandler)sidePrimaryZoomMap.off?.("zoomend",sidePrimaryZoomHandler);
+ if(sideSecondaryZoomMap&&sideSecondaryZoomHandler)sideSecondaryZoomMap.off?.("zoomend",sideSecondaryZoomHandler);
+ sidePrimaryZoomHandler=null;sideSecondaryZoomHandler=null;
+ sidePrimaryZoomMap=null;sideSecondaryZoomMap=null;
+}
+function bindSideBySideZoomHandlers():void{
+ unbindSideBySideZoomHandlers();
+ const primary=appRef?.getMap?.() as any;
+ const secondary=sideSecondaryMap as any;
+ if(primary?.on){sidePrimaryZoomMap=primary;sidePrimaryZoomHandler=()=>applySideBySideLodVisibility();primary.on("zoomend",sidePrimaryZoomHandler);}
+ if(secondary?.on){sideSecondaryZoomMap=secondary;sideSecondaryZoomHandler=()=>applySideBySideLodVisibility();secondary.on("zoomend",sideSecondaryZoomHandler);}
+ applySideBySideLodVisibility();
+}
 const notify=()=>listeners.forEach(f=>f());
 export const getScenarioComparisonSnapshot=()=>settings; export const subscribeScenarioComparison=(f:()=>void)=>{listeners.add(f);return()=>listeners.delete(f);};
 // useSyncExternalStore requires a stable snapshot between store updates.
@@ -66,7 +97,7 @@ export function getScenarioComparisonLiveDiagnostics() {
   return { loading: status.loading, error: Boolean(status.error), requested, loaded: committedComparisonIdentity };
 }
 function comparisonSideIdentity(result:NetworkKpiResults,scid:string|number|undefined){const entries=[...result.sections.entries()].sort((a,b)=>a[0]-b[0]);return {scid:scid??null,did:result.did,interval:result.interval,sampleCount:result.sections.size,sampleFingerprint:boundedFingerprint(entries.slice(0,32).flatMap(([oid,value])=>[oid,value.flow,value.density,value.speed,value.delay]))};}
-export const isScenarioComparisonPanelVisible=()=>visible; function registerScenarioComparisonStoreLayer(){appRef?.registerExternalNativeLayer?.({id:SCENARIO_COMPARISON_STORE_LAYER_ID,name:"Scenario comparison",type:"geojson",nativeLayerIds:[],paintMode:"plugin",metadata:{customLayerType:"deck.gl"},paintBridge:{setOpacity:(opacity)=>{settings={...settings,opacity};render();notify();},setVisibility:(next)=>{layerVisible=next;const store=useAppStore.getState();if(sideLayerIds[0])store.setLayerVisibility(sideLayerIds[0],next);if(sideLayerIds[1])store.setLayerVisibility(sideLayerIds[1],false);if(sidePaneId){if(sideLayerIds[0])store.setSecondaryLayerVisibility(sidePaneId,sideLayerIds[0],false);if(sideLayerIds[1])store.setSecondaryLayerVisibility(sidePaneId,sideLayerIds[1],next);}if(next)render();else setSharedDeckLayers("scenario-comparison",[]);}}});} export function openScenarioComparisonPanel(app:GeoLibreAppAPI){appRef=app;visible=true;bindComparisonMapEvents();if(!labelMapMoveBound){const map=app.getMap?.() as any;if(map?.on){map.on("moveend",render);labelMapMoveBound=true;}}registerScenarioComparisonStoreLayer();registerDuckDbLayer({pluginId:"scenario-comparison",dispose:()=>{const closing=provider;provider=null;if(closing)void closing.close();}});if(app.getDeckGL)void app.getDeckGL().then(async d=>{deck=d;await ensureSharedDeckOverlay(app);render();notify();}).catch(error=>{console.warn("[GeoLibre] scenario-comparison: deck.gl unavailable",error);status={...status,error:error instanceof Error?error.message:String(error)};notify();});notify();}
+export const isScenarioComparisonPanelVisible=()=>visible; function registerScenarioComparisonStoreLayer(){appRef?.registerExternalNativeLayer?.({id:SCENARIO_COMPARISON_STORE_LAYER_ID,name:"Scenario comparison",type:"geojson",nativeLayerIds:[],paintMode:"plugin",metadata:{customLayerType:"deck.gl"},paintBridge:{setOpacity:(opacity)=>{settings={...settings,opacity};if(settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}else render();notify();},setVisibility:(next)=>{layerVisible=next;applySideBySideLodVisibility();if(next)render();else setSharedDeckLayers("scenario-comparison",[]);}}});} export function openScenarioComparisonPanel(app:GeoLibreAppAPI){appRef=app;visible=true;bindComparisonMapEvents();if(sidePaneId)bindSideBySideZoomHandlers();if(!labelMapMoveBound){const map=app.getMap?.() as any;if(map?.on){map.on("moveend",render);labelMapMoveBound=true;}}registerScenarioComparisonStoreLayer();registerDuckDbLayer({pluginId:"scenario-comparison",dispose:()=>{const closing=provider;provider=null;if(closing)void closing.close();}});if(app.getDeckGL)void app.getDeckGL().then(async d=>{deck=d;await ensureSharedDeckOverlay(app);render();notify();}).catch(error=>{console.warn("[GeoLibre] scenario-comparison: deck.gl unavailable",error);status={...status,error:error instanceof Error?error.message:String(error)};notify();});notify();}
 // `provider` (a TestudoDatasetProvider, holding a DuckDB connection/worker) was
 // previously only ever closed on manifest replace (setScenarioComparisonManifestUrl
 // / loadLocalScenarioComparisonFolder) — closing the panel dropped the reference
@@ -76,20 +107,37 @@ export const isScenarioComparisonPanelVisible=()=>visible; function registerScen
 export function closeScenarioComparisonPanel(_app?:GeoLibreAppAPI){committedComparisonIdentity=null;loadToken++;readToken++;geometryReadToken++;visible=false;playback.dispose();settings={...settings,intervalPlaying:false};releaseDuckDbLayer("scenario-comparison");appRef?.unregisterExternalNativeLayer?.(SCENARIO_COMPARISON_STORE_LAYER_ID);disableSideBySide();unbindComparisonMapEvents();setSharedDeckLayers("scenario-comparison",[]);const closing=provider;provider=null;if(closing)void closing.close();notify();}
 function updateReplications(dataset:TestudoDatasetProvider):void { status={...status,replicationsA:dataset.metadata.scenarios[settings.scenarioA]?.replications??[],replicationsB:dataset.metadata.scenarios[settings.scenarioB]?.replications??[]}; }
 export async function setScenarioComparisonSettings(next:Partial<ScenarioComparisonSettings>):Promise<void>{
- const metricChanged=next.metric!==undefined&&next.metric!==settings.metric;
  const modeChanged=next.mode!==undefined&&next.mode!==settings.mode;
+ const requestedMetric=next.metric;
+ let nextMetric=requestedMetric??settings.metric;
+ const selectedResults=modeChanged&&next.mode==="side-by-side"?getNetworkKpiSnapshot():null;
+ if(modeChanged&&next.mode==="side-by-side"){
+  // Results owns the base metric in side-by-side mode, even if a stale delta
+  // metric was included in the mode-change request.
+  nextMetric=selectedResults?.metric??getNetworkKpiSnapshot().metric;
+ }else if(modeChanged&&next.mode==="diff"&&(!requestedMetric||requestedMetric===settings.metric)){
+  // Returning from side-by-side should show the corresponding B - A result.
+  // Categorical Results metrics have no meaningful numeric difference.
+  nextMetric=isNetworkMetric(settings.metric)?`${settings.metric}_delta` as ComparisonMetric:"flow_delta";
+ }
+ const metricChanged=nextMetric!==settings.metric;
  const scenarioAChanged=next.scenarioA!==undefined&&next.scenarioA!==settings.scenarioA;
  const scenarioBChanged=next.scenarioB!==undefined&&next.scenarioB!==settings.scenarioB;
  const identityChanged=next.didA!==undefined||next.didB!==undefined||scenarioAChanged||scenarioBChanged;
  const selectionChanged=next.interval!==undefined||identityChanged;
- settings={...settings,...next};
+ settings={...settings,...next,...(selectedResults?{
+  opacity:next.opacity??selectedResults.opacity,
+  extruded:next.extruded??selectedResults.extruded,
+  maxHeightM:next.maxHeightM??selectedResults.maxHeightM,
+}:{}),metric:nextMetric};
  if(settings.intervalPlaying&&intervals.filter(value=>value!==0).length<2)settings={...settings,intervalPlaying:false};
  if(metricChanged&&next.differenceThreshold===undefined)settings={...settings,differenceThreshold:comparisonThresholdDefault(settings.metric)};
  if(scenarioAChanged||scenarioBChanged){settings={...settings,intervalPlaying:false};playback.sync(false);}
  else if(next.intervalPlaying!==undefined||next.playbackSpeed!==undefined)playback.sync(settings.intervalPlaying,Math.max(100,1000/settings.playbackSpeed));
  if(provider&&(next.scenarioA!==undefined||next.scenarioB!==undefined))updateReplications(provider);
  if(modeChanged){if(settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}else{disableSideBySide();if(layerVisible)render();}}
- if(metricChanged&&settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}
+ const sidePresentationChanged=next.opacity!==undefined||next.extruded!==undefined||next.maxHeightM!==undefined;
+ if(!modeChanged&&settings.mode==="side-by-side"&&(metricChanged||sidePresentationChanged)){disableSideBySide();enableSideBySide();}
  const geometryPromise=(scenarioAChanged||scenarioBChanged)?reloadScenarioGeometry(scenarioAChanged,scenarioBChanged):Promise.resolve();
  if(selectionChanged){status={...status,loading:true,error:null,...(identityChanged?{timeMatchReason:null,aggregateAvailable:false,currentTimeSeconds:null,timelineA:null,timelineB:null,intervals:[],matchedIntervals:[]}: {})};rows=[];setSharedDeckLayers("scenario-comparison",[]);await readCurrent(); if(identityChanged)await geometryPromise;}
  else if(metricChanged||next.differenceThreshold!==undefined||next.flowDifferenceScale!==undefined||next.extruded!==undefined||next.maxHeightM!==undefined||next.opacity!==undefined||next.seeThroughBuildings!==undefined){
@@ -112,41 +160,88 @@ async function reloadScenarioGeometry(reloadA:boolean,reloadB:boolean):Promise<v
 export async function selectScenarioComparisonPair(scenarioA:number,scenarioB:number):Promise<void>{await setScenarioComparisonSettings({scenarioA,scenarioB});if(settings.scenarioA!==scenarioA||settings.scenarioB!==scenarioB)throw new Error("Scenario comparison selection was superseded.");assertScenarioSelectionSucceeded(status,"Scenario comparison");}
 export function swapScenarioComparisonSides():void{const scenarioA=settings.scenarioA;const didA=settings.didA;settings={...settings,scenarioA:settings.scenarioB,scenarioB:scenarioA,didA:settings.didB,didB:didA};[geometry,geometryB]=[geometryB,geometry];[datasetA,datasetB]=[datasetB,datasetA];if(provider)updateReplications(provider);void readCurrent();notify();}
 function scenarioLabel(index:number):string{return status.scenarios[index]?.label??`Scenario ${index+1}`;}
+
+function isNetworkMetric(metric:ComparisonMetric):metric is NetworkKpiMetric{
+ return metric==="flow"||metric==="density"||metric==="speed"||metric==="delay";
+}
+
+function comparisonSidePolygons(source:NetworkKpiGeometry|null,metric:NetworkKpiMetric,maxHeightM:number):{sections:NetworkFeatureCollection;lanes:NetworkFeatureCollection}{
+ const sections:NetworkFeatureCollection["features"]=[];const lanes:NetworkFeatureCollection["features"]=[];
+ if(!source)return {sections:{type:"FeatureCollection",features:sections},lanes:{type:"FeatureCollection",features:lanes}};
+ const sectionValues=new Map((source.sections?.features??[]).map(feature=>{
+  const p=feature.properties??{};
+  return [Number(p.section_id??p.oid),finite(p[`comparison_${metric}`])] as const;
+ }));
+ const laneValues=new Map((source.lanes?.features??[]).map(feature=>{
+  const p=feature.properties??{};
+  return [laneKey(Number(p.section_id??p.oid),Number(p.lane_index)),finite(p[`comparison_${metric}`])] as const;
+ }));
+ const append=(rows:ReturnType<typeof buildSectionGeometryRows>,lane:boolean)=>{
+  for(const row of rows){
+   const value=lane
+    ?laneValues.get(laneKey(row.sectionId,row.laneIndex??-1))
+    :sectionValues.get(row.sectionId);
+   if(value===null||value===undefined||!Number.isFinite(value))continue;
+   (lane?lanes:sections).push({type:"Feature",geometry:{type:"Polygon",coordinates:[row.ring]},properties:{comparison_metric:value,comparison_height:elevationByKpi(value,metric,maxHeightM),comparison_section_id:row.sectionId,comparison_lane_index:row.laneIndex}});
+  }
+ };
+ append(buildSectionGeometryRows(source.sections),false);
+ append(buildLaneGeometryRows(source.lanes),true);
+ return {sections:{type:"FeatureCollection",features:sections},lanes:{type:"FeatureCollection",features:lanes}};
+}
+
 function enableSideBySide():void {
  const token=++sideBySideLifecycle;
  const mount=()=>{
-  if(token!==sideBySideLifecycle||!visible||!appRef||!datasetA?.sections)return;
+  if(token!==sideBySideLifecycle||!visible||!appRef||!datasetA)return;
   const store=useAppStore.getState();store.setMapGrid(1,2);const pane=store.secondaryMapViews.at(-1);
   if(!pane){sideBySideRetryTimer=setTimeout(mount,100);return;}
-  sidePaneId=pane.id;bindComparisonMapEvents();store.setSecondaryMapLabel(pane.id,scenarioLabel(settings.scenarioB));
+  sidePaneId=pane.id;bindComparisonMapEvents();
   const primaryMap=appRef.getMap?.() as TestudoMapHandle|null|undefined;
   if(primaryMap&&geometry)sidePrimaryGeometryDispose=mountTestudoComparisonGeometry(primaryMap,geometry,"testudo-comparison-primary");
-  const metric=settings.metric==="flow"||settings.metric==="density"||settings.metric==="speed"?settings.metric:"flow";
-  const ramp=KPI_RAMPS[metric];const style={strokeColor:"#64748b",strokeWidth:2,fillOpacity:.85,vectorStyleMode:"graduated" as const,vectorStyleProperty:`comparison_${metric}`,vectorStyleClassCount:5,vectorStyleStops:ramp.stops.map((value,index)=>({value,color:ramp.colors[index]}))};
-  const a=appRef.addGeoJsonLayer(scenarioLabel(settings.scenarioA),datasetA.sections as never);store.setLayerStyle(a,style);store.setLayerVisibility(a,layerVisible);store.setSecondaryLayerVisibility(pane.id,a,false);
-  if(!datasetB?.sections){console.warn("[GeoLibre] scenario-comparison: Scenario B dataset failed to load; showing Scenario A only");sideLayerIds=[a];return;}
-  const b=appRef.addGeoJsonLayer(scenarioLabel(settings.scenarioB),datasetB.sections as never);store.setLayerStyle(b,style);store.setLayerVisibility(b,false);sideLayerIds=[a,b];store.setSecondaryLayerVisibility(pane.id,b,true);
+  const metric=isNetworkMetric(settings.metric)?settings.metric:getNetworkKpiSnapshot().metric;
+  const ramp=activeRamp(metric);
+  const colorExpression:[string,...unknown[]]=["interpolate",["linear"],["to-number",["get","comparison_metric"],0],...ramp.stops.flatMap((value,index)=>[value,ramp.colors[index]])];
+  const style={strokeColor:"#64748b",strokeWidth:0,fillOpacity:settings.opacity,vectorStyleMode:"expression" as const,vectorStyleProperty:"comparison_metric",vectorStyleExpression:JSON.stringify(colorExpression),extrusionEnabled:settings.extruded,extrusionColor:"#94a3b8",extrusionOpacity:settings.opacity,extrusionHeightProperty:"comparison_height",extrusionHeightScale:1};
+  const sideA=comparisonSidePolygons(datasetA,metric,settings.maxHeightM);
+  sidePrimaryHasLaneRows=sideA.lanes.features.length>0;
+  const aSections=appRef.addGeoJsonLayer(`${scenarioLabel(settings.scenarioA)} sections`,sideA.sections as never);
+  const aLanes=appRef.addGeoJsonLayer(`${scenarioLabel(settings.scenarioA)} lanes`,sideA.lanes as never);
+  for(const id of [aSections,aLanes]){store.setLayerStyle(id,style);store.setLayerVisibility(id,false);store.setSecondaryLayerVisibility(pane.id,id,false);}
+  const sideB=datasetB?comparisonSidePolygons(datasetB,metric,settings.maxHeightM):null;
+  if(!sideB){console.warn("[GeoLibre] scenario-comparison: Scenario B dataset failed to load; showing Scenario A only");sideLayerIds=[aSections,aLanes];return;}
+  store.setComparisonMapPresentation({owner:"scenario-comparison",secondaryPaneId:pane.id,primaryLabel:scenarioLabel(settings.scenarioA),secondaryLabel:scenarioLabel(settings.scenarioB)});
+  sideSecondaryHasLaneRows=sideB.lanes.features.length>0;
+  const bSections=appRef.addGeoJsonLayer(`${scenarioLabel(settings.scenarioB)} sections`,sideB.sections as never);
+  const bLanes=appRef.addGeoJsonLayer(`${scenarioLabel(settings.scenarioB)} lanes`,sideB.lanes as never);
+  for(const id of [bSections,bLanes]){store.setLayerStyle(id,style);store.setLayerVisibility(id,false);store.setSecondaryLayerVisibility(pane.id,id,false);}
+  sideLayerIds=[aSections,aLanes,bSections,bLanes];
+  sidePrimarySectionLayerId=aSections;sidePrimaryLaneLayerId=aLanes;sideSecondarySectionLayerId=bSections;sideSecondaryLaneLayerId=bLanes;
+  bindSideBySideZoomHandlers();
   if(sideSecondaryMap)sideSecondaryGeometryDispose=mountTestudoComparisonGeometry(sideSecondaryMap,geometryB,`testudo-comparison-${pane.id}`);
  };
  mount();
 }
-function disableSideBySide(){sideBySideLifecycle++;if(sideBySideRetryTimer!==null){clearTimeout(sideBySideRetryTimer);sideBySideRetryTimer=null;}const store=useAppStore.getState();sidePrimaryGeometryDispose?.();sidePrimaryGeometryDispose=null;sideSecondaryGeometryDispose?.();sideSecondaryGeometryDispose=null;sideSecondaryMap=null;for(const id of sideLayerIds)store.removeLayer(id);if(sidePaneId)store.removeSecondaryMapView(sidePaneId);sidePaneId=null;sideLayerIds=[];setSharedDeckLayers("scenario-comparison",[]);}
+function disableSideBySide(){sideBySideLifecycle++;if(sideBySideRetryTimer!==null){clearTimeout(sideBySideRetryTimer);sideBySideRetryTimer=null;}unbindSideBySideZoomHandlers();const store=useAppStore.getState();const presentation=store.comparisonMapPresentation;if(presentation?.owner==="scenario-comparison"&&(!sidePaneId||presentation.secondaryPaneId===sidePaneId))store.setComparisonMapPresentation(null);sidePrimaryGeometryDispose?.();sidePrimaryGeometryDispose=null;sideSecondaryGeometryDispose?.();sideSecondaryGeometryDispose=null;sideSecondaryMap=null;for(const id of sideLayerIds)store.removeLayer(id);if(sidePaneId)store.removeSecondaryMapView(sidePaneId);sidePaneId=null;sideLayerIds=[];sidePrimarySectionLayerId=null;sidePrimaryLaneLayerId=null;sideSecondarySectionLayerId=null;sideSecondaryLaneLayerId=null;sidePrimaryHasLaneRows=false;sideSecondaryHasLaneRows=false;setSharedDeckLayers("scenario-comparison",[]);}
 export function computeScenarioComparison(a:readonly ComparisonInput[],b:readonly ComparisonInput[]){rows=buildScenarioComparisonRows(a,b);notify();return rows;}
 export function getScenarioComparisonRows(){return rows;}
 export function stepScenarioComparisonInterval(direction:1|-1){const values=intervals.filter(v=>v!==0);if(values.length<2)return;const current=values.indexOf(settings.interval);const nextIndex=current<0?(direction===1?0:values.length-1):current+direction;if(!settings.loop&&(nextIndex<0||nextIndex>=values.length)){settings={...settings,intervalPlaying:false};playback.sync(false);notify();return;}const next=values[(nextIndex+values.length)%values.length];setScenarioComparisonSettings({interval:next});}
 function selectDistinctInitialPair(scenarios:readonly VehicleManifestScenario[]):void{const pair=defaultScenarioComparisonPair(scenarios.map(scenario=>scenario.index),settings.scenarioA,settings.scenarioB,settings.didA,settings.didB);if(pair)settings={...settings,...pair};}
 export function toggleScenarioComparisonIntervalPlaying(){settings={...settings,intervalPlaying:!settings.intervalPlaying&&intervals.filter(value=>value!==0).length>1};playback.sync(settings.intervalPlaying,Math.max(100,1000/settings.playbackSpeed));notify();}
-export async function setScenarioComparisonManifestUrl(url:string){committedComparisonIdentity=null;const token=++loadToken;settings={...settings,intervalPlaying:false};playback.sync(false);const oldProvider=provider;provider=null;intervalCache.clear();if(oldProvider)await oldProvider.close();rows=[];intervals=[];matchedIntervals=[];setSharedDeckLayers("scenario-comparison",[]);geometry=null;geometryB=null;datasetA=null;datasetB=null;manifestRaw=null;packageSource=null;manifestBaseUrl=null;status={...status,loading:Boolean(url.trim()),error:null,timelineA:null,timelineB:null,intervals:[],matchedIntervals:[],currentTimeSeconds:null};notify();if(!url.trim()){settings={...settings,manifestUrl:null};status={...status,loading:false,scenarios:[],intervals:[],matchedIntervals:[],timeMatchReason:null,aggregateAvailable:false,currentTimeSeconds:null};notify();return;} settings={...settings,manifestUrl:url};try{const raw=await fetchNetworkKpiManifestJson(url);if(token!==loadToken)return;const scenarios=listVehicleManifestScenarios(raw);status={...status,scenarios};selectDistinctInitialPair(scenarios);const source=createNetworkKpiHttpSource(url);const manifestA=parseNetworkKpiManifest(raw,url,settings.scenarioA);const manifestB=parseNetworkKpiManifest(raw,url,settings.scenarioB);[geometry,geometryB]=await Promise.all([loadNetworkKpiGeometry(source,manifestA.geometry),loadNetworkKpiGeometry(source,manifestB.geometry)]);if(token!==loadToken)return;manifestRaw=raw;packageSource=source;manifestBaseUrl=url;if(manifestA.bounds)appRef?.fitBounds?.(manifestA.bounds);if(!await installOpenedResourceIfCurrent(openTestudoDatasetProvider({source,manifest:raw}),()=>token===loadToken,opened=>{provider=opened;}))return;await readCurrent(token);if(token!==loadToken)return;if(settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}else render();notify();}catch(error){if(token!==loadToken)return;status={...status,loading:false,error:error instanceof Error?error.message:String(error)};notify();}}
+export async function setScenarioComparisonManifestUrl(url:string){disableSideBySide();committedComparisonIdentity=null;const token=++loadToken;settings={...settings,intervalPlaying:false};playback.sync(false);const oldProvider=provider;provider=null;intervalCache.clear();if(oldProvider)await oldProvider.close();rows=[];intervals=[];matchedIntervals=[];setSharedDeckLayers("scenario-comparison",[]);geometry=null;geometryB=null;datasetA=null;datasetB=null;manifestRaw=null;packageSource=null;manifestBaseUrl=null;status={...status,loading:Boolean(url.trim()),error:null,timelineA:null,timelineB:null,intervals:[],matchedIntervals:[],currentTimeSeconds:null};notify();if(!url.trim()){settings={...settings,manifestUrl:null};status={...status,loading:false,scenarios:[],intervals:[],matchedIntervals:[],timeMatchReason:null,aggregateAvailable:false,currentTimeSeconds:null};notify();return;} settings={...settings,manifestUrl:url};try{const raw=await fetchNetworkKpiManifestJson(url);if(token!==loadToken)return;const scenarios=listVehicleManifestScenarios(raw);status={...status,scenarios};selectDistinctInitialPair(scenarios);const source=createNetworkKpiHttpSource(url);const manifestA=parseNetworkKpiManifest(raw,url,settings.scenarioA);const manifestB=parseNetworkKpiManifest(raw,url,settings.scenarioB);[geometry,geometryB]=await Promise.all([loadNetworkKpiGeometry(source,manifestA.geometry),loadNetworkKpiGeometry(source,manifestB.geometry)]);if(token!==loadToken)return;manifestRaw=raw;packageSource=source;manifestBaseUrl=url;if(manifestA.bounds)appRef?.fitBounds?.(manifestA.bounds);if(!await installOpenedResourceIfCurrent(openTestudoDatasetProvider({source,manifest:raw}),()=>token===loadToken,opened=>{provider=opened;}))return;await readCurrent(token);if(token!==loadToken)return;if(settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}else render();notify();}catch(error){if(token!==loadToken)return;disableSideBySide();status={...status,loading:false,error:error instanceof Error?error.message:String(error)};notify();}}
 export function canLoadLocalScenarioComparisonPackage(): boolean { return supportsLocalPackageFolders(); }
-export async function loadLocalScenarioComparisonFolder(selectedDirectory?:NetworkKpiDirectoryHandle): Promise<void> { committedComparisonIdentity=null;const token=++loadToken;settings={...settings,intervalPlaying:false};playback.sync(false); if(!selectedDirectory&&!canLoadLocalScenarioComparisonPackage()){status={...status,error:"Local folders are not supported in this browser."};notify();return;} const oldProvider=provider;provider=null;intervalCache.clear();if(oldProvider)await oldProvider.close(); rows=[];intervals=[];matchedIntervals=[];setSharedDeckLayers("scenario-comparison",[]);geometry=null;geometryB=null;datasetA=null;datasetB=null; manifestRaw=null;packageSource=null;manifestBaseUrl=null; status={...status,loading:true,error:null,timelineA:null,timelineB:null,intervals:[],matchedIntervals:[],currentTimeSeconds:null};notify(); try { const root=selectedDirectory??await(window as any).showDirectoryPicker() as NetworkKpiDirectoryHandle; if(token!==loadToken)return; const raw=await readLocalNetworkKpiManifestJson(root); if(token!==loadToken)return; const scenarios=listVehicleManifestScenarios(raw);status={...status,scenarios};selectDistinctInitialPair(scenarios); const source=createNetworkKpiDirectorySource(root); const manifestA=parseNetworkKpiManifest(raw,null,settings.scenarioA); const manifestB=parseNetworkKpiManifest(raw,null,settings.scenarioB); [geometry,geometryB]=await Promise.all([loadNetworkKpiGeometry(source,manifestA.geometry),loadNetworkKpiGeometry(source,manifestB.geometry)]); if(token!==loadToken)return; manifestRaw=raw;packageSource=source;manifestBaseUrl=null; if(manifestA.bounds)appRef?.fitBounds?.(manifestA.bounds);if(!await installOpenedResourceIfCurrent(openTestudoDatasetProvider({source,manifest:raw}),()=>token===loadToken,opened=>{provider=opened;}))return;await readCurrent(token);if(token!==loadToken)return; if(settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}else render(); notify(); } catch(error) { if(token!==loadToken)return; const cancelled=error instanceof Error&&error.name==="AbortError"; status={...status,loading:false,error:cancelled?null:error instanceof Error?error.message:String(error)}; notify(); } }
-function inputs(result:NetworkKpiResults){return [...result.sections].map(([key,v])=>({key,flow:v.flow??null,density:v.density??null,speed:v.speed??null,delay:v.delay??null}));}
+export async function loadLocalScenarioComparisonFolder(selectedDirectory?:NetworkKpiDirectoryHandle): Promise<void> { disableSideBySide();committedComparisonIdentity=null;const token=++loadToken;settings={...settings,intervalPlaying:false};playback.sync(false); if(!selectedDirectory&&!canLoadLocalScenarioComparisonPackage()){status={...status,error:"Local folders are not supported in this browser."};notify();return;} const oldProvider=provider;provider=null;intervalCache.clear();if(oldProvider)await oldProvider.close(); rows=[];intervals=[];matchedIntervals=[];setSharedDeckLayers("scenario-comparison",[]);geometry=null;geometryB=null;datasetA=null;datasetB=null; manifestRaw=null;packageSource=null;manifestBaseUrl=null; status={...status,loading:true,error:null,timelineA:null,timelineB:null,intervals:[],matchedIntervals:[],currentTimeSeconds:null};notify(); try { const root=selectedDirectory??await(window as any).showDirectoryPicker() as NetworkKpiDirectoryHandle; if(token!==loadToken)return; const raw=await readLocalNetworkKpiManifestJson(root); if(token!==loadToken)return; const scenarios=listVehicleManifestScenarios(raw);status={...status,scenarios};selectDistinctInitialPair(scenarios); const source=createNetworkKpiDirectorySource(root); const manifestA=parseNetworkKpiManifest(raw,null,settings.scenarioA); const manifestB=parseNetworkKpiManifest(raw,null,settings.scenarioB); [geometry,geometryB]=await Promise.all([loadNetworkKpiGeometry(source,manifestA.geometry),loadNetworkKpiGeometry(source,manifestB.geometry)]); if(token!==loadToken)return; manifestRaw=raw;packageSource=source;manifestBaseUrl=null; if(manifestA.bounds)appRef?.fitBounds?.(manifestA.bounds);if(!await installOpenedResourceIfCurrent(openTestudoDatasetProvider({source,manifest:raw}),()=>token===loadToken,opened=>{provider=opened;}))return;await readCurrent(token);if(token!==loadToken)return; if(settings.mode==="side-by-side"){disableSideBySide();enableSideBySide();}else render(); notify(); } catch(error) { if(token!==loadToken)return;disableSideBySide(); const cancelled=error instanceof Error&&error.name==="AbortError"; status={...status,loading:false,error:cancelled?null:error instanceof Error?error.message:String(error)}; notify(); } }
+function inputs(result:NetworkKpiResults){return [
+ ...[...result.sections].map(([key,v])=>({key:`s:${key}`,flow:v.flow??null,density:v.density??null,speed:v.speed??null,delay:v.delay??null})),
+ ...[...result.lanes].map(([key,v])=>({key:`l:${key}`,flow:v.flow??null,density:v.density??null,speed:v.speed??null,delay:v.delay??null})),
+];}
 function withKpiData(source: NetworkKpiGeometry, result: NetworkKpiResults): NetworkKpiGeometry {
   const sections = source.sections ? {
     ...source.sections,
     features: source.sections.features.map((feature) => {
       const p = feature.properties ?? {};
       const k = result.sections.get(Number(p.section_id ?? p.oid));
-      return { ...feature, properties: { ...p, comparison_did: result.did, comparison_flow: k?.flow ?? null, comparison_density: k?.density ?? null, comparison_speed: k?.speed ?? null, comparison_interval: result.interval } };
+      return { ...feature, properties: { ...p, comparison_did: result.did, comparison_flow: k?.flow ?? null, comparison_density: k?.density ?? null, comparison_speed: k?.speed ?? null, comparison_delay: k?.delay ?? null, comparison_interval: result.interval } };
     }),
   } : null;
   const lanes = source.lanes ? {
@@ -154,7 +249,7 @@ function withKpiData(source: NetworkKpiGeometry, result: NetworkKpiResults): Net
     features: source.lanes.features.map((feature) => {
       const p = feature.properties ?? {};
       const k = result.lanes.get(laneKey(Number(p.section_id ?? p.oid), Number(p.lane_index)));
-      return { ...feature, properties: { ...p, comparison_did: result.did, comparison_flow: k?.flow ?? null, comparison_density: k?.density ?? null, comparison_speed: k?.speed ?? null, comparison_interval: result.interval } };
+      return { ...feature, properties: { ...p, comparison_did: result.did, comparison_flow: k?.flow ?? null, comparison_density: k?.density ?? null, comparison_speed: k?.speed ?? null, comparison_delay: k?.delay ?? null, comparison_interval: result.interval } };
     }),
   } : null;
   return { ...source, sections, lanes };
@@ -184,7 +279,6 @@ async function readCurrent(parentToken=loadToken):Promise<void>{if(!provider)ret
  }catch(error){if(token!==readToken||parentToken!==loadToken)return;settings={...settings,intervalPlaying:false};playback.sync(false);status={...status,loading:false,error:error instanceof Error?error.message:String(error),timelineA:null,timelineB:null,intervals:[],matchedIntervals:[],currentTimeSeconds:null};rows=[];intervals=[];matchedIntervals=[];setSharedDeckLayers("scenario-comparison",[]);notify();}}
 
 function color(row:ComparisonRow):[number,number,number,number]{const value=row[settings.metric];const alpha=Math.round(settings.opacity*255);if(value===null||value===undefined)return [136,136,136,alpha];if(isComparisonDifferenceMetric(settings.metric)){const rgb=comparisonDifferenceColor(settings.metric,Number(value),settings.flowDifferenceScale);return [...rgb,alpha];}const cat=comparisonCategoricalRamp(settings.metric)?.categories.find(c=>c.key===value);const h=(cat?.color??"#888888").replace("#","");return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16),alpha];}
-function validRing(ring:readonly [number,number][]):boolean{return ring.length>=3&&ring.every(([x,y])=>Number.isFinite(x)&&Number.isFinite(y));}
 function render(){
   if(!deck)return;
   if(!geometry||settings.mode!=="diff"){setSharedDeckLayers("scenario-comparison",[]);return;}
@@ -193,28 +287,36 @@ function render(){
   const numericDifference=isComparisonDifferenceMetric(settings.metric);
   const threshold=Math.max(0,settings.differenceThreshold??comparisonThresholdDefault(settings.metric));
   const labels:Array<{position:[number,number];elevation:number;text:string;priority:number;widthPx:number}> = [];
-  const features=geometry.sections?.features??[];
-  const matchingGeometry=new Set((geometryB?.sections?.features??[]).map(feature=>String(Number(feature.properties?.section_id??feature.properties?.oid))));
-  const data=features.flatMap(f=>{
-    const p=f.properties??{};
-    const key=Number(p.section_id??p.oid);
-    const row=rowsByKey.get(String(key));
-    if(!row||!row.hasReference||!row.hasCompared||!matchingGeometry.has(String(key)))return [];
-    const c=f.geometry?.coordinates;
-    if(!Array.isArray(c)||f.geometry?.type!=="LineString")return [];
+  const sectionRows=buildSectionGeometryRows(geometry.sections);
+  const laneRows=buildLaneGeometryRows(geometry.lanes);
+  const matchingGeometry=new Set([
+    ...buildSectionGeometryRows(geometryB?.sections??null).map(row=>row.key),
+    ...buildLaneGeometryRows(geometryB?.lanes??null).map(row=>row.key),
+  ]);
+  const sectionFeatures=new Map((geometry.sections?.features??[]).map(feature=>{
+    const p=feature.properties??{};
+    return [Number(p.section_id??p.oid),feature] as const;
+  }));
+  const data=[...sectionRows.map(row=>({geometryRow:row,lane:false})),...laneRows.map(row=>({geometryRow:row,lane:true}))].flatMap(({geometryRow,lane})=>{
+    const row=rowsByKey.get(geometryRow.key);
+    if(!row||!row.hasReference||!row.hasCompared||!matchingGeometry.has(geometryRow.key))return [];
     const value=row[settings.metric];
     if(isComparisonDifferenceMetric(settings.metric)&&threshold>0&&!passesComparisonDifferenceFilter(settings.metric,value,row.flow_delta,row.density_delta,threshold))return [];
-    const ring=bufferLineToRing(c as [number,number][],Number(p.total_width)||6);
-    if(!ring||!validRing(ring))return [];
-    const numericValue=value===null||value===undefined?Number.NaN:Number(value);
-    const midpoint=numericDifference&&Number.isFinite(numericValue)?lineMidpoint(c as [number,number][]):null;
-    if(midpoint&&Number.isFinite(numericValue)){
-      const base=settings.metric.replace("_delta","") as NetworkKpiMetric;
-      const elevation=settings.extruded?elevationByKpi(Math.abs(numericValue),base,settings.maxHeightM)+2:0;
-      const text=formatRoundedDifference(numericValue);
-      labels.push({position:midpoint,elevation,text,priority:Math.abs(numericValue),widthPx:text.length*9+12});
+    if(!lane){
+      const feature=sectionFeatures.get(geometryRow.sectionId);
+      const coordinates=feature?.geometry?.coordinates;
+      if(Array.isArray(coordinates)&&feature?.geometry?.type==="LineString"){
+        const numericValue=value===null||value===undefined?Number.NaN:Number(value);
+        const midpoint=numericDifference&&Number.isFinite(numericValue)?lineMidpoint(coordinates as [number,number][]):null;
+        if(midpoint&&Number.isFinite(numericValue)){
+          const base=settings.metric.replace("_delta","") as NetworkKpiMetric;
+          const elevation=settings.extruded?elevationByKpi(Math.abs(numericValue),base,settings.maxHeightM)+2:0;
+          const text=formatRoundedDifference(numericValue);
+          labels.push({position:midpoint,elevation,text,priority:Math.abs(numericValue),widthPx:text.length*9+12});
+        }
+      }
     }
-    return [{ring,row}];
+    return [{ring:geometryRow.ring,row}];
   });
   const layer=new deck.layers.PolygonLayer({id:"scenario-comparison-diff",data,getPolygon:(d:{ring:[number,number][]})=>d.ring,getFillColor:(d:{row:ComparisonRow})=>color(d.row),getElevation:(d:{row:ComparisonRow})=>{if(!settings.extruded)return 0;const base=settings.metric.replace("_delta","") as NetworkKpiMetric;const value=Number(d.row[settings.metric]);return Number.isFinite(value)?elevationByKpi(Math.abs(value),base,settings.maxHeightM):0;},extruded:settings.extruded,opacity:settings.opacity,pickable:true,updateTriggers:{getFillColor:[settings.metric,settings.opacity,settings.differenceThreshold,settings.flowDifferenceScale,rows],getElevation:[settings.metric,settings.maxHeightM,settings.extruded,settings.differenceThreshold,rows]},...depthOcclusionParameters(settings.seeThroughBuildings)});
   const map=appRef?.getMap?.() as any;

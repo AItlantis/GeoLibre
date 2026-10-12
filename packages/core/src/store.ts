@@ -76,6 +76,7 @@ import {
   type MapGridLayout,
   type MapRendererKind,
   type MapViewState,
+  type ComparisonMapPresentation,
   type ProcessingModel,
   type ProcessingRerunRequest,
   type ProcessingRun,
@@ -316,6 +317,8 @@ export interface AppState {
    * exactly `rows * cols - 1` entries in sync with `mapLayout`.
    */
   secondaryMapViews: SecondaryMapView[];
+  /** Temporary read-only labels and chrome for a plugin-owned comparison. */
+  comparisonMapPresentation: ComparisonMapPresentation | null;
   /** User-entered label for the primary pane (shown only in multi-map mode). */
   primaryMapLabel: string;
   /**
@@ -496,6 +499,7 @@ export interface AppState {
   setSecondaryLayerVisibility: (id: string, layerId: string, visible: boolean) => void;
   /** Set the primary pane's custom label. */
   setPrimaryMapLabel: (label: string) => void;
+  setComparisonMapPresentation: (presentation: ComparisonMapPresentation | null) => void;
   /**
    * Switch the primary map area between the 2D map and the 3D globe (no-op if
    * unchanged). Touches nothing else in the store, so the shared camera, layer,
@@ -1176,6 +1180,7 @@ export const useAppStore = create<AppState>()(
       dashboardColumns: DEFAULT_DASHBOARD_COLUMNS,
       mapLayout: { ...DEFAULT_MAP_GRID_LAYOUT },
       secondaryMapViews: [],
+      comparisonMapPresentation: null,
       primaryMapLabel: "",
       primaryRenderer: DEFAULT_PRIMARY_RENDERER,
       copiedLayerStyle: null,
@@ -1386,6 +1391,7 @@ export const useAppStore = create<AppState>()(
           return { secondaryMapViews, isDirty: true };
         }),
       setPrimaryMapLabel: (label) => set({ primaryMapLabel: label, isDirty: true }),
+      setComparisonMapPresentation: (presentation) => set({ comparisonMapPresentation: presentation }),
       setPrimaryRenderer: (renderer) =>
         set((s) =>
           s.primaryRenderer === renderer ? s : { primaryRenderer: renderer, isDirty: true },

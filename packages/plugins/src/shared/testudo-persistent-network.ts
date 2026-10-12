@@ -55,7 +55,7 @@ export function mountTestudoComparisonGeometry(
           "line-color": "#94a3b8",
           "line-width": key === "sections" ? metersLineWidthExpression(sectionWidthMetersExpression())
             : key === "lanes" ? metersLineWidthExpression(laneWidthMetersExpression()) : width,
-          "line-opacity": 60 / 255,
+          "line-opacity": 1,
         },
       }, beforeId);
     }
@@ -281,10 +281,10 @@ export class TestudoPersistentNetwork {
       if (!map.getLayer(id)) map.addLayer(type === "line" ? {
         id, type, source: id, layout: { visibility: this.visibility[key] ? "visible" : "none" },
         ...(key === "sections" ? { maxzoom: 17 } : key === "lanes" ? { minzoom: 17 } : {}),
-        paint: { "line-color": "#94a3b8", "line-width": key === "sections" ? metersLineWidthExpression(sectionWidthMetersExpression()) : key === "lanes" ? metersLineWidthExpression(laneWidthMetersExpression()) : width, "line-opacity": 60 / 255 },
+        paint: { "line-color": "#94a3b8", "line-width": key === "sections" ? metersLineWidthExpression(sectionWidthMetersExpression()) : key === "lanes" ? metersLineWidthExpression(laneWidthMetersExpression()) : width, "line-opacity": 1 },
       } : {
         id, type, source: id, layout: { visibility: this.visibility[key] ? "visible" : "none" },
-        paint: { "fill-color": "#94a3b8", "fill-opacity": 60 / 255 },
+        paint: { "fill-color": "#94a3b8", "fill-opacity": 1 },
       });
       const visibility = this.visibility[key] ? "visible" : "none";
       if (map.getLayoutProperty?.(id, "visibility") !== visibility) map.setLayoutProperty(id, "visibility", visibility);

@@ -41,6 +41,24 @@ function tracePlaybackCommand(event: string, detail: Record<string, unknown>): v
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
 export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
 const featureCapabilityIds: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
+
+function consistentComparisonDurationSeconds(
+  timelineA: { initialTimeSeconds: number | null; durationSeconds: number | null; intervalDurationSeconds: number | null; intervalCount: number | null } | null | undefined,
+  timelineB: { initialTimeSeconds: number | null; durationSeconds: number | null; intervalDurationSeconds: number | null; intervalCount: number | null } | null | undefined,
+): number | null {
+  const period = (timeline: typeof timelineA) => {
+    if (!timeline || timeline.initialTimeSeconds === null || !Number.isFinite(timeline.initialTimeSeconds)) return null;
+    const duration = timeline.durationSeconds ?? (timeline.intervalCount !== null && timeline.intervalCount > 0 && timeline.intervalDurationSeconds !== null
+      ? Math.max(0, timeline.intervalCount - 1) * timeline.intervalDurationSeconds : null);
+    if (duration === null || !Number.isFinite(duration) || duration < 0) return null;
+    return { start: timeline.initialTimeSeconds, end: timeline.initialTimeSeconds + duration, duration };
+  };
+  const a = period(timelineA);
+  const b = period(timelineB);
+  const tolerance = 1e-6;
+  return a && b && Math.abs(a.start - b.start) <= tolerance && Math.abs(a.end - b.end) <= tolerance
+    ? a.duration : null;
+}
 const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai" && id !== "geoai-buildings");
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectablePluginId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
@@ -198,7 +216,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           setSettings: plugins.setPathAnalysisSettings, stepNetworkKpiInterval: plugins.stepPathAnalysisInterval,
           subscribe: plugins.subscribePathAnalysis,
         }, isCurrent, context);
-        const comparisonPlayback = plugins.createScenarioComparisonPlaybackAdapter({ getStatus: () => { const status = plugins.getScenarioComparisonStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, matchedIntervals: status.matchedIntervals, dt: status.timelineA?.intervalDurationSeconds, simulationDurationSeconds: status.timelineA?.durationSeconds ?? status.timelineB?.durationSeconds ?? null }; }, getSettings: plugins.getScenarioComparisonSnapshot,
+        const comparisonPlayback = plugins.createScenarioComparisonPlaybackAdapter({ getStatus: () => { const status = plugins.getScenarioComparisonStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, matchedIntervals: status.matchedIntervals, dt: status.timelineA?.intervalDurationSeconds, simulationDurationSeconds: consistentComparisonDurationSeconds(status.timelineA, status.timelineB) }; }, getSettings: plugins.getScenarioComparisonSnapshot,
           setSettings: plugins.setScenarioComparisonSettings, stepScenarioComparisonInterval: plugins.stepScenarioComparisonInterval,
           subscribe: plugins.subscribeScenarioComparisonStatus }, isCurrent, context);
         const playback: NonNullable<TestudoFeatureSession["playback"]> = {
@@ -1379,6 +1397,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           }
           if (request.type === "testudoSetStyle") {
             if (request.payload?.tviewId !== "main" || request.payload?.generation !== generation) throw new Error("Style command belongs to a stale package generation.");
+            const styleGeneration = generation;
             const comparisonScenarios = current.selectedMode === "comparison" ? plugins.getScenarioComparisonStatus().scenarios : undefined;
             const style = validateTestudoStyle(request.payload?.style, current.selectedMode, declaredScenarioIds.length, comparisonScenarios);
             const comparisonSnapshot = current.selectedMode === "comparison" ? plugins.getScenarioComparisonSnapshot() : undefined;
@@ -1392,7 +1411,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
                 ...(scenarioA !== undefined ? { scenarioA } : {}),
                 ...(scenarioB !== undefined ? { scenarioB } : {}),
               };
-              handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), mode: showDifference ? "diff" : "side-by-side", ...pair });
+              await handlers["scenario-comparison"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setScenarioComparisonSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM), mode: showDifference ? "diff" : "side-by-side", ...pair });
+              requireMainGeneration({ tviewId: "main", generation: styleGeneration });
+              if (generation !== styleGeneration) throw new Error("Style command belongs to a stale package generation.");
             }
             else if (current.selectedMode === "environment") handlers["emissions-h3"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setEmissionsH3Settings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });
             else handlers["network-kpi"].settings({ metric: metric as NonNullable<Parameters<typeof plugins.setNetworkKpiSettings>[0]["metric"]>, interval: Number(interval), extruded, maxHeightM: Number(maxHeightM) });

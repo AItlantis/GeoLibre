@@ -183,32 +183,29 @@ export function ScenarioComparisonPanel() {
             {t("toolbar.scenarioComparison.flowDifferenceScale", { value: s.flowDifferenceScale })}
             <input className="w-full" type="range" min={10} max={2000} step={10} value={s.flowDifferenceScale} onChange={(e) => setScenarioComparisonSettings({ flowDifferenceScale: Number(e.currentTarget.value) })} />
           </label>}
-          <div className="flex items-center gap-1.5">
-            <Button variant={!viewMode.extruded ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={!viewMode.extruded} onClick={viewMode.setFlat}>
-              <Square className="me-1.5 h-3.5 w-3.5" />
-              {t("toolbar.scenarioComparison.flat")}
-            </Button>
-            <Button variant={viewMode.extruded ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={viewMode.extruded} onClick={viewMode.setExtruded}>
-              <Box className="me-1.5 h-3.5 w-3.5" />
-              {t("toolbar.scenarioComparison.extruded")}
-            </Button>
-          </div>
-          {/* The height ceiling only means anything while extruded, so it is
-              disabled rather than hidden, matching Network KPI / Emissions H3. */}
-          <label className="block text-xs">
-            {t("toolbar.scenarioComparison.height")}
-            <input
-              className="w-full"
-              type="range"
-              min={1}
-              max={200}
-              value={viewMode.heightSlider.value}
-              disabled={viewMode.heightSlider.disabled}
-              onChange={(e) => viewMode.setMaxHeight(Number(e.currentTarget.value))}
-            />
-          </label>
         </>
       )}
+      <div className="flex items-center gap-1.5">
+        <Button variant={!viewMode.extruded ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={!viewMode.extruded} onClick={viewMode.setFlat}>
+          <Square className="me-1.5 h-3.5 w-3.5" />
+          {t("toolbar.scenarioComparison.flat")}
+        </Button>
+        <Button variant={viewMode.extruded ? "secondary" : "ghost"} size="sm" className="h-7 flex-1 text-xs" aria-pressed={viewMode.extruded} onClick={viewMode.setExtruded}>
+          <Box className="me-1.5 h-3.5 w-3.5" />
+          {t("toolbar.scenarioComparison.extruded")}
+        </Button>
+      </div>
+      {viewMode.extruded && <label className="block text-xs">
+        {t("toolbar.scenarioComparison.height")}
+        <input
+          className="w-full"
+          type="range"
+          min={1}
+          max={200}
+          value={viewMode.heightSlider.value}
+          onChange={(e) => viewMode.setMaxHeight(Number(e.currentTarget.value))}
+        />
+      </label>}
       <label className="block text-xs">
         {t("toolbar.scenarioComparison.opacity")}
         <input className="w-full" type="range" min="0.1" max="1" step="0.05" value={s.opacity} onChange={(e) => setScenarioComparisonSettings({ opacity: Number(e.currentTarget.value) })} />
