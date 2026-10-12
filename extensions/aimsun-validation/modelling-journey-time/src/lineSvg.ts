@@ -24,6 +24,8 @@ export interface LineSeries {
   color?: string;
   dash?: string;
   width?: number;
+  /** Draw a post-step curve (one flat duration per interval). */
+  step?: boolean;
 }
 export interface BandPoint {
   x: number;
@@ -43,6 +45,7 @@ export interface LineOptions {
   xTicks?: readonly number[];
   xFormat?: (x: number) => string;
   gapFactor?: number;
+  simWindow?: { start: number; end: number } | null;
 }
 
 export const minutesToHHMM = (m: number): string => {
@@ -129,6 +132,11 @@ export function lineSvg(o: LineOptions): string {
     )
     .join("");
 
+  if (o.simWindow && Number.isFinite(o.simWindow.start) && Number.isFinite(o.simWindow.end) && o.simWindow.end > o.simWindow.start) {
+    const lo = Math.max(xlo, o.simWindow.start), hi = Math.min(xhi, o.simWindow.end);
+    if (hi > lo) body += `<rect data-sim-window="1" x="${f(px(lo))}" y="${M.top}" width="${f(px(hi) - px(lo))}" height="${IH}" fill="${ACCENT}" fill-opacity="0.08"><title>Simulated window ${esc(fmt(lo))}-${esc(fmt(hi))} min</title></rect>`;
+  }
+
   // Band: one polygon per run.
   if (o.band) {
     for (const run of runs(o.band.points, (p) => p.lo !== null && p.hi !== null, gap)) {
@@ -149,9 +157,13 @@ export function lineSvg(o: LineOptions): string {
   o.series.forEach((s, i) => {
     const color = s.color ?? palette[i % palette.length];
     for (const run of runs(s.points, (p) => p.y !== null && Number.isFinite(p.y), gap)) {
-      const d = run.map((p, k) => `${k ? "L" : "M"}${f(px(p.x))} ${f(py(p.y as number))}`).join("");
+      const d = run.map((p, k) => {
+        const x = f(px(p.x)), y = f(py(p.y as number));
+        if (!k) return `M${x} ${y}`;
+        return s.step ? `H${x}V${y}` : `L${x} ${y}`;
+      }).join("");
       body += `<path data-series="${esc(s.label)}" d="${d}" fill="none" stroke="${color}" stroke-width="${s.width ?? 1.75}"${s.dash ? ` stroke-dasharray="${s.dash}"` : ""}/>`;
-      if (run.length === 1) body += `<circle cx="${f(px(run[0].x))}" cy="${f(py(run[0].y as number))}" r="2.5" fill="${color}"/>`;
+      for (const p of run) body += `<circle cx="${f(px(p.x))}" cy="${f(py(p.y as number))}" r="2" fill="${color}"><title>${esc(`${minutesToHHMM(p.x)}: ${fmt(p.y as number)} s — ${s.label}`)}</title></circle>`;
     }
   });
   // Legend (start-aligned along the top margin).

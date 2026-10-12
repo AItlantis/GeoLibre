@@ -65,6 +65,18 @@ test("planFiles: stems without a manifest; manifest wins and maps aliases; unrel
   ]);
 });
 
+test("planFiles preserves run-labelled simulated JT tables from one multi-run manifest", () => {
+  const manifest = { schema_version: 1 as const, files: [
+    { table: "subpath_sim_jt", path: "data/JT_A/subpath_sim_jt.parquet" },
+    { table: "subpath_sim_jt", path: "data/JT_B/subpath_sim_jt.parquet" },
+  ] };
+  const plan = planFiles(["pkg/data/JT_A/subpath_sim_jt.parquet", "pkg/data/JT_B/subpath_sim_jt.parquet"], manifest);
+  assert.deepEqual(plan.map((p) => [p.name, p.table, p.run]), [
+    ["pkg/data/JT_A/subpath_sim_jt.parquet", "subpath_sim_jt", "JT_A"],
+    ["pkg/data/JT_B/subpath_sim_jt.parquet", "subpath_sim_jt", "JT_B"],
+  ]);
+});
+
 test("i18n: host translate wins, English default + interpolation otherwise, keys are namespaced", () => {
   assert.equal(interpolate("{{n}} days, {{x}}", { n: 3 }), "3 days, {{x}}");
   const seen: string[] = [];

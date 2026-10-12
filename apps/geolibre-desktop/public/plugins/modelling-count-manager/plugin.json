@@ -1,0 +1,11 @@
+{
+  "id": "modelling-count-manager",
+  "name": "Modelling Count Manager",
+  "version": "0.1.0",
+  "description": "Simulated and observed detector counts and model validation from an Aimsun run package.",
+  "entry": "dist/index.js",
+  "style": "dist/style.css",
+  "engines": [
+    "maplibre"
+  ]
+}

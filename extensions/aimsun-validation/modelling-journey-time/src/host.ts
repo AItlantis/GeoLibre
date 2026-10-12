@@ -43,6 +43,8 @@ export interface HostPlugin {
   activate: (app: HostApp) => boolean | void | Promise<boolean | void>;
   deactivate: (app: HostApp) => void;
   handleUrlParameters?: (app: HostApp, params: URLSearchParams) => void | Promise<void>;
+  getProjectState?: () => unknown;
+  applyProjectState?: (app: HostApp, state: unknown) => boolean | void;
 }
 
 export interface GeoJSONFeature {

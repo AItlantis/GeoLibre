@@ -79,12 +79,15 @@ interface Pending {
   table: CanonicalTable;
   name: string;
   bytes: Uint8Array;
+  run?: string;
   sha256?: string;
   rows?: number;
 }
 
 async function ingest(s: Session, pending: Pending[], origin: string, run: string | null, opts: LoadOptions): Promise<PackageSummary> {
   const out: PackageSummary = { run, origin, tables: [], geo: null, hasObs: false, hasSim: false, notes: [] };
+  const simParts: string[] = [];
+  let simIndex = 0;
   for (const p of pending) {
     if (p.sha256 && opts.verifyHash !== false) {
       const got = await sha256Hex(p.bytes);
@@ -97,10 +100,24 @@ async function ingest(s: Session, pending: Pending[], origin: string, run: strin
       rows = fc.features.length;
       if (skipped) out.notes.push(`${skipped} subpath feature(s) without line geometry were ignored.`);
     } else {
-      rows = await registerTable(s, p.table, p.name, p.bytes, "parquet");
+      const target = p.table === "subpath_sim_jt" ? `subpath_sim_jt_part_${simIndex++}` : p.table;
+      rows = await registerTable(s, target, p.name, p.bytes, "parquet");
+      if (p.table === "subpath_sim_jt") {
+        simParts.push(target);
+        if (p.run) {
+          const cols = await s.query<{ column_name: string }>(`DESCRIBE ${target}`);
+          if (!cols.some((c) => String(c.column_name).toLowerCase() === "run")) await s.exec(`ALTER TABLE ${target} ADD COLUMN run VARCHAR`);
+          await s.exec(`UPDATE ${target} SET run = '${p.run.replace(/'/g, "''")}' WHERE run IS NULL`);
+        }
+      }
     }
     if (p.rows !== undefined && p.rows !== rows) throw new Error(`row count mismatch for ${p.name}: manifest ${p.rows}, loaded ${rows}`);
     out.tables.push({ table: p.table, rows, bytes: p.bytes.byteLength });
+  }
+  if (simParts.length) {
+    const union = simParts.map((part) => `SELECT * FROM ${part}`).join(" UNION ALL BY NAME ");
+    await s.exec(`CREATE OR REPLACE TABLE subpath_sim_jt AS ${union}`);
+    for (const part of simParts) await s.exec(`DROP TABLE IF EXISTS ${part}`);
   }
   out.hasObs = out.tables.some((t) => t.table === "subpath_obs_jt" && t.rows > 0);
   out.hasSim = out.tables.some((t) => t.table === "subpath_sim_jt" && t.rows > 0);
@@ -119,7 +136,10 @@ export async function loadFromManifestUrl(s: Session, manifestUrl: string, opts:
     if (!table || !WANTED.includes(table)) continue;
     const r = await f(resolveInsidePackage(manifestUrl, e.path), { cache: "no-cache" });
     if (!r.ok) throw new Error(`Could not fetch ${e.path} (table ${e.table}): HTTP ${r.status}`);
-    pending.push({ table, name: e.path, bytes: new Uint8Array(await r.arrayBuffer()), sha256: e.sha256, rows: e.rows });
+    const parent = e.path.replace(/\\/g, "/").split("/").slice(-2, -1)[0];
+    const runName = (e as typeof e & { run?: string }).run;
+    pending.push({ table, name: e.path, bytes: new Uint8Array(await r.arrayBuffer()), sha256: e.sha256, rows: e.rows,
+      run: runName ?? (parent && parent !== "data" ? parent : typeof manifest.run === "string" ? manifest.run : undefined) });
   }
   return withDuckDbLock(() => ingest(s, pending, manifestUrl, typeof manifest.run === "string" ? manifest.run : null, opts));
 }
@@ -131,25 +151,32 @@ const stem = (p: string): string => baseName(p).replace(/\.[^.]+$/, "");
 export function planFiles(
   names: readonly string[],
   manifest?: PackageManifest,
-): Array<{ name: string; table: CanonicalTable; sha256?: string; rows?: number }> {
-  const plan: Array<{ name: string; table: CanonicalTable; sha256?: string; rows?: number }> = [];
+): Array<{ name: string; table: CanonicalTable; sha256?: string; rows?: number; run?: string }> {
+  const plan: Array<{ name: string; table: CanonicalTable; sha256?: string; rows?: number; run?: string }> = [];
   const used = new Set<CanonicalTable>();
+  const plannedNames = new Set<string>();
   if (manifest) {
     for (const e of manifest.files) {
       const table = canonicalTable(e.table);
-      if (!table || !WANTED.includes(table) || used.has(table)) continue;
+      if (!table || !WANTED.includes(table) || (table !== "subpath_sim_jt" && used.has(table))) continue;
       const hit = names.find((n) => n.replace(/\\/g, "/").endsWith(e.path)) ?? names.find((n) => baseName(n) === baseName(e.path));
       if (hit) {
-        plan.push({ name: hit, table, sha256: e.sha256, rows: e.rows });
-        used.add(table);
+        const parent = e.path.replace(/\\/g, "/").split("/").slice(-2, -1)[0];
+        const inferredRun = table === "subpath_sim_jt" && baseName(e.path).toLowerCase() === "subpath_sim_jt.parquet" && parent && parent !== "data" ? parent : undefined;
+        const fileRun = (e as typeof e & { run?: string }).run ?? inferredRun;
+        plan.push({ name: hit, table, sha256: e.sha256, rows: e.rows, ...(fileRun ? { run: fileRun } : {}) });
+        plannedNames.add(hit);
+        if (table !== "subpath_sim_jt") used.add(table);
       }
     }
   }
   for (const n of names) {
     const table = canonicalTable(stem(n));
-    if (table && WANTED.includes(table) && !used.has(table) && /\.(parquet|geojson|json)$/i.test(n)) {
-      plan.push({ name: n, table });
-      used.add(table);
+    if (table && WANTED.includes(table) && !plannedNames.has(n) && (table === "subpath_sim_jt" || !used.has(table)) && /\.(parquet|geojson|json)$/i.test(n)) {
+      const parent = n.replace(/\\/g, "/").split("/").slice(-2, -1)[0];
+      const run = table === "subpath_sim_jt" && baseName(n).toLowerCase() === "subpath_sim_jt.parquet" && parent && parent !== "data" ? parent : undefined;
+      plan.push({ name: n, table, ...(run ? { run } : {}) });
+      if (table !== "subpath_sim_jt") used.add(table);
     }
   }
   return plan;
@@ -177,7 +204,7 @@ export async function loadFromFiles(s: Session, files: readonly File[], opts: Lo
   const pending: Pending[] = [];
   for (const p of plan) {
     const file = byName.get(p.name)!;
-    pending.push({ table: p.table, name: p.name, bytes: new Uint8Array(await file.arrayBuffer()), sha256: p.sha256, rows: p.rows });
+    pending.push({ table: p.table, name: p.name, bytes: new Uint8Array(await file.arrayBuffer()), sha256: p.sha256, rows: p.rows, run: p.run ?? (p.table === "subpath_sim_jt" ? run ?? undefined : undefined) });
   }
   const dir = files[0] ? rel(files[0]).split("/")[0] : "";
   return withDuckDbLock(() => ingest(s, pending, `picked files${dir && rel(files[0]).includes("/") ? ` (${dir})` : ""}`, run, opts));

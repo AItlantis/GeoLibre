@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { buildSubpathSql } from "../../_shared/src/sql/subpath.sql.ts";
 import { toObsRows, type ObsRow } from "../src/profile.ts";
 import { buildSimSql, classifyTsType, missingSimColumns } from "../src/simtable.ts";
-import { kpis, pairObsSim, perRoute, points, type SimRow } from "../src/validation.ts";
+import { DEFAULT_CRITERIA, joinComparison, journeyTimeBands, kpis, pairObsSim, perRoute, points, validateCriteria, type SimRow } from "../src/validation.ts";
 import { memConn, rows, runScript, type DuckDBConnection } from "./helpers.ts";
 
 const near = (a: number | null, b: number, eps = 1e-9): void => assert.ok(a !== null && Math.abs(a - b) <= eps, `${a} != ${b}`);
@@ -99,6 +99,37 @@ test("simtable: ts type classification and column check", () => {
   assert.throws(() => buildSimSql(7, "temporal"), /divisor of 1440/);
 });
 
+test("criteria defaults and validation, relative status, absolute alternative, custom journey-time bands", () => {
+  assert.deepEqual(DEFAULT_CRITERIA.bandEdges, [120, 300, 600, 1200]);
+  assert.equal(DEFAULT_CRITERIA.absoluteEnabled, false);
+  assert.equal(validateCriteria({ ...DEFAULT_CRITERIA, bandEdges: [100, 200, 500, 900] }).bandEdges[2], 500);
+  assert.throws(() => validateCriteria({ ...DEFAULT_CRITERIA, passPct: 31, failPct: 30 }), /no greater/);
+  assert.throws(() => validateCriteria({ ...DEFAULT_CRITERIA, targetPct: 101 }), /between 0 and 100/);
+  assert.throws(() => validateCriteria({ ...DEFAULT_CRITERIA, bandEdges: [1, 1, 3, 4] }), /increasing/);
+  const rows = [
+    { key: "a", route: "A", direction: "IB", nBuckets: 1, obs: 100, sim: 110, delta: 10, ratio: 1.1, errorPct: 10, absError: 10, status: "pass" as const },
+    { key: "b", route: "B", direction: "IB", nBuckets: 1, obs: 200, sim: 250, delta: 50, ratio: 1.25, errorPct: 25, absError: 50, status: "warn" as const },
+    { key: "c", route: "C", direction: "IB", nBuckets: 1, obs: 700, sim: 1000, delta: 300, ratio: 1.43, errorPct: 43, absError: 300, status: "fail" as const },
+  ];
+  const bands = journeyTimeBands(rows, [150, 250, 500]);
+  assert.deepEqual(bands.map((b) => [b.label, b.n, b.passPct]), [["<150", 1, 100], ["150–250", 1, 0], ["250–500", 0, null], ["≥500", 1, 0]]);
+});
+
+test("comparison joins one-sided routes and classifies lower absolute relative error as improved", () => {
+  const make = (key: string, errorPct: number) => ({ key, route: key, direction: "IB", nBuckets: 1, obs: 100, sim: 100 + errorPct, delta: errorPct, ratio: 1, errorPct, absError: Math.abs(errorPct), status: "pass" as const });
+  assert.deepEqual(joinComparison([make("a", 20), make("b", 10)], [make("a", 5), make("c", 2)]).map((r) => [r.key, r.status]), [["a", "improved"], ["b", "only"], ["c", "only"]]);
+});
+
+test("multiple simulated segments are duration-weighted over each observed bucket", () => {
+  const segments: SimRow[] = [
+    { ...sm("R", "IB", 420, 100), interval_start_s: 420 * 60, duration_s: 300 },
+    { ...sm("R", "IB", 420, 200), interval_start_s: 420 * 60 + 300, duration_s: 600 },
+  ];
+  const paired = pairObsSim([ob("R", "IB", 420, 150)], segments, "median", null);
+  assert.equal(paired.pairs.length, 1);
+  near(paired.pairs[0].sim, (100 * 300 + 200 * 600) / 900);
+});
+
 // ---- SQL against native DuckDB (same SQL as duckdb-wasm) --------------------------------------
 let conn: DuckDBConnection;
 before(async () => {
@@ -140,9 +171,9 @@ test("synthetic fixture package: end-to-end numbers equal the independently comp
      CREATE TABLE subpath_sim_jt AS SELECT * FROM read_parquet('${pkg}subpath_sim_jt.parquet');`,
   );
   await runScript(conn, buildSubpathSql({ bucketMinutes: 15 }));
-  await runScript(conn, buildSimSql(15, "temporal"));
+  await runScript(conn, buildSimSql(15, "numeric", ["route", "direction_norm", "interval_start_s", "duration_s", "seconds", "run"]));
   const obs = toObsRows(await rows(conn, "SELECT * FROM v_sp_obs"));
-  const sim: SimRow[] = (await rows(conn, "SELECT * FROM v_sp_sim")).map((r) => ({ route: String(r.route), direction_norm: String(r.direction_norm), bucket_start_min: Number(r.bucket_start_min), sim_s: Number(r.sim_s), n: Number(r.n) }));
+  const sim: SimRow[] = (await rows(conn, "SELECT * FROM v_sp_sim WHERE run='JT_A'")).map((r) => ({ route: String(r.route), direction_norm: String(r.direction_norm), bucket_start_min: Number(r.bucket_start_min), interval_start_s: Number(r.interval_start_s), duration_s: Number(r.duration_s), sim_s: Number(r.sim_s), n: Number(r.n), run: String(r.run) }));
 
   // sources never mixed: the 999 s subnetwork rows must not leak into the monthly pairing
   const monthly = obs.filter((r) => r.source === "monthly_15min");

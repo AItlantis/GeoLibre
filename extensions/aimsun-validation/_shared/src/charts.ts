@@ -9,6 +9,8 @@
 
 export const CHART_W = 560;
 export const CHART_H = 300;
+/** Shared traffic-validation status ramp: pass, warning and fail. */
+export const STATUS_COLORS = Object.freeze({ pass: "#2e7d32", warn: "#f9a825", fail: "#c62828" });
 const M = { top: 16, right: 16, bottom: 52, left: 52 };
 const IW = CHART_W - M.left - M.right;
 const IH = CHART_H - M.top - M.bottom;
@@ -182,6 +184,8 @@ export interface HistogramOptions {
   yTitle?: string;
   label?: string;
   color?: string;
+  binColor?: (bin: HistBin, index: number) => string | undefined;
+  guides?: readonly { value: number; label?: string; color?: string }[];
 }
 
 /** Histogram over contiguous bins. */
@@ -195,10 +199,14 @@ export function histogramSvg(bins: readonly HistBin[], o: HistogramOptions = {})
   const px = (v: number) => M.left + frac(v, xlo, xhi) * IW;
   const py = (v: number) => M.top + IH - frac(v, 0, yhi) * IH;
   let body = xAxis(niceTicks(xlo, xhi), xlo, xhi) + yAxis(yt, 0, yhi);
-  for (const b of bins) {
+  bins.forEach((b, i) => {
     const x0 = px(b.start);
     const x1 = px(b.end);
-    body += `<rect x="${f(x0)}" y="${f(py(b.value))}" width="${f(Math.max(1, x1 - x0 - 1))}" height="${f(M.top + IH - py(b.value))}" fill="${o.color ?? SERIES}"><title>${esc(`${formatTick(b.start)}-${formatTick(b.end)}: ${formatTick(b.value)}`)}</title></rect>`;
+    body += `<rect x="${f(x0)}" y="${f(py(b.value))}" width="${f(Math.max(1, x1 - x0 - 1))}" height="${f(M.top + IH - py(b.value))}" fill="${esc(o.binColor?.(b, i) ?? o.color ?? SERIES)}"><title>${esc(`${formatTick(b.start)}-${formatTick(b.end)}: ${formatTick(b.value)}`)}</title></rect>`;
+  });
+  for (const g of o.guides ?? []) {
+    const x = px(g.value);
+    body += `<line x1="${f(x)}" y1="${M.top}" x2="${f(x)}" y2="${M.top + IH}" stroke="${esc(g.color ?? ACCENT)}" stroke-width="1.5" stroke-dasharray="4 3"><title>${esc(g.label ?? formatTick(g.value))}</title></line>`;
   }
   return frame(o.label ?? "histogram", body, o.xTitle, o.yTitle);
 }
@@ -213,4 +221,76 @@ function emptySvg(label: string): string {
 /** Put a chart (from the *Svg helpers) into a container element. Content is generated + escaped here. */
 export function mountChart(container: HTMLElement, svg: string): void {
   container.innerHTML = svg;
+}
+
+
+export interface TimeSeriesPoint { minute: number; value: number }
+export interface SimulatedSegment { value: number; startMin: number; endMin: number }
+export interface DayProfileSeries { observed: TimeSeriesPoint[]; simulated: SimulatedSegment[]; simStartMin: number | null; simEndMin: number | null; observedWindowMean: number | null }
+
+/** Assemble a day profile from an arbitrary simulated interval series. */
+export function assembleDayProfile(observed: readonly TimeSeriesPoint[], simulated: readonly SimulatedSegment[] | null): DayProfileSeries {
+  const series = observed.filter((p) => Number.isFinite(p.minute) && Number.isFinite(p.value) && p.minute >= 0 && p.minute < 1440)
+    .map((p) => ({ minute: p.minute, value: p.value })).sort((a, b) => a.minute - b.minute);
+  const sims = (simulated ?? []).filter((p) => Number.isFinite(p.value) && Number.isFinite(p.startMin) && Number.isFinite(p.endMin) && p.startMin >= 0 && p.endMin > p.startMin && p.startMin < 1440)
+    .map((p) => ({ ...p, endMin: Math.min(1440, p.endMin) })).sort((a, b) => a.startMin - b.startMin);
+  const start = sims.length ? Math.min(...sims.map((p) => p.startMin)) : null;
+  const end = sims.length ? Math.max(...sims.map((p) => p.endMin)) : null;
+  const inWindow = start === null || end === null ? [] : series.filter((p) => p.minute >= start && p.minute < end);
+  return { observed: series, simulated: sims,
+    simStartMin: start, simEndMin: end,
+    observedWindowMean: inWindow.length ? inWindow.reduce((sum, p) => sum + p.value, 0) / inWindow.length : null };
+}
+
+export interface TimeSeriesOptions { label?: string; xTitle?: string; yTitle?: string; observedLabel?: string; simulatedLabel?: string; color?: string; simColor?: string }
+
+/** Observed day curve with a simulated-window band and horizontal simulated segment. */
+export function timeSeriesSvg(series: DayProfileSeries, o: TimeSeriesOptions = {}): string {
+  const values = [...series.observed.map((p) => p.value), ...series.simulated.map((p) => p.value)].filter(Number.isFinite);
+  if (!values.length) return emptySvg(o.label ?? "Day profile");
+  const ymax = Math.max(1, ...values) * 1.1;
+  const px = (min: number) => M.left + min / 1440 * IW;
+  const py = (v: number) => M.top + IH - v / ymax * IH;
+  const hourTicks = [0, 360, 720, 1080, 1440];
+  let body = hourTicks.map((minute) => {
+    const x = px(minute);
+    return "<line x1=\"" + f(x) + "\" y1=\"" + (M.top + IH) + "\" x2=\"" + f(x) + "\" y2=\"" + (M.top + IH + 4) + "\" stroke=\"" + AXIS + "\"/><text x=\"" + f(x) + "\" y=\"" + (M.top + IH + 16) + "\" text-anchor=\"middle\" font-size=\"10\" fill=\"" + TICK + "\">" + (minute / 60) + "</text>";
+  }).join("") + yAxis(niceTicks(0, ymax), 0, ymax);
+  if (series.simStartMin !== null && series.simEndMin !== null) body += `<rect x="${f(px(series.simStartMin))}" y="${M.top}" width="${f(Math.max(1, px(series.simEndMin) - px(series.simStartMin)))}" height="${IH}" fill="${esc(o.simColor ?? ACCENT)}" fill-opacity="0.12"><title>${esc(o.simulatedLabel ?? "Simulated window")}: ${formatTick(series.simStartMin / 60)}-${formatTick(series.simEndMin / 60)} h</title></rect>`;
+  if (series.observed.length) {
+    const points = series.observed.map((p) => `${f(px(p.minute))},${f(py(p.value))}`).join(" ");
+    body += `<polyline points="${points}" fill="none" stroke="${esc(o.color ?? SERIES)}" stroke-width="1.7"><title>${esc(o.observedLabel ?? "Observed flow")}</title></polyline>`;
+    for (const p of series.observed) body += `<circle cx="${f(px(p.minute))}" cy="${f(py(p.value))}" r="1.5" fill="${esc(o.color ?? SERIES)}"><title>${esc(`${String(Math.floor(p.minute / 60)).padStart(2, "0")}:${String(p.minute % 60).padStart(2, "0")} - ${formatTick(p.value)} veh/h`)}</title></circle>`;
+  }
+  let previous: SimulatedSegment | null = null;
+  for (const segment of series.simulated) {
+    const step = previous && Math.abs(previous.endMin - segment.startMin) < 1e-9
+      ? `M${f(px(segment.startMin))},${f(py(previous.value))} V${f(py(segment.value))} H${f(px(segment.endMin))}`
+      : `M${f(px(segment.startMin))},${f(py(segment.value))} H${f(px(segment.endMin))}`;
+    body += `<path d="${step}" fill="none" stroke="${esc(o.simColor ?? ACCENT)}" stroke-width="3"><title>${esc(o.simulatedLabel ?? "Simulated flow")}: ${formatTick(segment.startMin / 60)}-${formatTick(segment.endMin / 60)} h, ${formatTick(segment.value)} veh/h</title></path>`;
+    previous = segment;
+  }
+  return frame(o.label ?? "Day profile", body, o.xTitle ?? "Hour of day", o.yTitle ?? "Flow (veh/h)");
+}
+
+export interface ShareDatum { label: string; value: number; color: string }
+/** Stacked horizontal share bar with a percent target marker. */
+export function stackedBarSvg(data: readonly ShareDatum[], target = 85, label = "Compliance shares"): string {
+  const y = 34, x = M.left, w = IW;
+  let offset = 0, body = "";
+  for (const d of data) {
+    const width = Math.max(0, Math.min(100 - offset, d.value)) / 100 * w;
+    body += `<rect x="${f(x + offset / 100 * w)}" y="${y}" width="${f(width)}" height="24" fill="${esc(d.color)}"><title>${esc(`${d.label}: ${formatTick(d.value)}%`)}</title></rect>`;
+    offset += d.value;
+  }
+  const tx = x + Math.max(0, Math.min(100, target)) / 100 * w;
+  body += `<line x1="${f(tx)}" y1="${y - 8}" x2="${f(tx)}" y2="${y + 32}" stroke="${ACCENT}" stroke-width="2"><title>${esc(`${formatTick(target)}% target`)}</title></line>`;
+  body += `<text x="${x}" y="${y + 45}" font-size="10" fill="${TICK}">0%</text><text x="${x + w}" y="${y + 45}" text-anchor="end" font-size="10" fill="${TICK}">100%</text>`;
+  return frame(label, body, "Share (%)");
+}
+
+export interface GroupedBarDatum { label: string; value: number; n?: number; color: string }
+/** Compact vertical bars by category. */
+export function groupedBarSvg(data: readonly GroupedBarDatum[], o: BarOptions = {}): string {
+  return barSvg(data.map((d) => ({ label: d.n === undefined ? d.label : `${d.label} (n=${d.n})`, value: d.value, color: d.color })), o);
 }
