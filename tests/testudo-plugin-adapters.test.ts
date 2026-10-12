@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createNetworkKpiPlaybackAdapter, createScenarioComparisonPlaybackAdapter, createScenarioSelectionAdapters, createVehiclePlaybackAdapter, testudoScenarioCatalog, vehiclePlaybackVariantIndex, vehiclePlaybackVariantSelectionId, vehiclePlaybackScenarioRoster, subscribeToPlaybackSources, scenarioRosterMatches } from "../packages/plugins/src/testudo-plugin-adapters";
+import { initializeFirstAnimationScenarioIfNeeded, routeTestudoPluginSelection } from "../apps/geolibre-desktop/src/lib/testudo-view-style";
 
 const current = (id: string, generation: number) => id === "main" && generation === 4;
 
@@ -17,6 +19,53 @@ test("vehicle adapter maps plugin ticks and settings to shell playback state", a
   await adapter.play("main", 4); assert.equal(playing, true);
   await adapter.restart("main", 4); assert.equal(tick, 0);
   assert.throws(() => adapter.getPlaybackState("main", 3), /stale/);
+});
+
+test("host Results scenario roster keeps each SCID's own replication metadata", () => {
+  const controls = readFileSync(new URL("../apps/geolibre-desktop/src/components/layout/TestudoControls.tsx", import.meta.url), "utf8");
+  assert.match(controls, /const declared = new Map\(declaredScenarioRoster\.map\(row => \[String\(row\.scenarioId \?\? row\.id\), row\]\)\)/);
+  assert.match(controls, /return rows\.map\(row => \{\s*const own = declared\.get\(String\(row\.scid\)\);\s*return \{ \...\(own \?\? \{\}\), id: String\(row\.scid\)/);
+  const roster = testudoScenarioCatalog([
+    { scid: 45001, name: "A1", replications: [{ did: 49342, didname: "A1" }] },
+    { scid: 49414, name: "B", replications: [{ did: 49418, didname: "B" }] },
+    { scid: 45002, name: "A2", replications: [{ did: 49468, didname: "A2" }] },
+  ]);
+  assert.deepEqual(roster.map(({ scenarioId, did, replications }) => ({ scenarioId, did, replications })), [
+    { scenarioId: 45001, did: 49342, replications: [{ id: 49342, label: "A1" }] },
+    { scenarioId: 49414, did: 49418, replications: [{ id: 49418, label: "B" }] },
+    { scenarioId: 45002, did: 49468, replications: [{ id: 49468, label: "A2" }] },
+  ]);
+});
+
+test("Results to Animation plugin-tab route initializes a scenario and enables advancing playback", async () => {
+  const receiver = readFileSync(new URL("../apps/geolibre-desktop/src/components/layout/TestudoControls.tsx", import.meta.url), "utf8");
+  assert.match(receiver, /if \(mode === "animation"\)[\s\S]*initializeFirstAnimationScenarioIfNeeded\(playback\.scenarioIndex, playback\.scenarios\.length[\s\S]*plugins\.setVehiclePlaybackScenario\(index\)/);
+  const modes = ["results", "animation"] as const;
+  let selectedMode: string = "results";
+  const scenarios = [{ scid: 4101 }, { scid: 4102 }];
+  let selectedScenario = -1; let tick = 0; let playing = false;
+  const setScenario = async (index: number) => { selectedScenario = index; tick = 0; };
+  const adapter = createVehiclePlaybackAdapter({
+    getStatus: () => ({ loading: false, maxTick: selectedScenario >= 0 ? 8 : 0, dt: 0.8, error: null, available: selectedScenario >= 0, initialTimeSeconds: 100, simulationDurationSeconds: 6.4 }),
+    getSettings: () => ({ tick, playing, speed: 1, loop: false }),
+    setTick: value => { tick = value; },
+    setSettings: value => { if (value.playing !== undefined) playing = value.playing; return true; },
+  }, current, { tviewId: "main", generation: 4 });
+  await routeTestudoPluginSelection("network-kpi", async mode => { assert.ok(modes.includes(mode as typeof modes[number])); selectedMode = mode; return selectedMode; }, async plugin => plugin);
+  assert.equal(selectedMode, "results", "the Results tab uses the mode path");
+  await routeTestudoPluginSelection("vehicle-playback", async mode => {
+    assert.ok(modes.includes(mode as typeof modes[number]));
+    selectedMode = mode;
+    if (mode === "animation") await initializeFirstAnimationScenarioIfNeeded(selectedScenario, scenarios.length, setScenario);
+    return selectedMode;
+  }, async plugin => plugin);
+  const initialized = adapter.getPlaybackState("main", 4);
+  assert.equal(selectedMode, "animation");
+  assert.equal(selectedScenario, 0, "Animation mode selection initializes the first declared scenario");
+  assert.ok(initialized.maxTick > 0);
+  assert.equal(initialized.canPlay, true);
+  await adapter.seek("main", 4, 2);
+  assert.equal(adapter.getPlaybackState("main", 4).tick, 2, "playback advances after the plugin tab routes through Animation mode");
 });
 
 test("KPI interval adapter exposes ordinal ticks and advances with the original interval API", async () => {
@@ -127,7 +176,7 @@ test("vehicle playback subscription relays advancing ticks even when status coun
   const unsubscribe = adapter.subscribe((_, __, playback) => observed.push(playback.tick));
   tick = 1; stateListeners[0]();
   assert.deepEqual(observed, [1], "state ticks reach the host without a status change");
-  statusListeners[0](); assert.deepEqual(observed, [1, 1]);
+  statusListeners[0](); assert.deepEqual(observed, [1], "an unchanged status callback does not duplicate the full playback snapshot");
   unsubscribe(); assert.deepEqual(removed, { state: 1, status: 1 });
 });
 
@@ -163,6 +212,32 @@ test("vehicle playback event source fans state and status changes into timeline 
   tick = 1; stateChanged?.();
   tick = 3; statusChanged?.();
   assert.deepEqual(emitted, [12, 16]);
+  unsubscribe();
+  assert.equal(stateChanged, undefined); assert.equal(statusChanged, undefined);
+});
+
+test("KPI playback observes settings and status, deduplicates snapshots, and drops stale callbacks before reading", () => {
+  let loading = false; let interval = 5; let playing = false; let reads = 0; let current = true;
+  let stateChanged: (() => void) | undefined; let statusChanged: (() => void) | undefined;
+  const observed: Array<{ tick: number; loading: boolean; playing: boolean }> = [];
+  const adapter = createNetworkKpiPlaybackAdapter({
+    getStatus: () => { reads++; if (!current) throw new Error("stale status read"); return { loading, intervals: [5, 10], error: null }; },
+    getSettings: () => { reads++; if (!current) throw new Error("stale settings read"); return { interval, intervalPlaying: playing, playbackSpeed: 1, loop: true }; },
+    setSettings: () => {}, stepNetworkKpiInterval: () => {},
+    subscribe: listener => subscribeToPlaybackSources([
+      next => { stateChanged = next; return () => { stateChanged = undefined; }; },
+      next => { statusChanged = next; return () => { statusChanged = undefined; }; },
+    ], listener),
+  }, (_id, generation) => current && generation === 4, { tviewId: "main", generation: 4 });
+  const unsubscribe = adapter.subscribe((_id, _generation, state) => observed.push({ tick: state.tick, loading: state.loading, playing: state.playing }));
+  interval = 10; playing = true; stateChanged?.();
+  stateChanged?.(); // Full duplicate snapshot is suppressed.
+  loading = true; statusChanged?.();
+  assert.deepEqual(observed, [{ tick: 1, loading: false, playing: true }, { tick: 1, loading: true, playing: true }]);
+  const readsBeforeStaleCallback = reads;
+  current = false;
+  assert.doesNotThrow(() => { stateChanged?.(); statusChanged?.(); });
+  assert.equal(reads, readsBeforeStaleCallback, "stale callbacks must be fenced before plugin getters run");
   unsubscribe();
   assert.equal(stateChanged, undefined); assert.equal(statusChanged, undefined);
 });

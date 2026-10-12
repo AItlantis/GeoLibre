@@ -5,7 +5,19 @@ export interface GeolibreReplication { did: number; didname?: string; xid?: numb
 export interface GeolibreAnimation { name?: string; manifestPath?: string; scid?: number | string; did?: number | string }
 export interface GeolibreScenario { name?: string; scid: number | string; replications: GeolibreReplication[]; animations?: GeolibreAnimation[] }
 export interface GeolibreViewMode { id: "results" | "comparison" | "environment" | "animation" | "paths"; table: string; column: string; unit: string; style: { type: "ramp" | "extrusion"; id?: string; column?: string; max?: number; stops?: string[]; colors?: string[] }; domains: { sid?: { min?: number; max?: number }; ent?: { min?: number; max?: number }; intervalSeconds?: number }; alternates?: Array<{ table: string; column: string; unit: string; style: GeolibreViewMode["style"] }>; scenarioDidPair?: Array<{ scid: number; did: number }> }
-export interface GeolibrePackage { schemaVersion?: string; capabilities: Record<string, GeolibreCapability>; scenarios: GeolibreScenario[]; resultsPath: string | null; resultsChecksum: { algorithm?: string; value?: string } | null; resultsCatalogRelative: string | null; resultsFormat: string | null; resultsTableSelection: string[]; dataContracts: Record<string, unknown>; legacyManifestPath: string | null; pathIndicesByScid: Record<string, string>; viewModes: Partial<Record<GeolibreViewMode["id"], GeolibreViewMode>>; timeAxis: { fromTime: number; intervalMs: number; intervals: number } | null }
+export interface GeolibrePackage { schemaVersion?: string; capabilities: Record<string, GeolibreCapability>; scenarios: GeolibreScenario[]; resultsPath: string | null; resultsChecksum: { algorithm?: string; value?: string } | null; resultsCatalogRelative: string | null; resultsFormat: string | null; resultsTableSelection: string[]; dataContracts: Record<string, unknown>; legacyManifestPath: string | null; pathIndicesByScid: Record<string, string>; viewModes: Partial<Record<GeolibreViewMode["id"], GeolibreViewMode>>; environmentScenarioDidPair: { declared: boolean; valid: boolean; pairs: Array<{ scid: number; did: number }> }; timeAxis: { fromTime: number; intervalMs: number; intervals: number } | null }
+
+export interface EnvironmentScenarioCoverage {
+  status: "available" | "unavailable" | "unknown";
+  dids: number[];
+  /** Safe replication candidates to verify when inventory completeness is unknown. */
+  candidateDids?: number[];
+}
+
+export interface EnvironmentScenarioCoverageResult {
+  byScid: Record<string, EnvironmentScenarioCoverage>;
+  packageEligible: boolean;
+}
 
 const envelopeKey = "__geolibrePackage";
 const record = (value: unknown): Record<string, unknown> => (value && typeof value === "object" ? value as Record<string, unknown> : {});
@@ -42,6 +54,19 @@ export function parseGeolibrePackage(raw: unknown): GeolibrePackage {
     : typeof parquetSidecar.catalogPath === "string" ? parquetSidecar.catalogPath : null;
   const pathIndices = record(root.pathIndicesByScid);
   const rawViewModes = record(results.viewModes);
+  const rawEnvironmentMode = record(rawViewModes.environment);
+  const explicitEnvironmentPairs = rawEnvironmentMode.scenarioDidPair;
+  const environmentScenarioDidPair = {
+    declared: Object.prototype.hasOwnProperty.call(rawEnvironmentMode, "scenarioDidPair"),
+    valid: !Object.prototype.hasOwnProperty.call(rawEnvironmentMode, "scenarioDidPair")
+      || Array.isArray(explicitEnvironmentPairs) && explicitEnvironmentPairs.length > 0 && explicitEnvironmentPairs.every(value => {
+        const pair = record(value);
+        return Number.isSafeInteger(pair.scid) && Number(pair.scid) >= 0 && Number.isSafeInteger(pair.did) && Number(pair.did) >= 0;
+      }),
+    pairs: Array.isArray(explicitEnvironmentPairs) ? explicitEnvironmentPairs.map(value => record(value))
+      .filter(value => Number.isSafeInteger(value.scid) && Number.isSafeInteger(value.did))
+      .map(value => ({ scid: Number(value.scid), did: Number(value.did) })) : [],
+  };
   const viewModes: GeolibrePackage["viewModes"] = {};
   for (const [key, value] of Object.entries(rawViewModes)) {
     if (!["results", "comparison", "environment", "animation", "paths"].includes(key)) continue;
@@ -62,7 +87,7 @@ export function parseGeolibrePackage(raw: unknown): GeolibrePackage {
   const timeAxis = Number.isFinite(axis.fromTime) && Number.isFinite(axis.intervalMs) && Number(axis.intervalMs) > 0
     && Number.isSafeInteger(axis.intervals) && Number(axis.intervals) >= 0
     ? { fromTime: Number(axis.fromTime), intervalMs: Number(axis.intervalMs), intervals: Number(axis.intervals) } : null;
-  return { schemaVersion: typeof root.schemaVersion === "string" ? root.schemaVersion : undefined, capabilities: record(root.capabilities) as Record<string, GeolibreCapability>, scenarios, resultsPath: typeof results.path === "string" ? results.path : null, resultsChecksum: results.checksum && typeof results.checksum === "object" ? results.checksum as GeolibrePackage["resultsChecksum"] : null, resultsCatalogRelative: catalogPath, resultsFormat: typeof results.format === "string" ? results.format : typeof environment.results_format === "string" ? environment.results_format : null, resultsTableSelection: Array.isArray(environment.results_table_selection) ? environment.results_table_selection.filter((x): x is string => typeof x === "string") : [], dataContracts, legacyManifestPath: typeof root.legacyManifestPath === "string" ? root.legacyManifestPath : null, pathIndicesByScid: Object.fromEntries(Object.entries(pathIndices).filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]))), viewModes, timeAxis };
+  return { schemaVersion: typeof root.schemaVersion === "string" ? root.schemaVersion : undefined, capabilities: record(root.capabilities) as Record<string, GeolibreCapability>, scenarios, resultsPath: typeof results.path === "string" ? results.path : null, resultsChecksum: results.checksum && typeof results.checksum === "object" ? results.checksum as GeolibrePackage["resultsChecksum"] : null, resultsCatalogRelative: catalogPath, resultsFormat: typeof results.format === "string" ? results.format : typeof environment.results_format === "string" ? environment.results_format : null, resultsTableSelection: Array.isArray(environment.results_table_selection) ? environment.results_table_selection.filter((x): x is string => typeof x === "string") : [], dataContracts, legacyManifestPath: typeof root.legacyManifestPath === "string" ? root.legacyManifestPath : null, pathIndicesByScid: Object.fromEntries(Object.entries(pathIndices).filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]))), viewModes, environmentScenarioDidPair, timeAxis };
 }
 
 export function attachGeolibrePackage(legacy: unknown, packageRaw: unknown): unknown {
@@ -74,6 +99,91 @@ export function attachGeolibrePackage(legacy: unknown, packageRaw: unknown): unk
 export function getGeolibrePackage(raw: unknown): GeolibrePackage | null {
   const value = record(raw)[envelopeKey];
   return value && typeof value === "object" ? value as GeolibrePackage : null;
+}
+
+/**
+ * Resolve Environment coverage without relying on scenario order or a
+ * package-wide DID guess. An explicit scenarioDidPair is authoritative when
+ * present; otherwise the emissions actual_dids inventory is joined exactly
+ * to each scenario's declared replications.
+ */
+export function resolveEnvironmentScenarioCoverage(pkg: GeolibrePackage | null, rawManifest?: unknown): EnvironmentScenarioCoverageResult {
+  if (!pkg) return { byScid: {}, packageEligible: true };
+  const scenarios = pkg.scenarios;
+  const safeCandidates = (scenario: GeolibreScenario) => [...new Set((scenario.replications ?? [])
+    .map(replication => replication.did)
+    .filter(did => Number.isSafeInteger(did) && did >= 0))].sort((a, b) => a - b);
+  const byScid = Object.fromEntries(scenarios.map(scenario => [String(scenario.scid), { status: "unknown", dids: [], candidateDids: safeCandidates(scenario) } as EnvironmentScenarioCoverage]));
+  const root = record(rawManifest);
+  const results = record(root.results);
+  const viewModes = record(results.viewModes);
+  const environmentMode = record(viewModes.environment);
+  const hasRawPair = Object.prototype.hasOwnProperty.call(environmentMode, "scenarioDidPair");
+  const declared = pkg.environmentScenarioDidPair?.declared ?? hasRawPair;
+  const valid = pkg.environmentScenarioDidPair?.valid ?? true;
+  const explicitPairs: unknown = pkg.environmentScenarioDidPair?.pairs ?? (hasRawPair ? environmentMode.scenarioDidPair : pkg.viewModes.environment?.scenarioDidPair);
+
+  let explicitPairsValid = declared && valid && Array.isArray(explicitPairs) && explicitPairs.length > 0;
+  if (explicitPairsValid) {
+    const normalized: Array<{ scid: string; did: number }> = [];
+    for (const value of explicitPairs as unknown[]) {
+      const pair = record(value);
+      if (!Number.isSafeInteger(pair.scid) || Number(pair.scid) < 0 || !Number.isSafeInteger(pair.did) || Number(pair.did) < 0) { explicitPairsValid = false; break; }
+      const scid = String(pair.scid);
+      const scenario = scenarios.find(item => String(item.scid) === scid);
+      const did = Number(pair.did);
+      if (!scenario || !(scenario.replications ?? []).some(replication => Number.isSafeInteger(replication.did) && replication.did >= 0 && replication.did === did)) { explicitPairsValid = false; break; }
+      normalized.push({ scid, did });
+    }
+    if (explicitPairsValid) {
+    for (const scenario of scenarios) {
+      const dids = [...new Set(normalized.filter(pair => pair.scid === String(scenario.scid)).map(pair => pair.did))].sort((a, b) => a - b);
+      byScid[String(scenario.scid)] = { status: dids.length ? "available" : "unavailable", dids };
+    }
+    }
+  }
+  if (!explicitPairsValid) {
+    const emissions = record(pkg.dataContracts.emissions);
+    const actualDids = emissions.actual_dids;
+    const complete = emissions.actual_dids_truncated === false;
+    if (!Array.isArray(actualDids) || actualDids.some(did => !Number.isSafeInteger(did) || Number(did) < 0)) return { byScid, packageEligible: true };
+    const inventory = new Set((actualDids as unknown[]).map(Number));
+    for (const scenario of scenarios) {
+      const dids = [...new Set((scenario.replications ?? [])
+        .map(replication => replication.did)
+        .filter(did => Number.isSafeInteger(did) && did >= 0 && inventory.has(did)))].sort((a, b) => a - b);
+      byScid[String(scenario.scid)] = dids.length
+        ? { status: "available", dids }
+        : complete
+          ? { status: "unavailable", dids: [] }
+          : { status: "unknown", dids: [], candidateDids: safeCandidates(scenario) };
+    }
+  }
+  return { byScid, packageEligible: !scenarios.length || Object.values(byScid).some(value => value.status !== "unavailable") };
+}
+
+/** Try safe replications for an unknown-coverage scenario without converting a failed probe into known absence. */
+export async function verifyEnvironmentScenarioCandidates<T>(
+  candidateDids: number[],
+  loadAndVerify: (did: number) => Promise<T>,
+  clearUnverified: () => void,
+  assertCurrent: () => void = () => undefined,
+): Promise<{ did: number; value: T } | null> {
+  const candidates = [...new Set(candidateDids.filter(did => Number.isSafeInteger(did) && did >= 0))].sort((a, b) => a - b);
+  for (const did of candidates) {
+    assertCurrent();
+    try {
+      const value = await loadAndVerify(did);
+      assertCurrent();
+      return { did, value };
+    } catch {
+      assertCurrent();
+    }
+  }
+  assertCurrent();
+  clearUnverified();
+  assertCurrent();
+  return null;
 }
 
 export function packageManifestUrl(manifestUrl: string, path: string): string {

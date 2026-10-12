@@ -164,3 +164,46 @@ test("a settings change unrelated to scenario selection never touches geometry",
   assert.equal(context.geometry?.sections, "geometry-A-initial");
   assert.equal(context.geometryB?.sections, "geometry-B-initial");
 });
+
+test("side-by-side keeps Scenario A on the main map and Scenario B only in its pane", () => {
+  const run = stripTypeScriptTypes(`${extractFunction("enableSideBySide")}${extractFunction("disableSideBySide")}`);
+  const calls = { global: [] as Array<[string, boolean]>, pane: [] as Array<[string, string, boolean]>, labels: [] as string[], removed: [] as string[] };
+  const scenarios = [{ label: "Clean Scenario A" }, { label: "Clean Scenario B" }];
+  const store = {
+    secondaryMapViews: [{ id: "pane-b" }],
+    setMapGrid: () => undefined,
+    setSecondaryMapLabel: (_id: string, label: string) => calls.labels.push(label),
+    setLayerStyle: () => undefined,
+    setLayerVisibility: (id: string, visible: boolean) => calls.global.push([id, visible]),
+    setSecondaryLayerVisibility: (_pane: string, id: string, visible: boolean) => calls.pane.push(["pane-b", id, visible]),
+    removeLayer: (id: string) => { calls.removed.push(id); },
+    removeSecondaryMapView: (id: string) => { calls.labels.push(`removed:${id}`); },
+  };
+  let mounted = 0; let disposed = 0;
+  const context = {
+    appRef: { getMap: () => ({}), addGeoJsonLayer: (name: string) => name },
+    datasetA: { sections: {} }, datasetB: { sections: {} },
+    geometry: { sections: {} }, geometryB: { sections: {} }, sidePaneId: null, sideLayerIds: [], sidePrimaryGeometryDispose: null,
+    sideSecondaryMap: null, sideSecondaryGeometryDispose: null,
+    settings: { scenarioA: 0, scenarioB: 1, metric: "flow" }, layerVisible: true,
+    status: { scenarios }, visible: true, sideBySideLifecycle: 0, sideBySideRetryTimer: null,
+    useAppStore: { getState: () => store }, mountTestudoComparisonGeometry: () => { mounted += 1; return () => { disposed += 1; }; },
+    bindComparisonMapEvents: () => undefined, scenarioLabel: (index: number) => scenarios[index].label,
+    KPI_RAMPS: { flow: { stops: [], colors: [] } },
+    console: { warn: () => undefined }, setTimeout: () => 1, clearTimeout: () => undefined,
+    setSharedDeckLayers: () => undefined,
+  };
+  runInNewContext(run, context);
+  const plugin = context as { enableSideBySide: () => void; disableSideBySide: () => void };
+  for (let i = 0; i < 3; i += 1) {
+    plugin.enableSideBySide();
+    assert.deepEqual(calls.global.slice(i * 2, i * 2 + 2), [["Clean Scenario A", true], ["Clean Scenario B", false]]);
+    assert.deepEqual(calls.pane.slice(i * 2, i * 2 + 2), [["pane-b", "Clean Scenario A", false], ["pane-b", "Clean Scenario B", true]]);
+    assert.equal(calls.labels[i * 2], "Clean Scenario B");
+    plugin.disableSideBySide();
+  }
+  assert.equal(mounted, 3);
+  assert.equal(disposed, 3, "repeated entry/exit and replacement cleanup return pane geometry to baseline");
+  assert.deepEqual(calls.labels.filter(label => label.startsWith("removed:")), ["removed:pane-b", "removed:pane-b", "removed:pane-b"]);
+  assert.deepEqual(calls.removed, ["Clean Scenario A", "Clean Scenario B", "Clean Scenario A", "Clean Scenario B", "Clean Scenario A", "Clean Scenario B"]);
+});

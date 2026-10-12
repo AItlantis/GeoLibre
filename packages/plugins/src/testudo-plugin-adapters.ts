@@ -42,6 +42,27 @@ function assertGeneration(isCurrent: TestudoGenerationGuard, tviewId: string, ge
   if (!isCurrent(tviewId, generation)) throw new Error("Playback command belongs to a stale Testudo package.");
 }
 
+function subscribePlaybackSnapshot(
+  subscribe: ((listener: () => void) => () => void) | undefined,
+  isCurrent: TestudoGenerationGuard,
+  scope: TestudoPlaybackScope,
+  read: () => TestudoPlaybackState,
+  listener: (tviewId: string, generation: number, state: TestudoPlaybackState) => void,
+): () => void {
+  if (!subscribe) return () => {};
+  let lastSignature: string | undefined;
+  return subscribe(() => {
+    // Timer callbacks may arrive after package replacement. Fence before the
+    // adapter touches plugin settings/status, whose getters are package scoped.
+    if (!isCurrent(scope.tviewId, scope.generation)) return;
+    const state = read();
+    const signature = JSON.stringify(state);
+    if (signature === lastSignature) return;
+    lastSignature = signature;
+    listener(scope.tviewId, scope.generation, state);
+  });
+}
+
 type PlaybackTime = { currentTimeSeconds: number | null; sampledStartSeconds: number | null; sampledEndSeconds: number | null; simulationDurationSeconds: number | null; isAggregate: boolean };
 type TimeSample = { value: number; timeSeconds: number };
 
@@ -78,7 +99,8 @@ export function createVehiclePlaybackAdapter(api: TestudoVehiclePlaybackApi, isC
     restart: (id, generation) => { assertGeneration(isCurrent, id, generation); api.setSettings({ playing: false }); api.setTick(0); return getPlaybackState(id, generation); },
     seek: (id, generation, tick) => { assertGeneration(isCurrent, id, generation); api.setTick(Math.min(api.getStatus().maxTick, tick)); return getPlaybackState(id, generation); },
     setSpeed: (id, generation, speed) => patch(id, generation, { speed }),
-    subscribe: listener => api.subscribe?.(() => listener(scope.tviewId, scope.generation, getPlaybackState(scope.tviewId, scope.generation))) ?? (() => {}),
+    subscribe: listener => subscribePlaybackSnapshot(api.subscribe, isCurrent, scope,
+      () => getPlaybackState(scope.tviewId, scope.generation), listener),
   };
 }
 
@@ -116,7 +138,8 @@ export function createNetworkKpiPlaybackAdapter(api: TestudoIntervalPlaybackApi,
     restart: (id, generation) => { assertGeneration(isCurrent, id, generation); api.setSettings({ intervalPlaying: false }); return seek(id, generation, 0); },
     seek,
     setSpeed: (id, generation, playbackSpeed) => set(id, generation, { playbackSpeed }),
-    subscribe: listener => api.subscribe?.(() => listener(scope.tviewId, scope.generation, state(scope.tviewId, scope.generation))) ?? (() => {}),
+    subscribe: listener => subscribePlaybackSnapshot(api.subscribe, isCurrent, scope,
+      () => state(scope.tviewId, scope.generation), listener),
   };
 }
 
@@ -142,7 +165,8 @@ export function createScenarioComparisonPlaybackAdapter(api: TestudoScenarioComp
   return { getPlaybackState: state, play: (id, gen) => state(id, gen).canPlay ? patch(id, gen, { intervalPlaying: true }) : state(id, gen), pause: (id, gen) => patch(id, gen, { intervalPlaying: false }),
     restart: (id, gen) => { assertGeneration(isCurrent, id, gen); api.setSettings({ intervalPlaying: false }); return seek(id, gen, 0); }, seek,
     setSpeed: (id, gen, playbackSpeed) => patch(id, gen, { playbackSpeed }),
-    subscribe: listener => api.subscribe?.(() => listener(scope.tviewId, scope.generation, state(scope.tviewId, scope.generation))) ?? (() => {}) };
+    subscribe: listener => subscribePlaybackSnapshot(api.subscribe, isCurrent, scope,
+      () => state(scope.tviewId, scope.generation), listener) };
 }
 
 /** Apply one selected scenario or an explicit comparison pair using plugin-owned settings. */
@@ -160,8 +184,13 @@ export function createScenarioSelectionAdapters(apis: {
 
 
 /** Build one visible/selectable row per animation variant while preserving base model identity. */
-export function testudoScenarioCatalog(scenarios: readonly { scid: string | number; name?: string }[]): TestudoScenario[] {
-  return scenarios.map(scenario => ({ id: String(scenario.scid), label: scenario.name?.trim() || `Scenario ${scenario.scid}`, scenarioId: scenario.scid }));
+export function testudoScenarioCatalog(scenarios: readonly { scid: string | number; name?: string; replications?: readonly { did: number; didname?: string }[] }[]): TestudoScenario[] {
+  return scenarios.map(scenario => {
+    const replications = (scenario.replications ?? []).filter(replication => Number.isSafeInteger(replication.did))
+      .map(replication => ({ id: replication.did, ...(replication.didname ? { label: replication.didname } : {}) }));
+    return { id: String(scenario.scid), label: scenario.name?.trim() || `Scenario ${scenario.scid}`, scenarioId: scenario.scid,
+      ...(replications.length ? { did: replications[0].id, replications } : {}) };
+  });
 }
 
 export function vehiclePlaybackScenarioRoster(scenarios: readonly { variantId?: string; manifestPath?: string; id: string; label?: string; scid?: string | number; did?: string | number }[]): TestudoScenario[] {

@@ -554,6 +554,14 @@ function layerNameFromPath(path: string): string {
 
 type ImportedVectorLayer = Awaited<ReturnType<typeof loadDroppedVectorFiles>>[number];
 
+function traceTestudoBridge(event: string, detail: Record<string, unknown> = {}): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage.getItem("testudo_bridge_trace") === "1") {
+      console.info("[TestudoBridgeTrace:DesktopShell]", event, detail);
+    }
+  } catch { /* Diagnostics must not affect viewer startup. */ }
+}
+
 const DEFAULT_SIDE_PANEL_WIDTH = 320;
 const MIN_SIDE_PANEL_WIDTH = 180;
 const MAX_SIDE_PANEL_WIDTH = 560;
@@ -1458,20 +1466,75 @@ export function DesktopShell({
 
   const handleMapControllerReady = useCallback((renderer: TestudoRendererReadiness["renderer"], epoch: number) => {
     const readiness = rendererReadinessRef.current;
-    if (readiness.renderer !== renderer || readiness.epoch !== epoch
-      || (useAppStore.getState().primaryRenderer === "cesium") !== (renderer === "cesium")
-      || !mapControllerRef.current) return;
+    const currentStoreRenderer = useAppStore.getState().primaryRenderer === "cesium" ? "cesium" : "maplibre";
+    const rejectReasons = [
+      ...(readiness.renderer !== renderer ? ["renderer-mismatch"] : []),
+      ...(readiness.epoch !== epoch ? ["epoch-mismatch"] : []),
+      ...(currentStoreRenderer !== renderer ? ["store-renderer-mismatch"] : []),
+      ...(!mapControllerRef.current ? ["controller-ref-empty"] : []),
+    ];
+    traceTestudoBridge("controller-ready-callback", {
+      callbackRenderer: renderer,
+      callbackEpoch: epoch,
+      currentRenderer: readiness.renderer,
+      currentEpoch: readiness.epoch,
+      storeRenderer: currentStoreRenderer,
+      controllerExists: Boolean(mapControllerRef.current),
+      rejectReasons,
+    });
+    if (rejectReasons.length) return;
     rendererReadinessRef.current = { ...readiness, ready: true, error: null };
     setMapReadyGeneration((generation) => generation + 1);
+    const api = createAppAPI(mapControllerRef);
+    traceTestudoBridge("controller-api-publish", { callbackAvailable: Boolean(onMapReady), renderer, epoch });
+    onMapReady?.(api);
+  }, [onMapReady]);
+  const handleMapControllerAvailable = useCallback((renderer: TestudoRendererReadiness["renderer"], epoch: number) => {
+    const readiness = rendererReadinessRef.current;
+    const currentStoreRenderer = useAppStore.getState().primaryRenderer === "cesium" ? "cesium" : "maplibre";
+    const rejectReasons = [
+      ...(readiness.renderer !== renderer ? ["renderer-mismatch"] : []),
+      ...(readiness.epoch !== epoch ? ["epoch-mismatch"] : []),
+      ...(currentStoreRenderer !== renderer ? ["store-renderer-mismatch"] : []),
+      ...(!mapControllerRef.current ? ["controller-ref-empty"] : []),
+    ];
+    traceTestudoBridge("controller-available-callback", {
+      callbackRenderer: renderer,
+      callbackEpoch: epoch,
+      currentRenderer: readiness.renderer,
+      currentEpoch: readiness.epoch,
+      storeRenderer: currentStoreRenderer,
+      controllerExists: Boolean(mapControllerRef.current),
+      rejectReasons,
+    });
+    if (rejectReasons.length) return;
+    // Publish the stable controller API so the embed handshake can complete.
+    // Renderer-dependent commands still wait on rendererReadinessRef.ready,
+    // which is set only by handleMapControllerReady after the MapLibre load.
+    traceTestudoBridge("controller-api-available", { callbackAvailable: Boolean(onMapReady), renderer, epoch });
     onMapReady?.(createAppAPI(mapControllerRef));
   }, [onMapReady]);
   const handleMapControllerError = useCallback((renderer: TestudoRendererReadiness["renderer"], epoch: number, error: string) => {
     const readiness = rendererReadinessRef.current;
+    traceTestudoBridge("controller-error-callback", {
+      callbackRenderer: renderer,
+      callbackEpoch: epoch,
+      currentRenderer: readiness.renderer,
+      currentEpoch: readiness.epoch,
+      error,
+      ignoredAsStale: readiness.renderer !== renderer || readiness.epoch !== epoch,
+    });
     if (readiness.renderer !== renderer || readiness.epoch !== epoch) return;
     rendererReadinessRef.current = { ...readiness, ready: false, error };
   }, []);
   const handleMapControllerRestart = useCallback((renderer: TestudoRendererReadiness["renderer"]) => {
     const readiness = rendererReadinessRef.current;
+    traceTestudoBridge("controller-restart-callback", {
+      callbackRenderer: renderer,
+      currentRenderer: readiness.renderer,
+      currentEpoch: readiness.epoch,
+      ignoredAsStale: readiness.renderer !== renderer,
+    });
     if (readiness.renderer !== renderer) return;
     rendererReadinessRef.current = { ...readiness, epoch: readiness.epoch + 1, ready: false, error: null };
     setMapReadyGeneration((generation) => generation + 1);
@@ -2819,6 +2882,7 @@ export function DesktopShell({
                     identifyAllLabels={identifyAllLabels}
                     identifyRasterLayerAt={identifyRasterLayerAt}
                     onMapDiagnosticEvent={handleMapDiagnosticEvent}
+                    onControllerAvailable={() => handleMapControllerAvailable(currentTestudoRenderer, rendererEpoch)}
                     onControllerReady={() => handleMapControllerReady(currentTestudoRenderer, rendererEpoch)}
                   />
                   <MapModeBanner mapControllerRef={mapControllerRef} />

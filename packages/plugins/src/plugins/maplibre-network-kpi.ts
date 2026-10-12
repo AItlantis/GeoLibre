@@ -12,6 +12,12 @@ import {
   loadNetworkKpiGeometry,
   clearNetworkKpiGeometryCache,
   parseNetworkKpiManifest,
+  resolveNetworkKpiScenarioReplication,
+  readNetworkKpiScenarioResults,
+  resolveNetworkKpiReplicationDid,
+  commitNetworkKpiReadIfCurrent,
+  assertNetworkKpiExplicitDid,
+  isCurrentNetworkKpiRead,
   readLocalNetworkKpiManifestJson,
   type NetworkKpiGeometry,
   type NetworkKpiManifest,
@@ -21,6 +27,7 @@ import {
 import { ParquetResultsDatabase } from "./network-kpi-parquet-data";
 import type { SimulationTimeline } from "../shared/simulation-timeline";
 import { assertScenarioSelectionSucceeded } from "../shared/scenario-selection";
+import { boundedFingerprint, liveIdentityState, testudoLiveDiagnosticsEnabled } from "../shared/testudo-live-diagnostics";
 import {
   laneWidthMetersExpression,
   metersLineWidthExpression,
@@ -664,6 +671,8 @@ let engine: NetworkKpiEngine | null = null;
 let panelVisible = false;
 let settings: NetworkKpiSettings = { ...DEFAULT_NETWORK_KPI_SETTINGS };
 let loadedPackage: NetworkKpiPackage | null = null;
+let committedKpiIdentity: { scid: string | number | null; did: number | null; interval: number; sampleCount: number; sampleFingerprint: string; flowProbe: { oid: number; value: number | null } } | null = null;
+let requestedKpiIdentity: { scid: string | number | null; did: number | null; interval: number; sampleCount: 0; sampleFingerprint: null } | null = null;
 let status: NetworkKpiStatus = { ...IDLE_STATUS };
 // Guards against a stale load resolving after the user has moved on to another
 // manifest and overwriting the newer package.
@@ -785,7 +794,10 @@ export function closeNetworkKpiPanel(_app?: GeoLibreAppAPI): void {
   database?.close();
   database = null;
   loadedPackage = null;
+  committedKpiIdentity = null;
+  requestedKpiIdentity = null;
   pendingManifest = null;
+  requestedScenarioIndex = null;
   status = { ...IDLE_STATUS };
   notifyStatus();
   if (panelVisible) {
@@ -822,6 +834,29 @@ export function subscribeNetworkKpi(listener: () => void): () => void {
 /** Stable load/progress snapshot for `useSyncExternalStore`. */
 export function getNetworkKpiStatus(): NetworkKpiStatus {
   return status;
+}
+
+/** Read-only, bounded identity evidence for the explicitly enabled live-test getter. */
+export function getNetworkKpiLiveDiagnostics() {
+  return liveIdentityState({ loading: status.loading, error: status.error, requested: requestedKpiIdentity, loaded: committedKpiIdentity });
+}
+
+function captureRequestedKpiIdentity(scid: string | number | null, did: number | null, interval: number): void {
+  requestedKpiIdentity = testudoLiveDiagnosticsEnabled(Boolean(import.meta.env.DEV) || import.meta.env.MODE === "test", typeof window === "undefined" ? "" : window.location.search)
+    ? { scid, did, interval, sampleCount: 0, sampleFingerprint: null }
+    : null;
+}
+
+function commitKpiIdentity(results: NetworkKpiResults, scenarioIndex: number): void {
+  if (!testudoLiveDiagnosticsEnabled(Boolean(import.meta.env.DEV) || import.meta.env.MODE === "test", typeof window === "undefined" ? "" : window.location.search)) {
+    committedKpiIdentity = null;
+    return;
+  }
+  const entries = [...results.sections.entries()].sort((a, b) => a[0] - b[0]);
+  committedKpiIdentity = { scid: pendingManifest?.scenarios[scenarioIndex]?.scid ?? null, did: results.did,
+    interval: results.interval, sampleCount: results.sections.size,
+    sampleFingerprint: boundedFingerprint(entries.slice(0, 32).flatMap(([oid, value]) => [oid, value.flow, value.density, value.speed, value.delay])),
+    flowProbe: { oid: 3355, value: results.sections.get(3355)?.flow ?? null } };
 }
 
 export function subscribeNetworkKpiStatus(listener: () => void): () => void {
@@ -861,12 +896,21 @@ export function setNetworkKpiSettings(next: Partial<NetworkKpiSettings>): boolea
 /** Re-read the resident database for the currently selected interval. */
 function requeryInterval(): void {
   if (!database || !loadedPackage) return;
+  const capturedDatabase = database;
   const token = ++readToken;
-  void database.read({ interval: settings.interval, did: settings.did }).then((results) => {
-    if (token !== readToken || !database || !loadedPackage) return;
-    loadedPackage = { ...loadedPackage, results };
-    engine?.setPackage(loadedPackage);
-  }).catch((error) => {
+  const requestedDid = settings.did;
+  captureRequestedKpiIdentity(pendingManifest?.scenarios[requestedScenarioIndex ?? status.scenarioIndex]?.scid ?? null, requestedDid, settings.interval);
+  void commitNetworkKpiReadIfCurrent(
+    capturedDatabase.read({ interval: settings.interval, did: requestedDid }),
+    () => isCurrentNetworkKpiRead(token, readToken, capturedDatabase, database) && loadedPackage !== null,
+    results => {
+      if (!loadedPackage) return;
+      assertNetworkKpiExplicitDid(results.did, requestedDid);
+      loadedPackage = { ...loadedPackage, results };
+      commitKpiIdentity(results, status.scenarioIndex);
+      engine?.setPackage(loadedPackage);
+    },
+  ).catch((error) => {
     if (token !== readToken) return;
     settings = { ...settings, intervalPlaying: false };
     syncIntervalTimer();
@@ -884,6 +928,7 @@ let pendingManifest: {
   url: string | null;
   directory: VehicleDirectoryHandle | null;
 } | null = null;
+let requestedScenarioIndex: number | null = null;
 
 /**
  * Point the plugin at a package and load its results.
@@ -947,6 +992,8 @@ function clearLoaded(): void {
   database?.close();
   database = null;
   loadedPackage = null;
+  committedKpiIdentity = null;
+  requestedKpiIdentity = null;
   engine?.setPackage(null);
 }
 
@@ -1000,6 +1047,7 @@ export function stepNetworkKpiInterval(direction: 1 | -1): void {
 async function adoptScenario(scenarioIndex: number, token: number): Promise<void> {
   const pending = pendingManifest;
   if (!pending) return;
+  requestedScenarioIndex = scenarioIndex;
 
   clearLoaded();
 
@@ -1008,6 +1056,9 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     pending.url,
     scenarioIndex,
   );
+  const selectedScenario = pending.scenarios[scenarioIndex];
+  const preferredDid = selectedScenario?.did == null ? settings.did : Number(selectedScenario.did);
+  let scenarioReplication: ReturnType<typeof resolveNetworkKpiScenarioReplication> = null;
   const source: VehiclePackageSource = pending.directory
     ? createNetworkKpiDirectorySource(pending.directory)
     : createNetworkKpiHttpSource(pending.url ?? "");
@@ -1030,10 +1081,30 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
         return;
       }
       database = db;
-      results = await db.read({ interval: settings.interval, did: settings.did });
+      const scenarioReadToken = readToken;
+      const selectedRead = readNetworkKpiScenarioResults(
+        db,
+        manifest.package?.scenarios ?? [],
+        selectedScenario?.scid,
+        preferredDid,
+        { interval: settings.interval },
+        identity => captureRequestedKpiIdentity(identity.scid, identity.did, identity.interval),
+      );
+      const selected = await commitNetworkKpiReadIfCurrent(
+        selectedRead,
+        () => token === loadToken && isCurrentNetworkKpiRead(scenarioReadToken, readToken, db, database),
+        () => {},
+      );
+      if (!selected) return;
+      results = selected.results;
+      scenarioReplication = selected.replication;
       try { timeline = await db.readSimulationTimeline(results.did); } catch (error) { console.warn("[GeoLibre] network-kpi: SIM_INFO timing unavailable", error); }
     } catch (error) {
       openError = error instanceof Error ? error.message : String(error);
+      // A rejected explicit-DID read must never leave a partially assigned
+      // result object eligible for publication below.
+      results = null;
+      timeline = null;
     }
   } else {
     openError = "This package's manifest declares no Parquet results catalog.";
@@ -1054,6 +1125,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
   }
 
   loadedPackage = { geometry, results, ramps: manifest.ramps };
+  if (results) commitKpiIdentity(results, scenarioIndex);
   patchStatus({
     loading: false,
     error: openError,
@@ -1064,7 +1136,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     intervals: results?.intervals ?? [],
     scenarios: pending.scenarios,
     scenarioIndex,
-    replications: manifest.package?.scenarios[scenarioIndex]?.replications ?? [],
+    replications: scenarioReplication?.replications ?? [],
     did: results?.did ?? null,
     localFolderName: pending.directory?.name ?? null,
   });
@@ -1136,16 +1208,32 @@ export function highlightNetworkKpiSection(sectionId: string | number): boolean 
 
 /** Select a replication (did) within the active scenario. */
 export function setNetworkKpiReplication(did: number | null): void {
-  settings = { ...settings, did };
+  const scenarioIndex = requestedScenarioIndex ?? status.scenarioIndex;
+  const selectedScenario = pendingManifest?.scenarios[scenarioIndex];
+  const activeScid = selectedScenario?.scid ?? status.scenarios[status.scenarioIndex]?.scid;
+  const packageScenario = pendingManifest
+    ? parseNetworkKpiManifest(pendingManifest.raw, pendingManifest.url, scenarioIndex).package?.scenarios.find(item => String(item.scid) === String(activeScid))
+    : undefined;
+  const activeReplications = packageScenario?.replications ?? (String(status.scenarios[status.scenarioIndex]?.scid) === String(activeScid) ? status.replications : []);
+  const requestedDid = activeScid === undefined ? did : resolveNetworkKpiReplicationDid(activeReplications, did, activeScid);
+  settings = { ...settings, did: requestedDid };
   if (!database || !loadedPackage) return;
+  const capturedDatabase = database;
   const token = ++readToken;
-  void database.read({ interval: settings.interval, did }).then((results) => {
-    if (token !== readToken || !database || !loadedPackage) return;
-    loadedPackage = { ...loadedPackage, results };
-    patchStatus({ did: results.did });
-    engine?.setPackage(loadedPackage);
-    notifyState();
-  }).catch((error) => { if (token === readToken) patchStatus({ error: error instanceof Error ? error.message : String(error) }); });
+  captureRequestedKpiIdentity(activeScid ?? null, requestedDid, settings.interval);
+  void commitNetworkKpiReadIfCurrent(
+    capturedDatabase.read({ interval: settings.interval, did: requestedDid }),
+    () => isCurrentNetworkKpiRead(token, readToken, capturedDatabase, database) && loadedPackage !== null,
+    results => {
+      if (!loadedPackage) return;
+      assertNetworkKpiExplicitDid(results.did, requestedDid);
+      loadedPackage = { ...loadedPackage, results };
+      commitKpiIdentity(results, status.scenarioIndex);
+      patchStatus({ did: results.did });
+      engine?.setPackage(loadedPackage);
+      notifyState();
+    },
+  ).catch((error) => { if (token === readToken) patchStatus({ error: error instanceof Error ? error.message : String(error) }); });
 }
 
 /** Whether this browser can open a local package folder (Chromium only). */

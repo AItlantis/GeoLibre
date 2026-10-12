@@ -9,7 +9,7 @@ import { attachGeolibrePackage, capabilityAvailable } from "./geolibre-package-l
 import { normalizeSelectedPathPercentages } from "./path-analysis-ramps";
 import { aggregatePathSectionVolumes, type PositionalRouteLink } from "./path-analysis-section-volumes";
 import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
-import { selectScenarioPathIndex } from "../shared/scenario-path-index";
+import { resolvePathIndexDeclaration } from "../shared/scenario-path-index";
 
 export interface PathAnalysisManifest { pathIndex: string | null; geometry: { sections: string | null; lanes: string | null; turns: string | null; nodes: string | null }; bounds: [number, number, number, number] | null; available: boolean; unavailableReason: string | null; }
 export interface PathAnalysisSummary { path_count?: number; route_links_count?: number; unique_sections_count?: number; total_demand?: number; [key: string]: unknown; }
@@ -65,10 +65,7 @@ export function parsePathAnalysisManifest(raw: unknown, manifestUrl: string | nu
   // of the `paths` capability state, so `loadPathAnalysis()` always threw
   // "Path data is unavailable in this package." even when `available` was
   // true and real index files existed on disk.
-  const envelope = ((root.__geolibrePackage ?? {}) as Record<string, any>);
-  const indices = (root.path_indices ?? root.pathIndicesByScid ?? envelope.pathIndicesByScid ?? null) as Record<string, unknown> | null;
-  const scenarioIndex = scenarioId === undefined ? null : selectScenarioPathIndex(indices, scenarioId);
-  const pathIndex = scenarioIndex ?? root.path_index ?? selectScenarioPathIndex(indices);
+  const pathIndex = resolvePathIndexDeclaration(root, scenarioId);
   return { pathIndex: resolve(pathIndex, manifestUrl), geometry: { sections: resolve(g.sections, manifestUrl), lanes: resolve(g.lanes, manifestUrl), turns: resolve(g.turns, manifestUrl), nodes: resolve(g.nodes ?? g.junctions, manifestUrl) }, bounds: bounds && bounds.every(Number.isFinite) ? bounds : null, available, unavailableReason: reason };
 }
 

@@ -13,6 +13,75 @@ export const TESTUDO_NETWORK_LAYERS = {
 export type TestudoNetworkGeometry = keyof typeof TESTUDO_NETWORK_LAYERS;
 export type TestudoNetworkGeometryState = Record<`show${Capitalize<TestudoNetworkGeometry>}`, boolean>;
 
+const packageLoadTraceStartedAt = Date.now();
+function tracePersistentNetwork(stage: string, phase: "start" | "complete", details: Record<string, unknown> = {}): void {
+  try {
+    if (typeof localStorage === "undefined" || localStorage.getItem("testudo_bridge_trace") !== "1") return;
+    console.info("[TestudoBridgeTrace:PersistentNetwork]", stage, {
+      phase,
+      elapsedMs: Date.now() - packageLoadTraceStartedAt,
+      ...details,
+    });
+  } catch { /* diagnostics must never affect package loading */ }
+}
+
+/** Mounts comparison-specific package geometry directly on one map instance. */
+export function mountTestudoComparisonGeometry(
+  map: TestudoMapHandle,
+  geometry: NetworkKpiGeometry | null,
+  prefix: string,
+): () => void {
+  let active = true;
+  const entries = [
+    ["sections", geometry?.sections, "line", 2.2],
+    ["lanes", geometry?.lanes, "line", 1.3],
+    ["turns", geometry?.turns, "line", 1.5],
+  ] as const;
+  const ownedEntries = entries.filter(([, data]) => Boolean(data?.features.length));
+  const ids = ownedEntries.map(([key]) => `${prefix}-${key}`);
+  const add = () => {
+    if (!active || map.isStyleLoaded?.() === false) return;
+    for (const [key, data, type, width] of ownedEntries) {
+      if (!data?.features.length) continue;
+      const id = `${prefix}-${key}`;
+      if (!map.getSource(id)) map.addSource(id, { type: "geojson", data });
+      if (map.getLayer(id)) continue;
+      const beforeId = map.getStyle?.().layers?.find(layer => layer.id && layer.type !== "background")?.id;
+      map.addLayer({
+        id, type, source: id,
+        ...(key === "sections" ? { maxzoom: 17 } : key === "lanes" ? { minzoom: 17 } : {}),
+        layout: { visibility: "visible" },
+        paint: {
+          "line-color": "#94a3b8",
+          "line-width": key === "sections" ? metersLineWidthExpression(sectionWidthMetersExpression())
+            : key === "lanes" ? metersLineWidthExpression(laneWidthMetersExpression()) : width,
+          "line-opacity": 60 / 255,
+        },
+      }, beforeId);
+    }
+  };
+  const removeOwned = () => {
+    for (const id of [...ids].reverse()) {
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    }
+  };
+  const onStyleData = () => {
+    if (!active || map.isStyleLoaded?.() === false) return;
+    // A style replacement drops the map-owned resources. Recreate only what is
+    // missing; never remove healthy owned layers during repeated styledata.
+    if (ids.some(id => !map.getLayer(id) || !map.getSource(id))) add();
+  };
+  map.on?.("styledata", onStyleData);
+  add();
+  return () => {
+    if (!active) return;
+    active = false;
+    map.off?.("styledata", onStyleData);
+    removeOwned();
+  };
+}
+
 /** Mounts the package network once per Testudo generation and owns its cleanup. */
 export class TestudoPersistentNetwork {
   private map: TestudoMapHandle | null = null;
@@ -35,9 +104,11 @@ export class TestudoPersistentNetwork {
     map: TestudoMapHandle | null,
     isCurrent: (context: TestudoFeatureContext) => boolean,
   ): Promise<boolean> {
+    tracePersistentNetwork("mount-entry", "start", { hasMap: Boolean(map), isCurrent: isCurrent(context), styleLoaded: map?.isStyleLoaded?.() ?? null });
     if (!map || !isCurrent(context)) return false;
     if (this.mountState.isMounted(context.generation)) {
       this.reconcileMap(map);
+      tracePersistentNetwork("already-mounted-reconcile", "complete", { styleLoaded: map.isStyleLoaded?.() ?? null });
       return true;
     }
     this.clear();
@@ -45,17 +116,30 @@ export class TestudoPersistentNetwork {
     this.context = context;
     this.generation = context.generation;
     this.isCurrent = isCurrent;
-    return this.mountState.mount(context.generation, () => isCurrent(context) && this.map === map, async () => {
+    tracePersistentNetwork("generation-mount", "start", { styleLoaded: map.isStyleLoaded?.() ?? null });
+    const mounted = await this.mountState.mount(context.generation, () => isCurrent(context) && this.map === map, async () => {
       const source = createNetworkKpiDirectorySource(directory);
       const networkManifest = parseNetworkKpiManifest(manifestRaw, null);
+      tracePersistentNetwork("geometry-load", "start");
       const geometry = await loadNetworkKpiGeometry(source, networkManifest.geometry);
-      await this.waitForStyle(map);
+      tracePersistentNetwork("geometry-load", "complete", {
+        sections: geometry.sections?.features.length ?? 0,
+        lanes: geometry.lanes?.features.length ?? 0,
+        turns: geometry.turns?.features.length ?? 0,
+        nodes: geometry.nodes?.features.length ?? 0,
+      });
+      tracePersistentNetwork("style-readiness", "complete", { styleLoaded: map.isStyleLoaded?.() ?? null });
       if (isCurrent(context) && this.map === map) {
         this.geometry = geometry;
+        tracePersistentNetwork("geometry-attach", "start", { styleLoaded: map.isStyleLoaded?.() ?? null });
         this.attachMap(map);
+        tracePersistentNetwork("geometry-attach", "complete", { styleLoaded: map.isStyleLoaded?.() ?? null });
         if (this.esriVisible) this.ensureEsriImagery(map);
       }
     });
+    tracePersistentNetwork("generation-mount", "complete", { mounted, isCurrent: isCurrent(context), styleLoaded: map.isStyleLoaded?.() ?? null });
+    tracePersistentNetwork("mount-entry", "complete", { mounted, isCurrent: isCurrent(context) });
+    return mounted;
   }
 
   clear(): void {
@@ -207,15 +291,4 @@ export class TestudoPersistentNetwork {
     }
   }
 
-  private waitForStyle(map: TestudoMapHandle): Promise<void> {
-    if (map.isStyleLoaded?.() !== false) return Promise.resolve();
-    return new Promise(resolve => {
-      const ready = () => {
-        if (!map.isStyleLoaded?.()) return;
-        map.off?.("styledata", ready);
-        resolve();
-      };
-      map.on?.("styledata", ready);
-    });
-  }
 }

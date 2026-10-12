@@ -6,7 +6,7 @@ import mvpWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url
 import { DuckDBDataProtocol } from "@duckdb/duckdb-wasm";
 import type { NetworkKpiPackageSource } from "./network-kpi-data";
 import { deriveSimulationTimeline, readSimulationTimeline as readProviderSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
-import { laneKey, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample } from "./network-kpi-data";
+import { assertNetworkKpiExplicitData, assertNetworkKpiExplicitDid, laneKey, queryNetworkKpiFallbackDimension, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample } from "./network-kpi-data";
 import { catalogDid, pickDefaultDid, planNetworkKpiCatalog, type CatalogEntry } from "./parquet-catalog";
 import { openTestudoDatasetProvider, setTestudoDatasetSessionKey, type TestudoDatasetProvider } from "./testudo-dataset-provider";
 import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
@@ -183,6 +183,7 @@ export class ParquetResultsDatabase {
           ? `SELECT oid, AVG(flow) flow, AVG(speed) speed, AVG(density) density, AVG(dtime) dtime FROM ${misect} x WHERE ${baseWhere} AND ent <> 0 GROUP BY oid`
           : `SELECT oid, flow, speed, density, dtime FROM ${misect} x WHERE ${baseWhere} AND ent = ${resultInterval}`
       ));
+      assertNetworkKpiExplicitData(options.did, sectionRows.length, "MISECT interval");
       let laneRows: Row[] = [];
       if (milane) {
         const laneSql = synthesize
@@ -227,6 +228,7 @@ export class ParquetResultsDatabase {
         // Some packages contain only the whole-period aggregate. Show that as
         // a single sample rather than making a valid section look unqueryable.
         if (!result.length) result = rows(await con.query(select(true)));
+        assertNetworkKpiExplicitData(options.did, result.length, "section time-series");
         return toSectionSamples(result);
       } finally {
         await con.close();
@@ -244,6 +246,9 @@ export class ParquetResultsDatabase {
     const metadata = provider.describe();
     const descriptor = metadata.datasets.find((item) => item.table.toUpperCase() === "MISECT");
     const did = options.did ?? descriptor?.dids?.[0];
+    if (options.did != null && !(descriptor?.dids ?? []).includes(options.did)) {
+      throw new Error(`Network KPI results catalog has no MISECT data for explicitly selected did ${options.did}.`);
+    }
     const filters = [
       { column: "sid" as const, op: "=" as const, value: options.sid ?? 0 },
       { column: "oid" as const, op: "=" as const, value: oid },
@@ -257,6 +262,7 @@ export class ParquetResultsDatabase {
     });
     let result = await query(false);
     if (!result.rows.length) result = await query(true);
+    assertNetworkKpiExplicitData(options.did, result.rows.length, "section time-series");
     return toSectionSamples(result.rows);
   }
 
@@ -277,13 +283,11 @@ export class ParquetResultsDatabase {
     const metadata = provider.describe();
     const descriptor = metadata.datasets.find((item) => item.table.toUpperCase() === "MISECT");
     const declaredDids = [...new Set((descriptor?.dids ?? []).filter(Number.isFinite))].sort((a, b) => a - b);
-    const didCandidates = options.did == null ? declaredDids : [options.did, ...declaredDids.filter((value) => value !== options.did)];
-    let did = didCandidates[0] ?? null;
-    let dimension = { rows: [] as Row[] };
-    for (const candidate of didCandidates) {
-      const result = await provider.query({ dataset: "MISECT", did: candidate, columns: ["did", "sid", "ent"], distinct: true, limit: 250_000 });
-      if (result.rows.length || did == null) { did = candidate; dimension = result; break; }
-    }
+    const dimensionResult = await queryNetworkKpiFallbackDimension(options.did, declaredDids, async candidate =>
+      (await provider.query({ dataset: "MISECT", did: candidate ?? undefined, columns: ["did", "sid", "ent"], distinct: true, limit: 250_000 })).rows,
+    );
+    const did = dimensionResult.did;
+    const dimension = { rows: dimensionResult.rows };
     const sids = [...new Set(dimension.rows.map((row) => Number(row.sid)).filter(Number.isFinite))].sort((a, b) => a - b);
     const intervals = [...new Set(dimension.rows.map((row) => Number(row.ent)).filter(Number.isFinite))].sort((a, b) => a - b);
     const sid = options.sid ?? (sids.includes(0) ? 0 : (sids[0] ?? 0));
@@ -319,6 +323,8 @@ export class ParquetResultsDatabase {
     const sectionRows = synthesize
       ? averageRows(await readNonAggregate("MISECT", ["oid", "flow", "speed", "density", "dtime"]), (row) => String(row.oid))
       : await readRows("MISECT", ["oid", "flow", "speed", "density", "dtime"]);
+    assertNetworkKpiExplicitDid(did, options.did);
+    assertNetworkKpiExplicitData(options.did, sectionRows.length, "MISECT interval");
     let laneRows: Row[] = [];
     try { laneRows = synthesize
       ? averageRows(await readNonAggregate("MILANE", ["oid", "lane", "flow", "speed", "density", "dtime"]), (row) => `${row.oid}:${row.lane}`)

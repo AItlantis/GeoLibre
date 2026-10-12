@@ -63,6 +63,13 @@ import "maplibre-gl-layer-control/style.css";
 import "./layer-control-overrides.css";
 
 const WMS_PROXY_PATH = "/__geolibre_wms_proxy";
+function traceMapLifecycle(event: string, detail: Record<string, unknown> = {}): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage.getItem("testudo_bridge_trace") === "1") {
+      console.info("[TestudoBridgeTrace:MapCanvas]", event, detail);
+    }
+  } catch { /* Diagnostics must not affect map initialization. */ }
+}
 const WEB_MERCATOR_MAX_LATITUDE = 85.0511287798066;
 const WEB_MERCATOR_EARTH_RADIUS = 6378137;
 const WEB_MERCATOR_WORLD_SIZE = 2 * Math.PI * WEB_MERCATOR_EARTH_RADIUS;
@@ -74,6 +81,8 @@ const WMS_IDENTIFY_INFO_FORMATS = ["application/json", "text/html", "text/plain"
 export interface MapCanvasProps {
   controllerRef?: React.MutableRefObject<MapEngine | null>;
   onMapDiagnosticEvent?: (event: MapDiagnosticEvent) => void;
+  /** Publishes the stable controller API before MapLibre has completed its first load. */
+  onControllerAvailable?: () => void;
   onControllerReady?: () => void;
   /**
    * Whether the status bar's elevation readout may fall back to the public
@@ -1081,6 +1090,7 @@ function mapErrorDiagnosticEvent(event: maplibregl.ErrorEvent): MapDiagnosticEve
 export const MapCanvas = memo(function MapCanvas({
   controllerRef,
   onMapDiagnosticEvent,
+  onControllerAvailable,
   onControllerReady,
   canUseRemoteElevation,
   identifyAllLabels = DEFAULT_IDENTIFY_ALL_LABELS,
@@ -1094,6 +1104,8 @@ export const MapCanvas = memo(function MapCanvas({
   // caller passes a non-memoized callback.
   const onControllerReadyRef = useRef(onControllerReady);
   onControllerReadyRef.current = onControllerReady;
+  const onControllerAvailableRef = useRef(onControllerAvailable);
+  onControllerAvailableRef.current = onControllerAvailable;
   const onMapDiagnosticEventRef = useRef(onMapDiagnosticEvent);
   onMapDiagnosticEventRef.current = onMapDiagnosticEvent;
 
@@ -1174,6 +1186,7 @@ export const MapCanvas = memo(function MapCanvas({
     if (!containerRef.current || controller.current) return;
 
     const mc = createMapController();
+    traceMapLifecycle("map-controller-init", { hasContainer: Boolean(containerRef.current), hasControllerRef: Boolean(controllerRef) });
     const map = mc.init(containerRef.current, {
       styleUrl: basemapStyleUrl,
       mapView,
@@ -1181,6 +1194,8 @@ export const MapCanvas = memo(function MapCanvas({
     });
     controller.current = mc;
     if (controllerRef) controllerRef.current = mc;
+    traceMapLifecycle("controller-available-callback", { controllerExists: Boolean(controller.current) });
+    onControllerAvailableRef.current?.();
 
     // Ground elevation under the cursor for the status bar (issue #1813).
     // Terrain sampling is synchronous so the readout tracks the pointer live;
@@ -1214,6 +1229,9 @@ export const MapCanvas = memo(function MapCanvas({
       setPointerCoords(null);
     });
     map.on("error", (event) => {
+      traceMapLifecycle("map-error", {
+        message: event.error instanceof Error ? event.error.message : String(event.error ?? ""),
+      });
       // Cancelled tile fetches are already surfaced (as info) by the
       // network capture; logging them here would double-count aborts.
       if (isAbortError(event.error)) return;
@@ -1266,7 +1284,15 @@ export const MapCanvas = memo(function MapCanvas({
       updateProjection();
     };
     map.getContainer().addEventListener("click", handleProjectionControlClick);
+    map.on("style.load", () => {
+      traceMapLifecycle("map-style-load", {
+        loaded: map.loaded(),
+        styleLoaded: map.isStyleLoaded(),
+        styleUrl: map.getStyle()?.sprite ?? null,
+      });
+    });
     map.on("load", () => {
+      traceMapLifecycle("map-load", { loaded: map.loaded(), styleLoaded: map.isStyleLoaded() });
       const state = useAppStore.getState();
       mc.setBasemapVisible(state.basemapVisible);
       mc.setBasemapOpacity(state.basemapOpacity);
@@ -1275,6 +1301,7 @@ export const MapCanvas = memo(function MapCanvas({
         resolveHighlightIds(state),
       );
       updateView();
+      traceMapLifecycle("controller-ready-callback", { controllerExists: Boolean(controller.current), mapLoaded: map.loaded() });
       onControllerReadyRef.current?.();
     });
 

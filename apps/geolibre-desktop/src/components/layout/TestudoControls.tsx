@@ -8,20 +8,40 @@ import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins
 import { parentOriginHintFromBrowser, pickBroadcastTargets } from "../../hooks/embedHost";
 import { mapViewFromMapLibre, type TestudoRendererReadinessRef, type TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
+import { runWithPackageOwnerRelease, TestudoCommandGate } from "../../lib/testudo-command-gate";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, hasDeclaredPathIndex, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
 import { listVehicleManifestScenarios } from "@geolibre/plugins";
 import { summarizeGeoAiInvestigation } from "../../lib/testudo-investigation";
-import { availableModesForScenario, comparisonStyleState, environmentAvailableForScenario, modeForScenarioChange, pluginForTestudoMode, testudoViewerStyleState, validateTestudoStyle } from "../../lib/testudo-view-style";
+import { availableModesForScenario, comparisonStyleState, finalizeModeSelection, initializeFirstAnimationScenarioIfNeeded, modeForScenarioChange, pluginForTestudoMode, reconcileEnvironmentCapability, reconcilePathCapability, reconcileResultsCapability, resolveComparisonScenarioPairIds, routeTestudoPluginSelection, selectScenarioInRoster, testudoViewerStyleState, validateTestudoStyle } from "../../lib/testudo-view-style";
+
+function traceTestudoBridge(event: string, detail: Record<string, unknown> = {}): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage.getItem("testudo_bridge_trace") === "1") {
+      console.info("[TestudoBridgeTrace:TestudoControls]", event, detail);
+    }
+  } catch { /* Diagnostics must not affect viewer startup. */ }
+}
+
+let playbackCommandTraceCount = 0;
+const PLAYBACK_COMMAND_TRACE_LIMIT = 128;
+function tracePlaybackCommand(event: string, detail: Record<string, unknown>): void {
+  if (playbackCommandTraceCount >= PLAYBACK_COMMAND_TRACE_LIMIT) return;
+  try {
+    if (typeof window === "undefined" || !plugins.testudoLiveDiagnosticsEnabled(import.meta.env.DEV || import.meta.env.MODE === "test", window.location.search)) return;
+    playbackCommandTraceCount++;
+    console.info("[TestudoPlaybackTrace:TestudoControls]", event, detail);
+  } catch { /* Trace must never affect the command path. */ }
+}
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
 export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
 const featureCapabilityIds: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
-const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai");
+const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai" && id !== "geoai-buildings");
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectablePluginId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
   { id: "flow", label: "Flow", plugin: "network-kpi" },
@@ -89,10 +109,21 @@ const handlers = {
 export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: { app: GeoLibreAppAPI | null; rendererReadinessRef: TestudoRendererReadinessRef; currentTViewRef: TestudoTViewIdentityRef }) {
   const { t } = useTranslation();
   const [state, setState] = useState<TestudoViewerState>(empty);
-  const picker = useRef<((directory: VehicleDirectoryHandle) => Promise<void>) | null>(null);
+  const picker = useRef<((directory: VehicleDirectoryHandle, operation?: number) => Promise<void>) | null>(null);
   const modeSelector = useRef<((mode: TestudoDemoMode) => Promise<TestudoViewerState>) | null>(null);
   useEffect(() => {
-    if (!app) return;
+    if (!app) {
+      traceTestudoBridge("controls-waiting-for-map-api", {
+        origin: window.location.origin,
+        referrer: document.referrer,
+        renderer: rendererReadinessRef.current.renderer,
+        rendererEpoch: rendererReadinessRef.current.epoch,
+        rendererReady: rendererReadinessRef.current.ready,
+        rendererError: rendererReadinessRef.current.error,
+        controllerApiAvailable: false,
+      });
+      return;
+    }
     const origin = window.location.origin;
     const allowed = readEmbedOrigins().filter(value => value !== "*");
     if (window.parent === window) return;
@@ -105,17 +136,21 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     let declaredScenarioIds: Array<string | number> = [];
     let declaredScenarioRoster: NonNullable<TestudoFeatureSession["scenarios"]> = [];
     let declaredVariantScenarioRoster: NonNullable<TestudoFeatureSession["scenarios"]> = [];
-    let environmentScenarioPairs: Array<{ scid: string | number; did: string | number }> = [];
+    let environmentScenarioCoverage: ReturnType<typeof plugins.resolveEnvironmentScenarioCoverage> = { byScid: {}, packageEligible: true };
+    let environmentPackageEligible = true;
     let preferredMode: TestudoDemoMode | undefined;
     let declaredAvailableModes: TestudoDemoMode[] = [];
     let abort = new AbortController();
     let disposed = false;
     let generation = 0;
+    let packageOperation = 0;
     let selectionGeneration = 0;
-    let busy = false;
+    const commandGate = new TestudoCommandGate();
+    let comparisonPairRequest = 0;
     let investigationBusy = false;
     let bridgeInstalled = false;
     let bridgePluginId: TestudoSelectablePluginId | null = null;
+    let scenarioToPreserveOnPluginSelect: string | number | undefined;
     const persistentNetwork = new plugins.TestudoPersistentNetwork();
     const persistentNetworkMapWatch = setInterval(() => persistentNetwork.reconcileMap(app.getMap?.() as any ?? null), 200);
     let comparisonDeclared = false;
@@ -126,8 +161,18 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     let readyTimer: ReturnType<typeof setInterval> | undefined;
     let mapControlsTimer: ReturnType<typeof setInterval> | undefined;
     let unsubscribeMapControls: (() => void) | undefined;
+    const ownsPackageOperation = (operation: number) => !disposed && packageOperation === operation;
+    const assertPackageOperation = (operation: number) => {
+      if (!ownsPackageOperation(operation)) throw new Error("Package selection was superseded by a newer request.");
+    };
     const featureBridge = new plugins.TestudoFeatureBridge((packageBootstrap) => ({
       open: async (_bootstrap, context) => {
+        plugins.setVehiclePlaybackLiveDiagnosticsGeneration(context.generation);
+        const providerOpenStartedAt = performance.now();
+        traceTestudoBridge("provider-open-callback", { phase: "start", elapsedMs: 0 });
+        const traceProviderOpen = (phase: "complete") => traceTestudoBridge("provider-open-callback", {
+          phase, elapsedMs: Math.round(performance.now() - providerOpenStartedAt),
+        });
         bridgePluginId = context.pluginId as TestudoSelectablePluginId | null;
         const isCurrent = (tviewId: string, expectedGeneration: number) => tviewId === "main" && featureBridge.sessions.isCurrent({ tviewId, generation: expectedGeneration });
         const vehiclePlayback = plugins.createVehiclePlaybackAdapter({ getStatus: () => { const status = plugins.getVehiclePlaybackStatus(); return { ...status, available: status.scenarios.length > 0, initialTimeSeconds: status.timeline?.initialTimeSeconds ?? null, simulationDurationSeconds: status.timeline?.durationSeconds ?? null }; }, getSettings: plugins.getVehiclePlaybackSnapshot,
@@ -135,7 +180,12 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           subscribe: listener => plugins.subscribeToPlaybackSources([plugins.subscribeVehiclePlayback, plugins.subscribeVehiclePlaybackStatus], listener) }, isCurrent, context);
         const kpiPlayback = plugins.createNetworkKpiPlaybackAdapter({ getStatus: () => { const status = plugins.getNetworkKpiStatus(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds, sampleTimes: intervalSampleTimes(status.intervals, status.timeline), simulationDurationSeconds: status.timeline?.durationSeconds ?? null }; }, getSettings: plugins.getNetworkKpiSnapshot,
           setSettings: plugins.setNetworkKpiSettings, stepNetworkKpiInterval: plugins.stepNetworkKpiInterval, setScenario: plugins.setNetworkKpiScenario,
-          subscribe: plugins.subscribeNetworkKpiStatus }, isCurrent, context);
+          // KPI settings (interval, play/pause, speed, loop) and load/status
+          // changes use separate stores; observe both so the host timeline
+          // follows timer ticks as well as load progress and scenario changes.
+          subscribe: listener => plugins.subscribeToPlaybackSources(
+            [plugins.subscribeNetworkKpiStatus, plugins.subscribeNetworkKpi], listener,
+          ) }, isCurrent, context);
         const emissionsPlayback = plugins.createNetworkKpiPlaybackAdapter({
           getStatus: () => { const status = plugins.getEmissionsH3Status(); return { loading: status.loading, intervals: status.intervals, error: status.error, dt: status.timeline?.intervalDurationSeconds, sampleTimes: intervalSampleTimes(status.intervals, status.timeline), simulationDurationSeconds: status.timeline?.durationSeconds ?? null }; },
           getSettings: () => { const settings = plugins.getEmissionsH3Snapshot(); return { interval: settings.interval, intervalPlaying: settings.intervalPlaying, playbackSpeed: settings.playbackSpeed, loop: settings.loop }; },
@@ -175,9 +225,22 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         const session: TestudoFeatureSession = {
           context, capabilities, availableModes: current.availableModes as TestudoFeatureSession["availableModes"], selectedMode: current.selectedMode as TestudoFeatureSession["selectedMode"],
           scenarios: scenarios(), playback,
-          selectPlugin: async id => { bridgePluginId = id as TestudoSelectablePluginId; syncScenarioRoster(bridgePluginId); return id; },
+          selectPlugin: async id => {
+            bridgePluginId = id as TestudoSelectablePluginId;
+            if (!(bridgePluginId === "network-kpi" && scenarioToPreserveOnPluginSelect !== undefined)) syncScenarioRoster(bridgePluginId);
+            return id;
+          },
           applyPreset: id => id,
           selectScenario: async id => {
+            const packageGenerationAtStart = generation;
+            const packageOperationAtStart = packageOperation;
+            const sessionAtStart = featureBridge.sessions.get("main") ?? null;
+            const assertCurrent = () => {
+              if (disposed || generation !== packageGenerationAtStart || packageOperation !== packageOperationAtStart
+                || sessionAtStart && !featureBridge.sessions.isCurrent(sessionAtStart.context)) {
+                throw new Error("Scenario selection belongs to a stale package generation.");
+              }
+            };
             const row = scenarios().find(item => item.id === id);
             if (!row) throw new Error(`Scenario ${id} is unavailable for ${bridgePluginId}.`);
             if (bridgePluginId === "vehicle-playback") {
@@ -193,9 +256,15 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
               const comparisonStatus = plugins.getScenarioComparisonStatus();
               if (comparisonStatus.error) throw new Error(comparisonStatus.error);
             } else if (bridgePluginId === "emissions-h3") {
-              const scenarioIndex = plugins.getEmissionsH3Status().scenarios.findIndex(item => item.id === id);
-              if (scenarioIndex < 0) throw new Error(`Scenario ${id} is unavailable for emissions.`);
-              await plugins.setEmissionsH3Scenario(scenarioIndex);
+              const coverage = environmentScenarioCoverage.byScid[String(row.scenarioId ?? row.id)] ?? { status: "unknown" as const, dids: [] };
+              if (coverage.status === "available") await loadEnvironmentScenarioData(row.scenarioId ?? row.id, preferredEnvironmentDid(coverage)!);
+              else if (coverage.status === "unavailable") plugins.clearEmissionsH3Scenario(row.scenarioId ?? row.id);
+              else await plugins.verifyEnvironmentScenarioCandidates(
+                coverage.candidateDids ?? [],
+                did => loadEnvironmentScenarioData(row.scenarioId ?? row.id, did),
+                () => plugins.clearEmissionsH3Scenario(row.scenarioId ?? row.id),
+                assertCurrent,
+              );
             } else if (bridgePluginId === "path-analysis") await plugins.setPathAnalysisScenario(id);
             else {
               const scenarioIndex = plugins.getNetworkKpiStatus().scenarios.findIndex(item => String(item.scid) === String(row.scenarioId ?? row.id));
@@ -241,6 +310,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           setCameraView: view => { app.getMap?.()?.jumpTo({ center: view.center, zoom: view.zoom, bearing: view.bearing ?? 0, pitch: view.pitch ?? 0 }); },
           dispose: () => { bridgePluginId = null; },
         };
+        traceProviderOpen("complete");
         return session;
       },
     }), (request, signal) => requestArtifactFromParent(request, signal));
@@ -343,8 +413,29 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       relayReplies.delete(reply.requestId);
       emit("testudoGeoAIReply", reply);
     });
-    const readyTargets = pickBroadcastTargets(null, allowed, parentOriginHintFromBrowser()).filter(target => target !== "*");
-    const ready = () => { if (!disposed) for (const target of readyTargets) window.parent.postMessage({ v: 2, source: "geolibre", type: "ready", payload: { version: "testudo-v1", challenge } }, target); };
+    const parentOriginHint = parentOriginHintFromBrowser();
+    const readyTargets = pickBroadcastTargets(null, allowed, parentOriginHint).filter(target => target !== "*");
+    traceTestudoBridge("bridge-listener-install", {
+      origin,
+      referrer: document.referrer,
+      parentOriginHint,
+      allowedOrigins: allowed,
+      readyTargets,
+      renderer: rendererReadinessRef.current.renderer,
+      rendererEpoch: rendererReadinessRef.current.epoch,
+      rendererReady: rendererReadinessRef.current.ready,
+      controllerApiAvailable: true,
+    });
+    let readyLogged = false;
+    const ready = () => {
+      if (!disposed) {
+        if (!readyLogged) {
+          readyLogged = true;
+          traceTestudoBridge("ready-post", { targetCount: readyTargets.length, readyTargets });
+        }
+        for (const target of readyTargets) window.parent.postMessage({ v: 2, source: "geolibre", type: "ready", payload: { version: "testudo-v1", challenge } }, target);
+      }
+    };
     function requestArtifactFromParent(request: { requestId: string; tviewId: string; generation: number; artifactRef: string }, signal: AbortSignal): Promise<ArrayBuffer> {
       const target = parentOrigin;
       if (!target || !allowed.includes(target)) return Promise.reject(new Error("The Testudo host origin is not allowlisted."));
@@ -384,7 +475,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           const metric = plugins.getNetworkKpiSettings().metric;
           mode = metric === "flow" || metric === "density" ? metric : "results";
         } else if (plugin === "path-analysis") mode = "paths";
-        else if (plugin === "emissions-h3" || plugin === "geoai-buildings") mode = "environment";
+        else if (plugin === "emissions-h3") mode = "environment";
         else if (plugin === "scenario-comparison") mode = "comparison";
       }
 
@@ -462,6 +553,37 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     };
     const closeMapPlugins = () => { for (const id of ids) if (id !== "geoai") handlers[id].close(); };
     const closeAllPlugins = () => { for (const id of ids) handlers[id].close(); };
+    const diagnosticWindow = window as Window & { __testudoLiveDiagnostics?: () => unknown };
+    const liveDiagnosticsGetter = plugins.createTestudoLiveDiagnosticsGetter(
+      plugins.testudoLiveDiagnosticsEnabled(import.meta.env.DEV || import.meta.env.MODE === 'test', window.location.search),
+      () => {
+        const session = featureBridge.sessions.get("main");
+        if (!session || !featureBridge.sessions.isCurrent(session.context)) return { available: false };
+        const generation = session.context.generation;
+        const requestedScid = current.selectedScenarioId ?? null;
+        return {
+          available: true,
+          tviewId: "main",
+          generation,
+          packageIdentity: { packageId: current.package?.packageId ?? null, versionId: current.package?.versionId ?? null },
+          mode: current.selectedMode ?? null,
+          requested: { scid: current.selectedScenarioId ?? null,
+            scenarioA: current.style?.scenarioA ?? null, scenarioB: current.style?.scenarioB ?? null },
+          results: { tviewId: "main", generation, requestedScid, ...plugins.getNetworkKpiLiveDiagnostics() },
+          environment: { tviewId: "main", generation, requestedScid, ...plugins.getEmissionsH3LiveDiagnostics() },
+          comparison: { tviewId: "main", generation,
+            requestedPair: { scenarioA: current.style?.scenarioA ?? null, scenarioB: current.style?.scenarioB ?? null },
+            ...plugins.getScenarioComparisonLiveDiagnostics() },
+          animation: { tviewId: "main", generation, requestedScid, ...plugins.getVehiclePlaybackLiveDiagnostics(), trace: plugins.getVehiclePlaybackTraceSnapshot() },
+        };
+      },
+    );
+    if (liveDiagnosticsGetter) Object.defineProperty(diagnosticWindow, "__testudoLiveDiagnostics", {
+      configurable: true, enumerable: false, value: liveDiagnosticsGetter,
+    });
+    const removeLiveDiagnostics = () => {
+      if (diagnosticWindow.__testudoLiveDiagnostics === liveDiagnosticsGetter) delete diagnosticWindow.__testudoLiveDiagnostics;
+    };
     const syncAssistantOpen = () => update({ assistantOpen: plugins.isGeoAiChatPanelVisible() });
     const unsubscribeAssistantPanel = plugins.subscribeGeoAiChatPanel(syncAssistantOpen);
     const scenarioRosterForPlugin = (pluginId: TestudoSelectablePluginId | null): NonNullable<TestudoFeatureSession["scenarios"]> => {
@@ -470,7 +592,15 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (pluginId === "scenario-comparison") { const rows = plugins.getScenarioComparisonStatus().scenarios; return rows.length ? uniqueByScenario(rows.map(row => ({ scid: row.scid, label: row.label }))) : declaredScenarioRoster; }
       if (pluginId === "emissions-h3") { const rows = plugins.getEmissionsH3Status().scenarios; return rows.length ? rows.map(row => ({ id: String(row.id), label: row.label, ...(row.scid !== undefined ? { scenarioId: row.scid } : {}) })) : declaredScenarioRoster; }
       if (pluginId === "path-analysis") return declaredScenarioRoster;
-      if (pluginId === "network-kpi") { const rows = plugins.getNetworkKpiStatus().scenarios; return rows.length ? uniqueByScenario(rows.map(row => ({ scid: row.scid, label: row.label, did: plugins.getNetworkKpiSnapshot().did ?? undefined }))) : declaredScenarioRoster; }
+      if (pluginId === "network-kpi") {
+        const rows = plugins.getNetworkKpiStatus().scenarios;
+        if (!rows.length) return declaredScenarioRoster;
+        const declared = new Map(declaredScenarioRoster.map(row => [String(row.scenarioId ?? row.id), row]));
+        return rows.map(row => {
+          const own = declared.get(String(row.scid));
+          return { ...(own ?? {}), id: String(row.scid), label: String(row.label ?? own?.label ?? row.scid), scenarioId: row.scid };
+        });
+      }
       return declaredScenarioRoster;
     };
     const selectedScenarioForPlugin = (pluginId: TestudoSelectablePluginId | null, roster = scenarioRosterForPlugin(pluginId)): string | undefined => {
@@ -479,6 +609,37 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (pluginId === "network-kpi") { const status = plugins.getNetworkKpiStatus(); const row = status.scenarios[status.scenarioIndex]; return row?.scid === undefined ? roster[0]?.id : String(row.scid); }
       if (pluginId === "emissions-h3") { const status = plugins.getEmissionsH3Status(); return status.scenarios.find(row => row.index === status.scenarioIndex)?.id ?? roster[0]?.id; }
       return roster[0]?.id;
+    };
+    const loadEnvironmentScenarioData = async (scenarioId: string | number, did: number): Promise<void> => {
+      const index = declaredScenarioRoster.findIndex(row => String(row.scenarioId ?? row.id) === String(scenarioId));
+      if (index < 0) throw new Error(`Environment scenario ${String(scenarioId)} is not declared by this package.`);
+      if (directory) await plugins.loadLocalEmissionsH3Folder(directory, index, did);
+      else {
+        const status = plugins.getEmissionsH3Status();
+        const pluginIndex = status.scenarios.findIndex(row => String(row.scid ?? row.id) === String(scenarioId));
+        if (pluginIndex < 0) throw new Error(`Environment scenario ${String(scenarioId)} is unavailable in the emissions loader.`);
+        await plugins.setEmissionsH3Scenario(pluginIndex, did);
+      }
+      const loaded = plugins.getEmissionsH3Status();
+      if (loaded.loading || loaded.error) throw new Error(loaded.error ?? "Environment data is still loading.");
+      if (String(loaded.scenarios[loaded.scenarioIndex]?.scid ?? "") !== String(scenarioId)) throw new Error(`Environment loaded a different scenario than ${String(scenarioId)}.`);
+      if (loaded.did !== did) throw new Error(`Environment did not load requested replication ${did}.`);
+      if (!loaded.hasEmissions) throw new Error(`Environment replication ${did} contains no usable emissions rows.`);
+    };
+    const verifyUnknownEnvironmentScenario = async (
+      scenarioId: string | number,
+      coverage: { candidateDids?: number[] },
+      assertCurrent: () => void,
+    ) => plugins.verifyEnvironmentScenarioCandidates(
+      coverage.candidateDids ?? [],
+      did => loadEnvironmentScenarioData(scenarioId, did),
+      () => plugins.clearEmissionsH3Scenario(scenarioId),
+      assertCurrent,
+    );
+    const preferredEnvironmentDid = (coverage: { status: "available" | "unavailable" | "unknown"; dids: number[] }): number | undefined => {
+      if (coverage.status !== "available" || !coverage.dids.length) return undefined;
+      const currentDid = plugins.getEmissionsH3Snapshot().did;
+      return currentDid !== null && coverage.dids.includes(currentDid) ? currentDid : coverage.dids[0];
     };
     const syncScenarioRoster = (pluginId: TestudoSelectablePluginId | null) => {
       const roster = scenarioRosterForPlugin(pluginId); const selectedScenarioId = selectedScenarioForPlugin(pluginId, roster);
@@ -489,7 +650,8 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (current.selectedScenarioId === selectedScenarioId && plugins.scenarioRosterMatches(current.scenarios ?? [], shellRoster)) return current;
       return update({ scenarios: shellRoster, selectedScenarioId });
     };
-    const select = async (id: TestudoSelectablePluginId) => {
+    const select = async (id: TestudoSelectablePluginId, operation?: number, preserveScenarioId?: string | number) => {
+      if (operation !== undefined) assertPackageOperation(operation);
       if (!selectableIds.includes(id)) throw new Error("Unknown map plugin");
       const capability = current.capabilities.find(item => item.id === id);
       const comparisonProbe = id === "scenario-comparison" && comparisonDeclared && !capability?.available;
@@ -509,11 +671,13 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       // A slow but successful idempotent data load may complete after the UI
       // deadline. Its state event must clear the stale timeout in the host.
       void loading.then(() => {
-        if (!timedOut || disposed || generation !== version || selectionGeneration !== selection) return;
+        if (!timedOut || disposed || generation !== version || selectionGeneration !== selection
+          || operation !== undefined && !ownsPackageOperation(operation)) return;
         const status = handlers[id].status();
         update(status.error ? { status: "error", error: status.error } : { status: "ready", error: undefined });
       }, error => {
-        if (!timedOut || disposed || generation !== version || selectionGeneration !== selection) return;
+        if (!timedOut || disposed || generation !== version || selectionGeneration !== selection
+          || operation !== undefined && !ownsPackageOperation(operation)) return;
         update({ status: "error", error: error instanceof Error ? error.message : String(error) });
       });
       try {
@@ -529,10 +693,13 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       } finally {
         if (timeout) clearTimeout(timeout);
       }
-      if (disposed || generation !== version) throw new Error("Package selection changed");
+      if (operation !== undefined) assertPackageOperation(operation);
+      if (disposed || generation !== version || selectionGeneration !== selection) throw new Error("Package selection changed");
       const status = handlers[id].status();
       if (id === "path-analysis" && declaredScenarioIds.length > 0) {
         await plugins.setPathAnalysisScenario(declaredScenarioIds[0]);
+        if (operation !== undefined) assertPackageOperation(operation);
+        if (disposed || generation !== version || selectionGeneration !== selection) throw new Error("Package selection changed");
       }
       if (status.error) throw new Error(status.error);
       if (id === "scenario-comparison") {
@@ -552,7 +719,21 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         if (activeSession) activeSession.capabilities = activeSession.capabilities?.map(item => item.id === "scenario-comparison" ? { ...item, available: true, reason: undefined } : item);
       }
       bridgePluginId = id;
-      if (bridgeInstalled) await featureBridge.selectPlugin("main", id);
+      if (bridgeInstalled) {
+        scenarioToPreserveOnPluginSelect = id === "network-kpi" ? preserveScenarioId : undefined;
+        try { await featureBridge.selectPlugin("main", id); }
+        finally { scenarioToPreserveOnPluginSelect = undefined; }
+      }
+      if (operation !== undefined) assertPackageOperation(operation);
+      if (preserveScenarioId !== undefined && id === "network-kpi") {
+        await selectScenarioInRoster(preserveScenarioId, plugins.getNetworkKpiStatus().scenarios,
+          index => plugins.setNetworkKpiScenario(index), () => {
+            if (operation !== undefined) assertPackageOperation(operation);
+            if (disposed || generation !== version || selectionGeneration !== selection) throw new Error("Package selection changed");
+          });
+        const selectedKpiScenario = plugins.getNetworkKpiStatus().scenarios[plugins.getNetworkKpiStatus().scenarioIndex];
+        if (String(selectedKpiScenario?.scid) !== String(preserveScenarioId)) throw new Error("The selected scenario could not be loaded in Results.");
+      }
       syncScenarioRoster(id);
       return update({ status: "ready" });
     };
@@ -577,7 +758,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       }
     };
     window.addEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction);
-    const selectMode = async (mode: TestudoDemoMode, rememberPreference = true) => {
+    const selectMode = async (mode: TestudoDemoMode, rememberPreference = true, operation?: number, preserveScenarioId?: string | number) => {
+      if (operation !== undefined) assertPackageOperation(operation);
+      const packageOperationAtStart = packageOperation;
       if (!current.availableModes.includes(mode)) {
         const capabilityId = mode === "animation" ? "vehicle-playback" : mode === "paths" ? "path-analysis" : mode === "environment" ? "emissions-h3" : mode === "comparison" ? "scenario-comparison" : "network-kpi";
         const reason = current.capabilities.find(item => item.id === capabilityId)?.reason;
@@ -588,10 +771,21 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       }
       if (rememberPreference) preferredMode = mode;
       const target = modes.find(item => item.id === mode) ?? { id: mode, plugin: pluginForTestudoMode(mode) };
-      const result = current.status === "ready" && current.selectedPlugin === target.plugin ? current : await select(target.plugin);
+      const result = current.status === "ready" && current.selectedPlugin === target.plugin ? current : await select(target.plugin, operation, preserveScenarioId);
+      if (operation !== undefined) assertPackageOperation(operation);
+      if (packageOperation !== packageOperationAtStart) throw new Error("Package selection changed");
+      const selectionAtStart = selectionGeneration;
+      const sessionAtStart = featureBridge.sessions.get("main") ?? null;
+      const assertSelectionCurrent = () => {
+        if (operation !== undefined) assertPackageOperation(operation);
+        if (packageOperation !== packageOperationAtStart || selectionGeneration !== selectionAtStart
+          || (sessionAtStart && featureBridge.sessions.get("main") !== sessionAtStart)) {
+          throw new Error("Package selection changed");
+        }
+      };
       if (mode === "animation") {
         const playback = plugins.getVehiclePlaybackStatus();
-        if (playback.scenarioIndex < 0 && playback.scenarios.length > 0) await plugins.setVehiclePlaybackScenario(0);
+        if (await initializeFirstAnimationScenarioIfNeeded(playback.scenarioIndex, playback.scenarios.length, index => plugins.setVehiclePlaybackScenario(index))) assertSelectionCurrent();
       }
       if (mode === "flow" || mode === "density" || mode === "results") {
         const viewMode = current.viewModes?.results;
@@ -613,12 +807,21 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (mode === "environment") {
         const viewMode = current.viewModes?.environment;
         handlers["emissions-h3"].settings({ metric: (viewMode?.column ?? "co2") as NonNullable<Parameters<typeof plugins.setEmissionsH3Settings>[0]["metric"]>, ...(viewMode?.style ? { extruded: viewMode.style.type === "extrusion" } : {}) });
-        const emissions = plugins.getEmissionsH3Status();
-        if (!emissions.hasEmissions) {
-          const reason = "Environment mode is unavailable: the selected scenario has no usable emissions data.";
-          update({ availableModes: current.availableModes.filter(item => item !== "environment"), capabilities: current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: false, reason } : item) });
-          throw new Error(reason);
-        }
+        const scenarioId = current.selectedScenarioId;
+        const coverage = scenarioId === undefined ? { status: "unknown" as const, dids: [] } : environmentScenarioCoverage.byScid[String(scenarioId)] ?? { status: "unknown" as const, dids: [] };
+        if (coverage.status === "unavailable") throw new Error("Environment mode is unavailable: the selected scenario has no usable emissions data.");
+        if (coverage.status === "available") {
+          const expectedDid = preferredEnvironmentDid(coverage)!;
+          const emissionStatus = plugins.getEmissionsH3Status();
+          if (String(emissionStatus.scenarios[emissionStatus.scenarioIndex]?.scid ?? "") !== String(scenarioId)
+              || emissionStatus.did !== expectedDid) {
+            await loadEnvironmentScenarioData(scenarioId!, expectedDid);
+            assertSelectionCurrent();
+          }
+          const committed = plugins.getEmissionsH3Status();
+          if (committed.did !== expectedDid) throw new Error(`Environment did not load requested replication ${expectedDid}.`);
+          if (committed.loading || committed.error || !committed.hasEmissions) throw new Error(committed.error ?? `Environment replication ${expectedDid} contains no usable emissions rows.`);
+        } else await verifyUnknownEnvironmentScenario(scenarioId!, coverage, assertSelectionCurrent);
       }
       const viewMode = current.viewModes?.[mode as "results" | "comparison" | "environment"];
       const defaultMetric = viewMode?.style.id === "cmp_flow_delta" ? "flow_delta" : viewMode?.style.id === "delay" || viewMode?.column === "dtime" ? "delay" : (viewMode?.column ?? "flow");
@@ -633,23 +836,31 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         ...(pairB >= 0 ? { scenarioB: String(pair[pairB]?.scid ?? pairB) } : {}),
         ...(mode === "comparison" ? { showDifference: comparisonSettings?.mode === "diff" } : {}),
       } : current.style;
-      const activeSessionGeneration = featureBridge.sessions.get("main")?.context.generation ?? generation;
+      assertSelectionCurrent();
+      const activeSessionGeneration = sessionAtStart?.context.generation ?? generation;
       if (mode === "paths") persistentNetwork.setPathsMode(true, activeSessionGeneration);
       else if (current.selectedMode === "paths") persistentNetwork.setPathsMode(false, activeSessionGeneration);
-      const updated = update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
-      syncScenarioRoster(target.plugin);
-      if (bridgeInstalled) await featureBridge.setViewMode("main", mode);
-      if (bridgeInstalled) {
-        const session = featureBridge.sessions.get("main");
-        if (session) emit("testudoPlaybackChanged", { ...featureBridge.getPlaybackState("main", session.context.generation), tviewId: "main", generation: session.context.generation });
-      }
-      return updated;
+      update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
+      return finalizeModeSelection({
+        syncScenarioRoster: () => { syncScenarioRoster(target.plugin); },
+        synchronizeViewMode: async () => {
+          if (bridgeInstalled) await featureBridge.setViewMode("main", mode, sessionAtStart?.context.generation);
+        },
+        publishPlayback: () => {
+          if (!bridgeInstalled) return;
+          const session = featureBridge.sessions.get("main");
+          if (session) emit("testudoPlaybackChanged", { ...featureBridge.getPlaybackState("main", session.context.generation), tviewId: "main", generation: session.context.generation });
+        },
+        assertCurrent: assertSelectionCurrent,
+        getCurrentState: () => current,
+      });
     };
     modeSelector.current = async mode => {
-      if (busy) return current;
-      busy = true;
+      if (commandGate.packageBusy || commandGate.commandBusy) return current;
+      const operationAtStart = packageOperation;
+      const commandOwner = commandGate.beginCommand("testudoSetMode");
       try { return await selectMode(mode); }
-      finally { busy = false; }
+      finally { if (operationAtStart === packageOperation) commandGate.finishCommand(commandOwner); }
     };
     const applyPreset = async (id: string) => {
       const preset = bootstrap?.presets.find(item => item.id === id);
@@ -695,22 +906,26 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       generation++;
       selectionGeneration++;
       abort.abort(); abort = new AbortController();
-      featureBridge.sessions.remove("main");
+      featureBridge.unloadPackage("main");
       void plugins.setTestudoResultsSessionKey(null);
       bridgeInstalled = false;
       bridgePluginId = null;
       comparisonDeclared = false;
       preferredMode = undefined;
       declaredAvailableModes = [];
-      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; declaredScenarioRoster = []; declaredVariantScenarioRoster = []; environmentScenarioPairs = [];
+      closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; declaredScenarioRoster = []; declaredVariantScenarioRoster = []; environmentScenarioCoverage = { byScid: {}, packageEligible: true }; environmentPackageEligible = true;
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
       plugins.resetGeoAiBuildings();
       update({ ...empty });
     };
-    const load = async (payload: TestudoLoadPackage) => {
+    const load = async (payload: TestudoLoadPackage, operation: number) => {
+      const packageLoadStartedAt = performance.now();
+      const tracePackageLoadStage = (stage: string, phase: "start" | "complete") =>
+        traceTestudoBridge("package-load-stage", { stage, phase, elapsedMs: Math.round(performance.now() - packageLoadStartedAt) });
       const candidate = payload?.bootstrap && validateTestudoBootstrap(payload.bootstrap, !!guestCredential);
       if (!candidate || containsCredentialField(payload) || (guestCredential && payload.challenge !== challenge)) throw new Error("Invalid Testudo package bootstrap");
+      assertPackageOperation(operation);
       reset(); bootstrap = candidate;
       comparisonDeclared = candidate.capabilities.some(item => item.id === "scenario-comparison" && item.available);
       const getGuestEmbedToken = guestCredential ? () => {
@@ -719,6 +934,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       } : undefined;
       const byteOrigins = getGuestEmbedToken ? (readDeploymentEnvValue("VITE_TESTUDO_BYTE_ORIGINS") ?? "").split(/[\s,]+/).filter(Boolean).map(value => new URL(value).origin) : [];
       if (getGuestEmbedToken && !byteOrigins.length) throw new Error("Package byte origin is not configured");
+      assertPackageOperation(operation);
       const source = getGuestEmbedToken
         ? createSignedPackageSource({ origin, artifactEndpoint: candidate.artifactEndpoint, getGuestEmbedToken, byteOrigins, signal: abort.signal })
         : createParentProxiedPackageSource({ parent: window.parent, allowedOrigins: allowed, targetOrigin: () => parentOrigin,
@@ -755,13 +971,25 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           : capability);
       update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: safeCapabilities, status: "loading" });
       const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai")?.id as TestudoSelectablePluginId | undefined ?? null;
+      tracePackageLoadStage("feature-session-install", "start");
       const featureContext = await installFeatureSession(candidate, defaultPlugin, "published");
+      tracePackageLoadStage("feature-session-install", "complete");
+      assertPackageOperation(operation);
+      tracePackageLoadStage("results-session-key", "start");
       await plugins.setTestudoResultsSessionKey(`${candidate.packageId}:${featureContext.generation}`);
+      tracePackageLoadStage("results-session-key", "complete");
+      assertPackageOperation(operation);
+      tracePackageLoadStage("network-kpi-manifest-read", "start");
       const raw = await readLocalNetworkKpiManifestJson(directory);
+      tracePackageLoadStage("network-kpi-manifest-read", "complete");
+      assertPackageOperation(operation);
+      tracePackageLoadStage("persistent-network-mount", "start");
       await persistentNetwork.mount(featureContext, directory, raw, app.getMap?.() as any,
         context => featureBridge.sessions.isCurrent(context));
+      tracePackageLoadStage("persistent-network-mount", "complete");
+      assertPackageOperation(operation);
       const pkg = getGeolibrePackage(raw);
-      environmentScenarioPairs = pkg?.viewModes.environment?.scenarioDidPair ?? [];
+      environmentScenarioCoverage = plugins.resolveEnvironmentScenarioCoverage(pkg, raw);
       const packageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
       declaredScenarioIds = [...new Set(packageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined))];
       declaredVariantScenarioRoster = plugins.vehiclePlaybackScenarioRoster(packageScenarios);
@@ -770,32 +998,46 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (pkg?.viewModes.comparison && pkg.scenarios.length > 1) {
         handlers["scenario-comparison"].open(app);
         try {
+          tracePackageLoadStage("scenario-comparison-load", "start");
           await plugins.loadLocalScenarioComparisonFolder(directory);
+          tracePackageLoadStage("scenario-comparison-load", "complete");
+          assertPackageOperation(operation);
           const comparison = plugins.getScenarioComparisonStatus();
           hasMatchedComparison = Boolean(comparison.timelineA && comparison.timelineB && comparison.matchedIntervals.length > 0);
-        } finally { handlers["scenario-comparison"].close(); }
+        } finally { if (ownsPackageOperation(operation)) handlers["scenario-comparison"].close(); }
       }
-      let hasUsableEmissions = false;
-      if (pkg?.viewModes.environment) {
+      if (pkg?.viewModes.environment && environmentScenarioCoverage.packageEligible) {
+        const availableScenario = pkg.scenarios.find(scenario => environmentScenarioCoverage.byScid[String(scenario.scid)]?.status === "available");
+        const availableScenarioIndex = availableScenario ? pkg.scenarios.indexOf(availableScenario) : -1;
+        const preferredDid = availableScenario ? environmentScenarioCoverage.byScid[String(availableScenario.scid)]?.dids[0] : undefined;
+        if (availableScenario && preferredDid !== undefined) {
         handlers["emissions-h3"].open(app);
-        try { await plugins.loadLocalEmissionsH3Folder(directory); hasUsableEmissions = plugins.getEmissionsH3Status().hasEmissions; }
-        finally { handlers["emissions-h3"].close(); }
+        try {
+          tracePackageLoadStage("emissions-load", "start");
+          await plugins.loadLocalEmissionsH3Folder(directory, availableScenarioIndex, preferredDid);
+          tracePackageLoadStage("emissions-load", "complete");
+          assertPackageOperation(operation);
+        }
+        finally { if (ownsPackageOperation(operation)) handlers["emissions-h3"].close(); }
+        }
       }
       const hasAnimation = packageScenarios.length > 0;
       const root = raw as Record<string, unknown>;
+      const resolvedPathIndex = plugins.parsePathAnalysisManifest(raw, null).pathIndex;
       const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
       const contracts = pkg?.dataContracts ?? {};
       const knownColumns = Object.values(contracts).flatMap(value => value && typeof value === "object" && Array.isArray((value as { columns?: unknown }).columns) ? (value as { columns: unknown[] }).columns : []);
       const hasMetric = (metric: "flow" | "density") => Object.hasOwn(ramps, metric) || knownColumns.some(column => column === metric);
+      const resultsCapability = reconcileResultsCapability(current.capabilities, Boolean(pkg?.viewModes.results));
+      const pathCapability = reconcilePathCapability(current.capabilities, Boolean(resolvedPathIndex));
       const availableModes = availableTestudoModes({
         animation: safeCapabilities.some(item => item.id === "vehicle-playback" && item.available) && hasAnimation,
         flow: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("flow"),
         density: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && hasMetric("density"),
-        results: safeCapabilities.some(item => item.id === "network-kpi" && item.available) && Boolean(pkg?.viewModes.results),
+        results: resultsCapability.available,
         comparison: hasMatchedComparison,
-        environment: safeCapabilities.some(item => item.id === "emissions-h3" && item.available) && hasUsableEmissions,
-        paths: safeCapabilities.some(item => item.id === "path-analysis" && item.available)
-          && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
+        environment: reconcileEnvironmentCapability(current.capabilities, Boolean(pkg?.viewModes.environment), environmentScenarioCoverage.packageEligible).available,
+        paths: pathCapability.available,
       });
       declaredAvailableModes = [...availableModes];
       const initialMode = availableModes.includes("animation") ? "animation" : availableModes[0];
@@ -804,35 +1046,50 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       const initialScenarioId = selectedScenarioForPlugin(initialPlugin ?? null, initialScenarioRoster);
       const matchedReason = "Scenario comparison is unavailable: this package has no matched simulation intervals.";
       comparisonDeclared = hasMatchedComparison;
+      const environmentCapability = reconcileEnvironmentCapability(current.capabilities, Boolean(pkg?.viewModes.environment), environmentScenarioCoverage.packageEligible);
+      environmentPackageEligible = environmentCapability.available;
+      const finalCapabilities = reconcileResultsCapability(reconcilePathCapability(environmentCapability.capabilities,
+        Boolean(resolvedPathIndex)).capabilities.map(item => item.id === "scenario-comparison"
+        ? { ...item, available: hasMatchedComparison, reason: hasMatchedComparison ? undefined : matchedReason }
+        : item), Boolean(pkg?.viewModes.results)).capabilities;
       update({ availableModes, viewModes: pkg?.viewModes, timeAxis: pkg?.timeAxis ?? undefined, scenarios: initialScenarioRoster.map(({ id, label }) => ({ id, label })), selectedScenarioId: initialScenarioId,
-        capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: hasMatchedComparison, reason: hasMatchedComparison ? undefined : matchedReason }
-          : item.id === "emissions-h3" && pkg?.viewModes.environment ? { ...item, available: hasUsableEmissions, reason: hasUsableEmissions ? undefined : "No declared scenario has usable emissions rows." } : item) });
+        capabilities: finalCapabilities });
       const installedSession = featureBridge.sessions.get("main");
       if (installedSession) {
-        installedSession.capabilities = current.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
+        installedSession.capabilities = finalCapabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
         installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
         installedSession.scenarios = initialScenarioRoster;
         installedSession.selectedScenarioId = initialScenarioId;
       }
       if (!initialPlugin) throw new Error("This package has no supported viewer data");
-      const modeForPlugin: Partial<Record<TestudoSelectablePluginId, TestudoDemoMode>> = { "vehicle-playback": "animation", "network-kpi": "results", "scenario-comparison": "comparison", "emissions-h3": "environment", "path-analysis": "paths", "geoai-buildings": "environment" };
+      const modeForPlugin: Partial<Record<TestudoSelectablePluginId, TestudoDemoMode>> = { "vehicle-playback": "animation", "network-kpi": "results", "scenario-comparison": "comparison", "emissions-h3": "environment", "path-analysis": "paths" };
       const requestedMode = payload.selectedPlugin ? modeForPlugin[payload.selectedPlugin] : initialMode;
+      tracePackageLoadStage("initial-mode-and-plugin-selection", "start");
       if (requestedMode && availableModes.includes(requestedMode)) {
-        if (payload.selectedPlugin) await select(initialPlugin);
-        await selectMode(requestedMode);
-      } else await select(initialPlugin);
-      if (payload.presetId) await applyPreset(payload.presetId);
+        if (payload.selectedPlugin) { await select(initialPlugin, operation); assertPackageOperation(operation); }
+        await selectMode(requestedMode, true, operation);
+      } else await select(initialPlugin, operation);
+      tracePackageLoadStage("initial-mode-and-plugin-selection", "complete");
+      assertPackageOperation(operation);
+      if (payload.presetId) {
+        tracePackageLoadStage("preset-application", "start");
+        await applyPreset(payload.presetId);
+        tracePackageLoadStage("preset-application", "complete");
+      }
+      assertPackageOperation(operation);
       return current;
     };
-    picker.current = async selected => {
-      if (busy) return;
-      busy = true;
+    picker.current = async (selected, requestedOperation) => {
+      const operation = requestedOperation ?? ++packageOperation;
+      commandGate.beginPackage(operation);
+      let didInvalidate = false;
       try {
         // Validate before discarding the previous selection; cancellation never enters this function.
         const raw = await readLocalNetworkKpiManifestJson(selected);
+        assertPackageOperation(operation);
         const pkg = getGeolibrePackage(raw);
         if (!pkg) throw new Error("Choose a built Testudo package containing manifest.json and geolibre/package.json. Raw models must be built first.");
-        reset(); directory = selected; environmentScenarioPairs = pkg.viewModes.environment?.scenarioDidPair ?? [];
+        reset(); didInvalidate = true; assertPackageOperation(operation); directory = selected; environmentScenarioCoverage = plugins.resolveEnvironmentScenarioCoverage(pkg, raw);
         const localPackageScenarios = listVehicleManifestScenarios(raw, { includeAnimationVariants: true });
         declaredScenarioIds = [...new Set(localPackageScenarios.map(item => item.scid).filter((id): id is string | number => id !== undefined))];
         declaredVariantScenarioRoster = plugins.vehiclePlaybackScenarioRoster(localPackageScenarios);
@@ -841,28 +1098,36 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         // cannot reach the Testudo chat routes here — the alias intentionally never matches a
         // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
         const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "", "geoai-buildings": "" };
-        const emissions = pkg.dataContracts.emissions as { status?: string } | undefined;
+        const emissions = pkg.dataContracts.emissions as { status?: string; reason?: string } | undefined;
         const comparisonCount = pkg.scenarios.reduce((count, scenario) => count + Math.max(1, scenario.replications.length), 0);
-        const capabilities = ids.map(id => ({ id, available: id !== "geoai" && id !== "geoai-buildings" && pkg.capabilities[aliases[id]]?.state === "available"
+        let capabilities = ids.map(id => ({ id, available: id !== "geoai" && id !== "geoai-buildings" && pkg.capabilities[aliases[id]]?.state === "available"
           && (id !== "emissions-h3" || emissions?.status === "available")
           && (id !== "scenario-comparison" || comparisonCount > 1), reason: id === "geoai"
             ? "GeoAI chat is only available for packages loaded from Testudo, not local folders."
             : id === "geoai-buildings"
             ? "GeoAI building detection is only available for packages loaded from Testudo, not local folders."
             : id === "emissions-h3"
-            ? "No usable emissions data is declared for this package." : pkg.capabilities[aliases[id]]?.reason ?? "No compatible dataset declared." }));
+            ? emissions?.reason ?? pkg.capabilities[aliases[id]]?.reason ?? "No usable emissions data is declared for this package." : pkg.capabilities[aliases[id]]?.reason ?? "No compatible dataset declared." }));
+        const initialResultsCapability = reconcileResultsCapability(capabilities, Boolean(pkg.viewModes.results));
+        capabilities = initialResultsCapability.capabilities;
+        const initialEnvironmentCapability = reconcileEnvironmentCapability(capabilities, Boolean(pkg.viewModes.environment), environmentScenarioCoverage.packageEligible);
+        capabilities = initialEnvironmentCapability.capabilities;
+        environmentPackageEligible = initialEnvironmentCapability.available;
         comparisonDeclared = capabilities.some(item => item.id === "scenario-comparison" && item.available);
         const root = raw as Record<string, unknown>;
+        const resolvedPathIndex = plugins.parsePathAnalysisManifest(raw, null).pathIndex;
+        const pathCapability = reconcilePathCapability(capabilities, Boolean(resolvedPathIndex));
+        capabilities = pathCapability.capabilities;
         const ramps = root.default_ramps && typeof root.default_ramps === "object" ? root.default_ramps as Record<string, unknown> : {};
         const knownColumns = Object.values(pkg.dataContracts).flatMap(value => value && typeof value === "object" && Array.isArray((value as { columns?: unknown }).columns) ? (value as { columns: unknown[] }).columns : []);
         let availableModes = availableTestudoModes({
           animation: capabilities.some(item => item.id === "vehicle-playback" && item.available) && listVehicleManifestScenarios(raw, { includeAnimationVariants: true }).length > 0,
           flow: capabilities.some(item => item.id === "network-kpi" && item.available) && (Object.hasOwn(ramps, "flow") || knownColumns.includes("flow")),
           density: capabilities.some(item => item.id === "network-kpi" && item.available) && (Object.hasOwn(ramps, "density") || knownColumns.includes("density")),
-          results: capabilities.some(item => item.id === "network-kpi" && item.available) && Boolean(pkg.viewModes.results),
+          results: initialResultsCapability.available,
           comparison: capabilities.some(item => item.id === "scenario-comparison" && item.available) && Boolean(pkg.viewModes.comparison?.scenarioDidPair?.length && (pkg.timeAxis?.intervals ?? 0) > 0),
-          environment: capabilities.some(item => item.id === "emissions-h3" && item.available) && emissions?.status === "available" && Boolean(pkg.viewModes.environment),
-          paths: capabilities.some(item => item.id === "path-analysis" && item.available) && (hasDeclaredPathIndex(root.path_index) || hasDeclaredPathIndex(root.path_indices)),
+          environment: environmentPackageEligible,
+          paths: pathCapability.available,
         });
         declaredAvailableModes = [...availableModes];
         const initial = availableModes[0];
@@ -876,49 +1141,69 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           artifactEndpoint: "", capabilities: capabilities.filter(item => featureCapabilityIds.includes(item.id)), presets: [] };
         const localReader = async (artifactRef: string) => (await (await directory!.getFileHandle(artifactRef)).getFile()).arrayBuffer();
         const featureContext = await installFeatureSession(localBootstrap, null, "local", localReader);
+        assertPackageOperation(operation);
         await plugins.setTestudoResultsSessionKey(`${localBootstrap.packageId}:${featureContext.generation}`);
+        assertPackageOperation(operation);
         await persistentNetwork.mount(featureContext, directory, raw, app.getMap?.() as any,
           context => featureBridge.sessions.isCurrent(context));
+        assertPackageOperation(operation);
         let hasMatchedComparison = false;
         if (pkg.viewModes.comparison && pkg.scenarios.length > 1) {
           handlers["scenario-comparison"].open(app);
           try {
             await plugins.loadLocalScenarioComparisonFolder(directory);
+            assertPackageOperation(operation);
             const comparison = plugins.getScenarioComparisonStatus();
             hasMatchedComparison = Boolean(comparison.timelineA && comparison.timelineB && comparison.matchedIntervals.length > 0);
-          } finally { handlers["scenario-comparison"].close(); }
+          } finally { if (ownsPackageOperation(operation)) handlers["scenario-comparison"].close(); }
         }
         comparisonDeclared = hasMatchedComparison;
         if (hasMatchedComparison && !availableModes.includes("comparison")) availableModes = [...availableModes, "comparison"];
         if (!hasMatchedComparison) availableModes = availableModes.filter(mode => mode !== "comparison");
         update({ availableModes, capabilities: current.capabilities.map(item => item.id === "scenario-comparison" ? { ...item, available: hasMatchedComparison, reason: hasMatchedComparison ? undefined : "Scenario comparison is unavailable: this package has no matched simulation intervals." } : item) });
-        if (pkg.viewModes.environment) {
+        if (pkg.viewModes.environment && environmentScenarioCoverage.packageEligible) {
+          const availableScenario = pkg.scenarios.find(scenario => environmentScenarioCoverage.byScid[String(scenario.scid)]?.status === "available");
+          const availableScenarioIndex = availableScenario ? pkg.scenarios.indexOf(availableScenario) : -1;
+          const preferredDid = availableScenario ? environmentScenarioCoverage.byScid[String(availableScenario.scid)]?.dids[0] : undefined;
+          if (availableScenario && preferredDid !== undefined) {
           handlers["emissions-h3"].open(app);
           try {
-            await plugins.loadLocalEmissionsH3Folder(directory);
-            const hasEmissions = plugins.getEmissionsH3Status().hasEmissions;
-            if (hasEmissions && !availableModes.includes("environment")) availableModes = [...availableModes, "environment"];
-            if (!hasEmissions) {
-              availableModes = availableModes.filter(mode => mode !== "environment");
-            }
-            update({ availableModes, capabilities: current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions, reason: hasEmissions ? undefined : "No declared scenario has usable emissions rows." } : item) });
+            await plugins.loadLocalEmissionsH3Folder(directory, availableScenarioIndex, preferredDid);
+            assertPackageOperation(operation);
           }
-          finally { handlers["emissions-h3"].close(); }
+          finally { if (ownsPackageOperation(operation)) handlers["emissions-h3"].close(); }
+          }
         }
+        const resultsCapability = reconcileResultsCapability(capabilities, Boolean(pkg.viewModes.results));
+        const environmentCapability = reconcileEnvironmentCapability(resultsCapability.capabilities, Boolean(pkg.viewModes.environment), environmentScenarioCoverage.packageEligible);
+        environmentPackageEligible = environmentCapability.available;
+        availableModes = environmentCapability.available
+          ? availableModes.includes("environment") ? availableModes : [...availableModes, "environment"]
+          : availableModes.filter(mode => mode !== "environment");
+        update({ availableModes, capabilities: environmentCapability.capabilities });
         const installedSession = featureBridge.sessions.get("main");
         if (installedSession) {
-          installedSession.capabilities = current.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
+          installedSession.capabilities = environmentCapability.capabilities.map(item => ({ ...item })) as TestudoFeatureSession["capabilities"];
           installedSession.availableModes = [...availableModes] as TestudoFeatureSession["availableModes"];
           installedSession.scenarios = initialScenarioRoster;
           installedSession.selectedScenarioId = initialScenarioId;
         }
-        await selectMode(initial);
-      } catch (error) { update({ status: "error", error: error instanceof Error ? error.message : String(error) }); }
-      finally { busy = false; }
+        await selectMode(initial, true, operation);
+        assertPackageOperation(operation);
+      } catch (error) {
+        if (ownsPackageOperation(operation)) {
+          const detail = error instanceof Error ? error.message : String(error);
+          if (didInvalidate) { reset(); update({ status: "error", error: detail }); }
+          else if (current.status === "loading") { reset(); update({ status: "error", error: detail }); }
+          throw error;
+        }
+        throw error;
+      } finally { commandGate.finishPackage(operation); }
     };
-    const loadPickedLocalPackage = async (selected: VehicleDirectoryHandle) => {
-      if (busy) throw new Error(t("testudo.loading"));
-      await picker.current?.(selected);
+    const loadPickedLocalPackage = async (selected: VehicleDirectoryHandle, operation: number) => {
+      if (!picker.current) throw new Error("The local package loader is not ready.");
+      await picker.current(selected, operation);
+      assertPackageOperation(operation);
       return current;
     };
     const requestInvestigation = (request: MessageEvent["data"]) => {
@@ -960,6 +1245,20 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (!acceptsTestudoMessage(event, window.parent, allowed, challenge)) return;
       clearInterval(readyTimer);
       const request = event.data;
+      const isPlaybackCommand = request.type === "testudoSetPlaybackPlaying";
+      if (isPlaybackCommand) {
+        const playbackStatus = plugins.getVehiclePlaybackStatus();
+        const selectedVariant = playbackStatus.scenarios[playbackStatus.scenarioIndex];
+        const traceSnapshot = plugins.getVehiclePlaybackTraceSnapshot();
+        tracePlaybackCommand("native-command-received", {
+          requestId: String(request.requestId ?? "").slice(0, 128),
+          type: request.type,
+          generation: Number.isSafeInteger(request.payload?.generation) ? request.payload.generation : null,
+          variantId: selectedVariant?.variantId ?? selectedVariant?.id ?? null,
+          loadToken: traceSnapshot?.loadToken ?? null,
+          playing: request.payload?.playing === true,
+        });
+      }
       if (request.type === "testudoOpenLocalPackage") {
         if (seenLocalPackageRequests.has(request.requestId)) return;
         seenLocalPackageRequests.add(request.requestId);
@@ -978,14 +1277,18 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         requestInvestigation(request);
         return;
       }
+      const packageRequest = request.type === "testudoLoadPackage" || request.type === "testudoOpenLocalPackage";
+      const operation = packageRequest ? ++packageOperation : null;
+      const operationAtStart = packageOperation;
+      if (operation !== null) commandGate.beginPackage(operation);
       const run = async () => {
         if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
         if (request.type === "testudoOpenLocalPackage") {
-          if (busy) throw new Error(t("testudo.loading"));
           requireMainGeneration(request.payload);
           if (!isVehicleDirectoryHandle(request.payload.directoryHandle)) throw new Error("A valid local package directory handle is required.");
-          return await loadPickedLocalPackage(request.payload.directoryHandle);
+          return await loadPickedLocalPackage(request.payload.directoryHandle, operation!);
         }
+        if (request.type === "testudoLoadPackage") return await load(request.payload, operation!);
         if (request.type === "testudoGetState") return { ...current, tviewId: "main", generation: featureBridge.getTViews()[0]?.generation ?? 0 };
         if (request.type === "testudoCreateTView") {
           if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
@@ -1001,8 +1304,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           return featureBridge.setActiveTView("main");
         }
         if (request.type === "testudoGetActiveTView") return featureBridge.getActiveTView();
-        if (busy) throw new Error("The viewer is loading a package. Please wait.");
-        busy = true;
+        const commandOwner = commandGate.beginCommand(request.type);
         try {
           if (request.type === "testudoDestroyTView") {
             if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
@@ -1012,37 +1314,68 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             featureBridge.setActiveTView("main");
             return tview;
           }
-          if (request.type === "testudoLoadPackage") return await load(request.payload);
           if (request.type === "testudoSetPlugin") {
             const id = String(request.payload?.id ?? "");
-            if ((current.availableModes as string[]).includes(id)) return await selectMode(id as TestudoDemoMode);
-            return await select(id as TestudoSelectablePluginId);
+            return await routeTestudoPluginSelection(
+              id,
+              mode => selectMode(mode),
+              pluginId => select(pluginId as TestudoSelectablePluginId),
+            );
           }
           if (request.type === "testudoSetMode") return await selectMode(request.payload.mode);
           if (request.type === "testudoSetScenario") {
             const generationExpected = request.payload?.generation;
             if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Scenario command targets an unsupported TView.");
             if (generationExpected !== undefined && generationExpected !== generation) throw new Error("Scenario command belongs to a stale package generation.");
+            const packageOperationAtStart = packageOperation;
+            const generationAtStart = generation;
+            const sessionAtStart = featureBridge.sessions.get("main") ?? null;
+            const assertScenarioRequestCurrent = () => {
+              if (disposed || packageOperation !== packageOperationAtStart || generation !== generationAtStart
+                || (sessionAtStart && !featureBridge.sessions.isCurrent(sessionAtStart.context))) throw new Error("Scenario command belongs to a stale package generation.");
+            };
             const selectionId = await featureBridge.selectScenario("main", String(request.payload?.scenarioId), generationExpected as number | undefined);
+            assertScenarioRequestCurrent();
             syncScenarioRoster(bridgePluginId);
             const selectedScenario = featureBridge.sessions.get("main")?.scenarios?.find(row => row.id === selectionId);
             const scenarioId = String(selectedScenario?.scenarioId ?? selectionId);
             if (current.viewModes?.environment) {
-              const emissionsStatus = plugins.getEmissionsH3Status();
-              const emissionsIndex = emissionsStatus.scenarios.findIndex(row => String(row.id) === scenarioId);
-              if (emissionsIndex >= 0 && bridgePluginId !== "emissions-h3") await plugins.setEmissionsH3Scenario(emissionsIndex);
-              const hasEmissions = environmentAvailableForScenario(environmentScenarioPairs, scenarioId);
-              const reason = "Environment mode is unavailable for this scenario because it has no usable emissions rows.";
-              const scenarioModeState = modeForScenarioChange(declaredAvailableModes, hasEmissions && Boolean(current.viewModes?.environment), preferredMode, current.selectedMode);
+              const coverage = environmentScenarioCoverage.byScid[scenarioId] ?? { status: "unknown" as const, dids: [] };
+              if (coverage.status === "available") {
+                const expectedDid = preferredEnvironmentDid(coverage)!;
+                await loadEnvironmentScenarioData(scenarioId, expectedDid);
+                assertScenarioRequestCurrent();
+                const loadedEmissions = plugins.getEmissionsH3Status();
+                if (loadedEmissions.did !== expectedDid) throw new Error(`Environment did not load requested replication ${expectedDid}.`);
+              } else if (coverage.status === "unavailable") {
+                plugins.clearEmissionsH3Scenario(scenarioId);
+              } else {
+                await verifyUnknownEnvironmentScenario(scenarioId, coverage, assertScenarioRequestCurrent);
+              }
+              assertScenarioRequestCurrent();
+              const hasEmissions = coverage.status === "available" || coverage.status === "unknown" && environmentPackageEligible;
+              const declaredReason = current.capabilities.find(item => item.id === "emissions-h3")?.reason;
+              const reason = !environmentPackageEligible && declaredReason
+                ? declaredReason
+                : coverage.status === "unavailable"
+                  ? "Environment mode is unavailable for this scenario because it has no usable emissions rows."
+                  : declaredReason;
+              const scenarioModeState = modeForScenarioChange(declaredAvailableModes, hasEmissions && environmentPackageEligible, preferredMode, current.selectedMode);
               const availableModes = scenarioModeState.availableModes;
-              const capabilities = current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions, reason: hasEmissions ? undefined : reason } : item);
+              const capabilities = current.capabilities.map(item => item.id === "emissions-h3" ? { ...item, available: hasEmissions && environmentPackageEligible, ...(hasEmissions && environmentPackageEligible ? { reason: undefined } : reason ? { reason } : {}) } : item);
               const activeSession = featureBridge.sessions.get("main");
               if (activeSession) { activeSession.availableModes = availableModes; activeSession.capabilities = capabilities.filter(item => featureCapabilityIds.includes(item.id)) as TestudoFeatureSession["capabilities"]; }
               const selectedMode = current.selectedMode;
               update({ selectedScenarioId: selectionId, availableModes, capabilities });
-              if (scenarioModeState.selectedMode && scenarioModeState.selectedMode !== selectedMode) await selectMode(scenarioModeState.selectedMode, false);
+              if (scenarioModeState.selectedMode && scenarioModeState.selectedMode !== selectedMode) {
+                await selectMode(scenarioModeState.selectedMode, false, packageOperationAtStart,
+                  scenarioModeState.selectedMode === "results" ? scenarioId : undefined);
+                assertScenarioRequestCurrent();
+              }
             } else update({ selectedScenarioId: selectionId });
-            return { scenarioId: selectionId, modelScenarioId: selectedScenario?.scenarioId };
+            const finalScenario = featureBridge.sessions.get("main")?.scenarios?.find(row => row.id === current.selectedScenarioId);
+            const finalScenarioId = current.selectedScenarioId ?? selectionId;
+            return { scenarioId: finalScenarioId, modelScenarioId: finalScenario?.scenarioId ?? selectedScenario?.scenarioId };
           }
           if (request.type === "testudoSetStyle") {
             if (request.payload?.tviewId !== "main" || request.payload?.generation !== generation) throw new Error("Style command belongs to a stale package generation.");
@@ -1068,20 +1401,34 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
               : testudoViewerStyleState(style, current.scenarios ?? []);
             return update({ style: echoedStyle });
           }
-          if (request.type === "testudoSetScenarioPair") {
+          if (request.type === "testudoSetScenarioPair" || request.type === "testudoSetScenarioPairById") {
+            const byId = request.type === "testudoSetScenarioPairById";
             if (!current.capabilities.some(item => item.id === "scenario-comparison" && item.available)) throw new Error("Scenario comparison is unavailable for this package.");
             const session = featureBridge.sessions.get("main");
-            if (!session || (request.payload?.generation !== undefined && request.payload.generation !== session.context.generation)) throw new Error("Scenario pair command belongs to a stale package generation.");
+            if (!session || request.payload?.tviewId !== "main" || (byId && request.payload?.generation !== session.context.generation) || (!byId && request.payload?.generation !== undefined && request.payload?.generation !== session.context.generation)) throw new Error("Scenario pair command belongs to a stale TView or package generation.");
             if (bridgePluginId !== "scenario-comparison") throw new Error("Select scenario comparison before changing its scenario pair.");
-            const scenarioA = Number(request.payload?.scenarioA); const scenarioB = Number(request.payload?.scenarioB);
-            const scenarioCount = plugins.getScenarioComparisonStatus().scenarios.length;
-            if (!Number.isSafeInteger(scenarioA) || scenarioA < 0 || scenarioA >= scenarioCount || !Number.isSafeInteger(scenarioB) || scenarioB < 0 || scenarioB >= scenarioCount) throw new Error("Comparison scenario indexes are invalid.");
+            const scenarios = plugins.getScenarioComparisonStatus().scenarios;
+            if (byId && (typeof request.payload?.scenarioAId !== "string" || typeof request.payload?.scenarioBId !== "string")) throw new Error("Comparison scenario IDs are invalid.");
+            const byIdPair = byId ? resolveComparisonScenarioPairIds(request.payload.scenarioAId as string, request.payload.scenarioBId as string, scenarios) : undefined;
+            const scenarioA = byIdPair?.scenarioA ?? Number(request.payload?.scenarioA);
+            const scenarioB = byIdPair?.scenarioB ?? Number(request.payload?.scenarioB);
+            if (!Number.isSafeInteger(scenarioA) || scenarioA < 0 || scenarioA >= scenarios.length || !Number.isSafeInteger(scenarioB) || scenarioB < 0 || scenarioB >= scenarios.length) throw new Error(byId ? "Comparison scenario IDs are not available for this package." : "Comparison scenario indexes are invalid.");
+            const pairRequest = ++comparisonPairRequest;
             await scenarioAdapters.comparison(scenarioA, scenarioB);
+            if (pairRequest !== comparisonPairRequest) throw new Error("Scenario pair selection was superseded.");
+            requireMainGeneration({ tviewId: "main", generation: session.context.generation });
             const comparisonStatus = plugins.getScenarioComparisonStatus();
             if (comparisonStatus.error) throw new Error(comparisonStatus.error);
-            const scenarios = comparisonStatus.scenarios;
+            const resolvedScenarios = comparisonStatus.scenarios;
             const style = current.style ?? { display: "ramp" as const, metric: "flow_delta", interval: 0, maxHeightM: 100 };
-            const echoedStyle = comparisonStyleState({ ...style, scenarioA, scenarioB }, scenarios, style.showDifference ?? true);
+            const echoedStyle = comparisonStyleState({ ...style, scenarioA, scenarioB }, resolvedScenarios, style.showDifference ?? true);
+            if (byId) {
+              const scenarioAId = String(resolvedScenarios[scenarioA]?.scid);
+              const scenarioBId = String(resolvedScenarios[scenarioB]?.scid);
+              if (!scenarioAId || !scenarioBId || scenarioAId === "undefined" || scenarioBId === "undefined") throw new Error("The selected comparison scenarios have no stable IDs.");
+              update({ style: echoedStyle, selectedScenarioId: scenarioAId });
+              return { scenarioAId, scenarioBId, selectedScenarioId: scenarioAId };
+            }
             update({ style: echoedStyle });
             return { scenarioA, scenarioB };
           }
@@ -1177,7 +1524,30 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             });
             return action === "annotations" ? { active: true } : { opened: true };
           }
-          if (request.type === "testudoSetPlaybackPlaying") return featureBridge.playback("main", request.payload?.playing ? "play" : "pause", undefined, request.payload?.generation);
+          if (request.type === "testudoSetPlaybackPlaying") {
+            const session = featureBridge.sessions.get("main");
+            const expectedGeneration = request.payload?.generation;
+            const currentGeneration = session?.context.generation ?? null;
+            const generationAccepted = Boolean(session && featureBridge.sessions.isCurrent(session.context)
+              && (expectedGeneration === undefined || expectedGeneration === currentGeneration));
+            const playbackStatus = plugins.getVehiclePlaybackStatus();
+            const selectedVariant = playbackStatus.scenarios[playbackStatus.scenarioIndex];
+            const traceSnapshot = plugins.getVehiclePlaybackTraceSnapshot();
+            tracePlaybackCommand("native-generation-gate", {
+              requestId: String(request.requestId ?? "").slice(0, 128),
+              generation: Number.isSafeInteger(expectedGeneration) ? expectedGeneration : null,
+              currentGeneration,
+              variantId: selectedVariant?.variantId ?? selectedVariant?.id ?? null,
+              loadToken: traceSnapshot?.loadToken ?? null,
+              accepted: generationAccepted,
+            });
+            if (generationAccepted && request.payload?.playing === true) plugins.setVehiclePlaybackTraceCommandContext({
+              requestId: String(request.requestId ?? "").slice(0, 128),
+              generation: currentGeneration,
+              variantId: selectedVariant?.variantId ?? selectedVariant?.id ?? null,
+            });
+            return featureBridge.playback("main", request.payload?.playing ? "play" : "pause", undefined, request.payload?.generation);
+          }
           if (request.type === "testudoRestartPlayback") return featureBridge.playback("main", "restart", undefined, request.payload?.generation);
           if (request.type === "testudoSeekPlayback") return featureBridge.playback("main", "seek", Number(request.payload?.tick), request.payload?.generation);
           if (request.type === "testudoSetPlaybackSpeed") return featureBridge.playback("main", "speed", Number(request.payload?.speed), request.payload?.generation);
@@ -1188,7 +1558,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             return featureBridge.getCameraView("main", request.payload?.generation);
           }
           if (request.type === "testudoGetCameraView") return featureBridge.getCameraView("main", request.payload?.generation);
-          if (request.type === "testudoSetViewMode") return { mode: await featureBridge.setViewMode("main", request.payload?.mode) };
+          if (request.type === "testudoSetViewMode") return { mode: await featureBridge.setViewMode("main", request.payload?.mode, request.payload?.generation) };
           if (request.type === "testudoFeatureRequestInvestigation") return featureBridge.requestInvestigation("main", String(request.payload?.question ?? ""),
             typeof request.payload?.activeScenarioId === "string" ? request.payload.activeScenarioId : undefined);
           if (request.type === "testudoRespondGeoAIRequest") return featureBridge.respondGeoAIRequestTuple(String(request.payload?.requestId ?? ""), String(request.payload?.tviewId ?? "main"),
@@ -1210,23 +1580,47 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           }
           if (request.type === "testudoSetPreset") return await applyPreset(request.payload?.id);
           throw unsupportedTestudoCommand(request.type);
-        } finally { busy = false; }
+        } finally {
+          if (operation === null) commandGate.finishCommand(commandOwner);
+        }
       };
-      void run().then(result => emit("ack", { requestId: request.requestId, ok: true, result }), error => {
+      const completion = packageRequest && operation !== null
+        ? runWithPackageOwnerRelease(run, () => commandGate.finishPackage(operation))
+        : run();
+      void completion.then(result => {
+        if (isPlaybackCommand) {
+          const playbackResult = result && typeof result === "object" ? result as { generation?: unknown; playing?: unknown; tick?: unknown } : {};
+          tracePlaybackCommand("native-command-ack", {
+            requestId: String(request.requestId ?? "").slice(0, 128), ok: true,
+            generation: Number.isSafeInteger(playbackResult.generation) ? playbackResult.generation : request.payload?.generation ?? null,
+            variantId: plugins.getVehiclePlaybackStatus().scenarios[plugins.getVehiclePlaybackStatus().scenarioIndex]?.variantId ?? null,
+            playing: typeof playbackResult.playing === "boolean" ? playbackResult.playing : request.payload?.playing === true,
+            tick: Number.isFinite(playbackResult.tick) ? playbackResult.tick : null,
+          });
+        }
+        emit("ack", { requestId: request.requestId, ok: true, result });
+      }, error => {
         const detail = error instanceof Error ? error.message : String(error);
-        if (request.type === "testudoLoadPackage" || request.type === "testudoOpenLocalPackage") update({ status: "error", error: detail });
-        else update({ status: current.package ? "ready" : "empty", error: undefined });
+        if (operation !== null && ownsPackageOperation(operation)) {
+          if (current.status === "loading" && current.error !== detail) { reset(); update({ status: "error", error: detail }); }
+        } else if (operation === null && !commandGate.packageBusy && !commandGate.commandBusy) update({ status: current.package ? "ready" : "empty", error: undefined });
+        if (isPlaybackCommand) tracePlaybackCommand("native-command-ack", {
+          requestId: String(request.requestId ?? "").slice(0, 128), ok: false, error: true,
+          generation: request.payload?.generation ?? null,
+          variantId: plugins.getVehiclePlaybackStatus().scenarios[plugins.getVehiclePlaybackStatus().scenarioIndex]?.variantId ?? null,
+        });
         emit("ack", { requestId: request.requestId, ok: false, error: detail });
       });
     };
     window.addEventListener("message", message);
+    traceTestudoBridge("bridge-message-listener-installed", { origin, allowedOriginCount: allowed.length });
     document.title = "Testudo";
     ready();
     // The host can import the client after iframe load. Repeat readiness until
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { removeLiveDiagnostics(); disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));

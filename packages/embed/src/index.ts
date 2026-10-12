@@ -114,6 +114,7 @@ export interface GeoLibreEmbedClient {
   testudoGetState(): Promise<TestudoViewerState>;
   testudoSetScenario(payload: { tviewId: string; generation: number; scenarioId: string }): Promise<{ scenarioId: string }>;
   testudoSetScenarioPair(payload: { tviewId: string; scenarioA: number; scenarioB: number; generation?: number }): Promise<{ scenarioA: number; scenarioB: number }>;
+  testudoSetScenarioPairById(payload: { tviewId: string; generation: number; scenarioAId: string; scenarioBId: string }): Promise<{ scenarioAId: string; scenarioBId: string; selectedScenarioId: string }>;
   testudoSetStyle(payload: { tviewId: string; generation: number; style: import("./testudo").TestudoStyle }): Promise<TestudoViewerState>;
   testudoSetPlaybackPlaying(payload: { tviewId: string; playing: boolean; generation?: number }): Promise<TestudoPlaybackState>;
   testudoRestartPlayback(payload: { tviewId: string; generation?: number }): Promise<TestudoPlaybackState>;
@@ -254,6 +255,7 @@ export function connect(
     testudoGetState: () => sendTestudo<TestudoViewerState>("testudoGetState"),
     testudoSetScenario: (payload) => sendTestudo("testudoSetScenario", payload as unknown as Record<string, unknown>),
     testudoSetScenarioPair: (payload) => sendTestudo("testudoSetScenarioPair", payload as unknown as Record<string, unknown>),
+    testudoSetScenarioPairById: (payload) => sendTestudo("testudoSetScenarioPairById", payload as unknown as Record<string, unknown>),
     testudoSetStyle: (payload) => sendTestudo("testudoSetStyle", payload as unknown as Record<string, unknown>),
     testudoSetPlaybackPlaying: (payload) => sendTestudo("testudoSetPlaybackPlaying", payload as unknown as Record<string, unknown>),
     testudoRestartPlayback: (payload) => sendTestudo("testudoRestartPlayback", payload as unknown as Record<string, unknown>),

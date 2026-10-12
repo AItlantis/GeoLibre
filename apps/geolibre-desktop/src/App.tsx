@@ -42,6 +42,11 @@ export default function App() {
   // one-shot import and duplicate its layers.
   const [mapAppAPI, setMapAppAPI] = useState<ReturnType<typeof createAppAPI> | null>(null);
   const handleMapReady = useCallback((api: ReturnType<typeof createAppAPI>) => {
+    try {
+      if (window.localStorage.getItem("testudo_bridge_trace") === "1") {
+        console.info("[TestudoBridgeTrace:App] map-api-published", { apiAvailable: Boolean(api) });
+      }
+    } catch { /* Diagnostics must not affect map initialization. */ }
     setMapAppAPI((current) => current ?? api);
   }, []);
   const projectUrlLoadState = useProjectUrlLoader();

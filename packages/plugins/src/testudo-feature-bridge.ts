@@ -15,6 +15,14 @@ import {
 } from "./shared/testudo-feature-session";
 import { validateTestudoCameraView } from "./plugins/testudo-camera";
 
+function traceTestudoFeatureBridge(stage: string, phase: "start" | "complete", elapsedMs?: number): void {
+  try {
+    if (typeof window !== "undefined" && window.localStorage.getItem("testudo_bridge_trace") === "1") {
+      console.info("[TestudoBridgeTrace:FeatureBridge]", stage, { phase, ...(elapsedMs === undefined ? {} : { elapsedMs }) });
+    }
+  } catch { /* Diagnostics must not affect package loading. */ }
+}
+
 export interface TestudoPackageBootstrap {
   packageId: string;
   versionId: string;
@@ -119,6 +127,7 @@ export class TestudoFeatureBridge {
   private readonly states = new Map<string, TestudoFeatureViewerState>();
   private readonly pendingArtifacts = new Map<string, { request: TestudoArtifactRequest; controller: AbortController }>();
   private readonly localArtifactReaders = new Map<string, (artifactRef: string) => Promise<ArrayBuffer>>();
+  private readonly playbackSignatures = new Map<string, string>();
   private mapResolver: (() => TestudoMapHandle | null) | null = null;
 
   constructor(
@@ -240,6 +249,9 @@ export class TestudoFeatureBridge {
     onProgress: (progress: TestudoPackageProgress) => void = () => {},
     localArtifactReader?: (artifactRef: string) => Promise<ArrayBuffer>,
   ): Promise<TestudoFeatureContext> {
+    const loadStartedAt = performance.now();
+    const traceLoadStage = (stage: string, phase: "start" | "complete") =>
+      traceTestudoFeatureBridge(stage, phase, Math.round(performance.now() - loadStartedAt));
     if (!tviewId.trim()) throw new Error("A TView id is required.");
     if (!this.tviews.has(tviewId)) throw new Error(`TView ${tviewId} has not been created.`);
     if (!bootstrap?.packageId || !bootstrap.versionId
@@ -247,6 +259,9 @@ export class TestudoFeatureBridge {
       || (bootstrap.origin === "local" && !localArtifactReader)) {
       throw new Error("The published package bootstrap is incomplete.");
     }
+    // Stop plugin observers before invalidating the generation or disposing
+    // their provider. A late timer must never call back through a stale adapter.
+    this.detachPlayback(tviewId);
     const previousSession = this.sessions.remove(tviewId);
     this.cancelArtifactRequests(tviewId);
     if (previousSession) {
@@ -287,8 +302,11 @@ export class TestudoFeatureBridge {
       onProgress(progress);
     };
     try {
+      traceLoadStage("provider-factory-resolution", "start");
       const factory = typeof this.factory === "function" ? this.factory(bootstrap) : this.factory;
+      traceLoadStage("provider-factory-resolution", "complete");
       if (!factory) throw new Error("No active GeoLibre plugin provides a declared Testudo capability.");
+      traceLoadStage("provider-open", "start");
       provider = await factory.open(
         bootstrap,
         context,
@@ -296,6 +314,7 @@ export class TestudoFeatureBridge {
         (artifactRef) => this.fetchArtifactFor(context, artifactRef),
         this.mapResolver?.() ?? null,
       );
+      traceLoadStage("provider-open", "complete");
     } catch (error) {
       if (this.pendingLoads.get(tviewId) === generation) this.pendingLoads.delete(tviewId);
       if (this.generations.get(tviewId) === generation && bootstrap.origin === "local") this.localArtifactReaders.delete(tviewId);
@@ -317,20 +336,32 @@ export class TestudoFeatureBridge {
       throw new Error("The Testudo package load was superseded by a newer request.");
     }
     try {
+      traceLoadStage("provider-session-load", "start");
       const session = provider.loadPackage ? await this.loadSession(provider, reportProgress) : provider;
+      traceLoadStage("provider-session-load", "complete");
       if (this.pendingLoads.get(tviewId) !== generation || this.generations.get(tviewId) !== generation) {
         throw new Error("The Testudo package load was superseded by a newer request.");
       }
       this.pendingLoads.delete(tviewId);
+      traceLoadStage("session-install", "start");
       this.sessions.install(session);
-      this.playbackSubscriptions.get(tviewId)?.();
+      traceLoadStage("session-install", "complete");
       if (session.playback?.subscribe) {
+        traceLoadStage("playback-subscribe-and-snapshot", "start");
         const unsubscribe = session.playback.subscribe((eventTViewId, generation, state) => {
           if (eventTViewId !== tviewId || generation !== session.context.generation) return;
           if (this.sessions.get(tviewId) !== session) return;
+          const signature = JSON.stringify(state);
+          if (this.playbackSignatures.get(tviewId) === signature) return;
+          this.playbackSignatures.set(tviewId, signature);
           for (const listener of this.playbackListeners) listener(tviewId, state);
         });
         this.playbackSubscriptions.set(tviewId, unsubscribe);
+        // Publish an initial snapshot as soon as the provider session is live.
+        const initial = session.playback.getPlaybackState(tviewId, generation);
+        this.playbackSignatures.set(tviewId, JSON.stringify(initial));
+        for (const listener of this.playbackListeners) listener(tviewId, initial);
+        traceLoadStage("playback-subscribe-and-snapshot", "complete");
       }
       this.states.set(tviewId, {
         tviewId, generation, package: {
@@ -346,6 +377,7 @@ export class TestudoFeatureBridge {
         ...(session.presetId ? { presetId: session.presetId } : {}),
         status: "ready",
       });
+      traceLoadStage("provider-state-ready", "complete");
       return session.context;
     } catch (error) {
       const superseded = this.pendingLoads.get(tviewId) !== generation
@@ -504,8 +536,8 @@ export class TestudoFeatureBridge {
     this.assertCurrent(session);
   }
 
-  async setViewMode(tviewId: string, mode: TestudoViewMode): Promise<TestudoViewMode> {
-    const session = this.requireSession(tviewId);
+  async setViewMode(tviewId: string, mode: TestudoViewMode, generation?: number): Promise<TestudoViewMode> {
+    const session = this.requireSession(tviewId, generation);
     if (!session.setViewMode) throw new Error("View modes are unavailable for this package.");
     const selected = await session.setViewMode(mode);
     this.assertCurrent(session);
@@ -622,8 +654,7 @@ export class TestudoFeatureBridge {
     this.cancelArtifactRequests(tviewId);
     this.pendingLoads.delete(tviewId);
     const session = this.sessions.get(tviewId);
-    this.playbackSubscriptions.get(tviewId)?.();
-    this.playbackSubscriptions.delete(tviewId);
+    this.detachPlayback(tviewId);
     if (session) {
       for (const [requestId, pending] of this.pendingGeoAI) {
         if (pending.session === session) this.pendingGeoAI.delete(requestId);
@@ -640,6 +671,34 @@ export class TestudoFeatureBridge {
       this.activeTViewId = null;
       for (const listener of this.activeTViewListeners) listener(null);
     }
+  }
+
+  /** Clear the active package while preserving its host-owned TView. */
+  unloadPackage(tviewId: string): void {
+    if (!this.tviews.has(tviewId)) throw new Error(`TView ${tviewId} has not been created.`);
+    this.cancelArtifactRequests(tviewId);
+    this.pendingLoads.delete(tviewId);
+    this.detachPlayback(tviewId);
+    const session = this.sessions.get(tviewId);
+    if (session) {
+      for (const [requestId, pending] of this.pendingGeoAI) {
+        if (pending.session === session) this.pendingGeoAI.delete(requestId);
+      }
+      this.sessions.remove(tviewId);
+    }
+    const generation = this.generations.get(tviewId) ?? 0;
+    this.bootstraps.delete(tviewId);
+    this.localArtifactReaders.delete(tviewId);
+    this.states.set(tviewId, {
+      tviewId, generation, package: null, selectedPlugin: null,
+      capabilities: [], availableModes: [], status: "empty",
+    });
+  }
+
+  private detachPlayback(tviewId: string): void {
+    this.playbackSubscriptions.get(tviewId)?.();
+    this.playbackSubscriptions.delete(tviewId);
+    this.playbackSignatures.delete(tviewId);
   }
 
   private requireSession(tviewId: string, generation?: number): TestudoFeatureSession {

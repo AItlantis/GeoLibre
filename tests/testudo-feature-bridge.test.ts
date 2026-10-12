@@ -62,9 +62,11 @@ async function createAndLoad(bridge: TestudoFeatureBridge, tviewId: string, pkg 
 
 test("provider scenarios and playback are addressed to the requested TView", async () => {
   const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => provider(context) });
-  await createAndLoad(bridge, "left");
+  const left = await createAndLoad(bridge, "left");
   await createAndLoad(bridge, "right", { ...bootstrap, versionId: "v2" });
 
+  assert.equal(await bridge.setViewMode("left", "animation", left.generation), "animation");
+  await assert.rejects(bridge.setViewMode("left", "results", left.generation - 1), /stale/);
   assert.equal(await bridge.selectScenario("left", "proposal"), "proposal");
   await assert.rejects(bridge.selectScenario("left", "missing"), /not declared/);
   await assert.rejects(bridge.selectScenario("left", "baseline", 0), /stale/);
@@ -138,6 +140,37 @@ test("playback updates are published only for the current TView generation", asy
   bridge.close("main");
   publish({ available: true, loading: false, playing: true, tick: 2, maxTick: 767, speed: 1, dt: 0.8, loop: true });
   assert.deepEqual(events, [767]);
+});
+
+test("unloading a package detaches playback before provider disposal while preserving the TView", async () => {
+  let publish!: (state: TestudoPlaybackState) => void;
+  let unsubscribed = 0; let disposed = 0;
+  const bridge = new TestudoFeatureBridge({ open: async (_bootstrap, context) => {
+    const session = provider(context);
+    session.playback = {
+      getPlaybackState: () => ({ available: true, loading: false, playing: false, tick: 0, maxTick: 2, speed: 1, dt: 1, loop: false }),
+      play: () => session.playback!.getPlaybackState("main", context.generation),
+      pause: () => session.playback!.getPlaybackState("main", context.generation),
+      restart: () => session.playback!.getPlaybackState("main", context.generation),
+      seek: () => session.playback!.getPlaybackState("main", context.generation),
+      setSpeed: () => session.playback!.getPlaybackState("main", context.generation),
+      subscribe: listener => { publish = state => listener("main", context.generation, state); return () => { unsubscribed++; }; },
+    };
+    session.dispose = () => { disposed++; };
+    return session;
+  } });
+  const events: number[] = [];
+  bridge.subscribePlayback((_id, state) => events.push(state.tick));
+  await createAndLoad(bridge, "main");
+  assert.deepEqual(events, [0], "install publishes the initial snapshot to existing host observers");
+  bridge.unloadPackage("main");
+  assert.equal(unsubscribed, 1, "observer cleanup runs before package disposal");
+  assert.equal(disposed, 1);
+  publish({ available: true, loading: false, playing: true, tick: 1, maxTick: 2, speed: 1, dt: 1, loop: false });
+  assert.deepEqual(events, [0], "late notifications from the removed package are ignored");
+  assert.deepEqual(bridge.getTViews(), [{ tviewId: "main", generation: 1, loaded: false }]);
+  assert.equal(bridge.getState("main").package, null);
+  bridge.close("main");
 });
 
 test("recording and annotation commands report unavailable capabilities instead of false success", async () => {

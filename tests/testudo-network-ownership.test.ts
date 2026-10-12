@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { TestudoGenerationMount, TestudoGenerationResourceCache } from "../packages/plugins/src/shared/testudo-generation-resources";
-import { TESTUDO_NETWORK_LAYERS, TestudoPersistentNetwork } from "../packages/plugins/src/shared/testudo-persistent-network";
+import { mountTestudoComparisonGeometry, TESTUDO_NETWORK_LAYERS, TestudoPersistentNetwork } from "../packages/plugins/src/shared/testudo-persistent-network";
 import type { TestudoFeatureContext, TestudoMapHandle } from "../packages/plugins/src/shared/testudo-feature-session";
 import type { NetworkKpiGeometry } from "../packages/plugins/src/plugins/network-kpi-data";
 import { selectScenarioPathIndex } from "../packages/plugins/src/shared/scenario-path-index";
@@ -98,6 +98,163 @@ test("persistent network reattaches once after map replacement and style reload"
   assert.equal(replacementMap.visibility.get("testudo-network-sections"), "none");
   assert.deepEqual(network.getVisibility(), { showSections: false, showLanes: true, showTurns: true, showNodes: true });
   network.clear();
+});
+
+test("real persistent mount resolves before style readiness and attaches current geometry once when ready", async () => {
+  class UnreadyMap implements TestudoMapHandle {
+    sources = new Map<string, Record<string, unknown>>();
+    layers = new Map<string, Record<string, unknown>>();
+    listeners = new Map<string, Set<(event?: { originalEvent?: unknown }) => void>>();
+    loaded = false;
+    addLayerCount = 0;
+    getSource(id: string) { return this.sources.has(id) ? { setData: () => {} } : undefined; }
+    addSource(id: string, source: Record<string, unknown>) { this.sources.set(id, source); }
+    removeSource(id: string) { this.sources.delete(id); }
+    getLayer(id: string) { return this.layers.get(id); }
+    addLayer(layer: Record<string, unknown>) { this.addLayerCount++; this.layers.set(String(layer.id), layer); }
+    removeLayer(id: string) { this.layers.delete(id); }
+    setLayoutProperty(id: string, _name: string, value: unknown) {
+      const layer = this.layers.get(id); if (layer) layer.layout = { ...(layer.layout as Record<string, unknown>), visibility: value };
+    }
+    getStyle() { return { layers: [] }; }
+    isStyleLoaded() { return this.loaded; }
+    on(type: "movestart" | "styledata", listener: (event?: { originalEvent?: unknown }) => void) {
+      let set = this.listeners.get(type); if (!set) this.listeners.set(type, set = new Set()); set.add(listener);
+    }
+    off(type: "movestart" | "styledata", listener: (event?: { originalEvent?: unknown }) => void) { this.listeners.get(type)?.delete(listener); }
+    fireStyleData() { for (const listener of this.listeners.get("styledata") ?? []) listener(); }
+  }
+  const feature = (width: number) => JSON.stringify({
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: { total_width: width, width }, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }],
+  });
+  const directory = (files: Record<string, string>): NetworkKpiDirectoryHandle => ({
+    name: "memory-package",
+    async getFileHandle(name: string) {
+      const content = files[name];
+      if (content === undefined) throw new Error(`Missing fixture file ${name}`);
+      return { getFile: async () => new Blob([content]) };
+    },
+    async getDirectoryHandle(name: string) { throw new Error(`Unexpected nested directory ${name}`); },
+  });
+  const manifest = (prefix: string) => ({ geometry: {
+    sections: `${prefix}-sections.json`, lanes: `${prefix}-lanes.json`, turns: `${prefix}-turns.json`,
+  } });
+  const files = (prefix: string, width: number) => ({
+    [`${prefix}-sections.json`]: feature(width),
+    [`${prefix}-lanes.json`]: feature(width),
+    [`${prefix}-turns.json`]: feature(width),
+  });
+  const map = new UnreadyMap();
+  const network = new TestudoPersistentNetwork();
+  let currentGeneration = 31;
+  const firstContext: TestudoFeatureContext = { tviewId: "main", packageId: "old", versionId: "v1", pluginId: "network-kpi", generation: 31 };
+  const firstMount = network.mount(firstContext, directory(files("old", 3)), manifest("old"), map, context => context.generation === currentGeneration);
+  assert.equal(await firstMount, true, "mount must resolve without waiting for the map's style event");
+  assert.equal(map.layers.size, 0);
+  assert.equal(map.listeners.get("styledata")?.size, 1, "the active map retains one readiness listener");
+
+  // Replace the generation before the style becomes ready. The old listener
+  // and geometry must be discarded, and only the replacement may attach.
+  currentGeneration = 32;
+  const nextContext: TestudoFeatureContext = { ...firstContext, packageId: "new", versionId: "v2", generation: 32 };
+  assert.equal(await network.mount(nextContext, directory(files("new", 6)), manifest("new"), map, context => context.generation === currentGeneration), true);
+  assert.equal(map.listeners.get("styledata")?.size, 1, "generation replacement leaves no stale style listener");
+  assert.equal(map.layers.size, 0);
+
+  map.loaded = true;
+  map.fireStyleData();
+  assert.deepEqual([...map.layers.keys()].sort(), [TESTUDO_NETWORK_LAYERS.lanes, TESTUDO_NETWORK_LAYERS.sections, TESTUDO_NETWORK_LAYERS.turns].sort());
+  assert.equal(map.addLayerCount, 3, "sections, lanes and turns attach exactly once");
+  const sectionSource = map.sources.get(TESTUDO_NETWORK_LAYERS.sections);
+  assert.equal((sectionSource?.data as { features: Array<{ properties: { total_width: number } }> }).features[0].properties.total_width, 6, "only the replacement generation geometry attaches");
+  map.fireStyleData();
+  assert.equal(map.addLayerCount, 3, "repeated readiness events do not duplicate owned layers");
+  network.clear();
+  assert.equal(map.listeners.get("styledata")?.size, 0);
+  assert.equal(map.layers.size, 0);
+  assert.equal(map.sources.size, 0);
+
+  // A clear before readiness also detaches the callback and prevents any late
+  // style event from creating package-owned layers.
+  currentGeneration = 33;
+  map.loaded = false;
+  const clearContext: TestudoFeatureContext = { ...firstContext, packageId: "cleared", generation: 33 };
+  assert.equal(await network.mount(clearContext, directory(files("clear", 9)), manifest("clear"), map, context => context.generation === currentGeneration), true);
+  network.clear();
+  map.fireStyleData();
+  assert.equal(map.listeners.get("styledata")?.size, 0);
+  assert.equal(map.layers.size, 0);
+  assert.equal(map.sources.size, 0);
+});
+
+test("comparison geometry stays isolated per map and reloads with the map style", () => {
+  class GeometryMap {
+    sources = new Set<string>(); layers = new Map<string, Record<string, unknown>>();
+    listeners = new Set<() => void>(); loaded = true;
+    getSource(id: string) { return this.sources.has(id) ? {} : undefined; }
+    addSource(id: string) { this.sources.add(id); }
+    removeSource(id: string) { this.sources.delete(id); }
+    getLayer(id: string) { return this.layers.get(id); }
+    addLayer(layer: Record<string, unknown>) { this.layers.set(String(layer.id), layer); }
+    removeLayer(id: string) { this.layers.delete(id); }
+    getStyle() { return { layers: [] }; }
+    isStyleLoaded() { return this.loaded; }
+    on(_type: string, listener: () => void) { this.listeners.add(listener); }
+    off(_type: string, listener: () => void) { this.listeners.delete(listener); }
+    reloadStyle() { this.sources.clear(); this.layers.clear(); for (const listener of this.listeners) listener(); }
+  }
+  const data = (properties: Record<string, unknown>) => ({ type: "FeatureCollection", features: [{ type: "Feature", properties, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } }] }) as never;
+  const geometryA = { sections: data({ total_width: 12 }), lanes: data({ width: 3 }), turns: data({}) } as NetworkKpiGeometry;
+  const geometryB = { sections: data({ total_width: 24 }), lanes: data({ width: 4 }), turns: data({}) } as NetworkKpiGeometry;
+  const mapA = new GeometryMap(); const mapB = new GeometryMap();
+  const disposeA = mountTestudoComparisonGeometry(mapA as unknown as TestudoMapHandle, geometryA, "comparison-pane-a");
+  const disposeB = mountTestudoComparisonGeometry(mapB as unknown as TestudoMapHandle, geometryB, "comparison-pane-b");
+  assert.deepEqual([...mapA.layers.keys()].sort(), ["comparison-pane-a-lanes", "comparison-pane-a-sections", "comparison-pane-a-turns"]);
+  assert.deepEqual([...mapB.layers.keys()].sort(), ["comparison-pane-b-lanes", "comparison-pane-b-sections", "comparison-pane-b-turns"]);
+  assert.match(JSON.stringify(mapA.layers.get("comparison-pane-a-sections")?.paint), /total_width/);
+  assert.match(JSON.stringify(mapB.layers.get("comparison-pane-b-lanes")?.paint), /width/);
+  assert.ok(JSON.stringify(mapB.layers.get("comparison-pane-b-lanes")?.paint).includes('["case",[">",["to-number",["get","width"],0],0],["to-number",["get","width"],0],3]'), "zero or missing lane width must fall back to 3 m");
+  const stableLayerCount = mapA.layers.size;
+  for (const listener of mapA.listeners) listener();
+  assert.equal(mapA.layers.size, stableLayerCount, "repeated styledata must leave healthy owned layers untouched");
+  mapA.reloadStyle(); mapB.reloadStyle();
+  assert.equal(mapA.layers.size, 3); assert.equal(mapB.layers.size, 3);
+  disposeA(); disposeB();
+  assert.equal(mapA.layers.size, 0); assert.equal(mapA.sources.size, 0); assert.equal(mapA.listeners.size, 0);
+  assert.equal(mapB.layers.size, 0); assert.equal(mapB.sources.size, 0); assert.equal(mapB.listeners.size, 0);
+});
+
+test("comparison geometry ignores empty geometry types during styledata recovery", () => {
+  class EmptyGeometryMap {
+    sources = new Set<string>(); layers = new Map<string, Record<string, unknown>>();
+    listeners = new Set<() => void>(); addLayerCount = 0; removeLayerCount = 0;
+    getSource(id: string) { return this.sources.has(id) ? {} : undefined; }
+    addSource(id: string) { this.sources.add(id); }
+    removeSource(id: string) { this.sources.delete(id); }
+    getLayer(id: string) { return this.layers.get(id); }
+    addLayer(layer: Record<string, unknown>) { this.addLayerCount++; this.layers.set(String(layer.id), layer); }
+    removeLayer(id: string) { this.removeLayerCount++; this.layers.delete(id); }
+    getStyle() { return { layers: [] }; }
+    isStyleLoaded() { return true; }
+    on(_type: string, listener: () => void) { this.listeners.add(listener); }
+    off(_type: string, listener: () => void) { this.listeners.delete(listener); }
+  }
+  const feature = { type: "Feature", properties: { total_width: 9 }, geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] } };
+  const map = new EmptyGeometryMap();
+  const dispose = mountTestudoComparisonGeometry(map as unknown as TestudoMapHandle, {
+    sections: { type: "FeatureCollection", features: [feature] },
+    lanes: { type: "FeatureCollection", features: [] }, turns: null,
+  } as unknown as NetworkKpiGeometry, "comparison-empty");
+  assert.deepEqual([...map.layers.keys()], ["comparison-empty-sections"]);
+  const initialAdds = map.addLayerCount;
+  for (const listener of map.listeners) listener();
+  assert.equal(map.addLayerCount, initialAdds, "empty geometry IDs are not retried as missing resources");
+  assert.equal(map.removeLayerCount, 0, "styledata must not remove healthy geometry");
+  dispose();
+  assert.equal(map.layers.size, 0);
+  assert.equal(map.sources.size, 0);
+  assert.equal(map.listeners.size, 0);
 });
 
 test("results resource cache reuses one database resource per package generation", async () => {

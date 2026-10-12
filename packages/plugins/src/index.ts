@@ -56,7 +56,7 @@ export {
   PATH_ANALYSIS_STORE_LAYER_ID,
 } from "./plugins/maplibre-path-analysis";
 export { PATH_METRICS, PATH_RAMPS, pathColorRgb, pathElevation, type PathMetric } from "./plugins/path-analysis-ramps";
-export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_STORE_LAYER_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, selectScenarioComparisonPair, swapScenarioComparisonSides, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
+export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_STORE_LAYER_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, getScenarioComparisonLiveDiagnostics, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, selectScenarioComparisonPair, swapScenarioComparisonSides, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
 export { buildScenarioComparisonRows, type ComparisonInput, type ComparisonRow } from "./plugins/scenario-comparison-data";
 export { parseComparisonRamps, comparisonCategoricalRamp, comparisonDifferenceLegend, comparisonThresholdOptions, comparisonThresholdDefault, isComparisonDifferenceMetric, sideBySideLegend, COMPARISON_CONTINUOUS_RAMPS, type ComparisonMetric, type CategoricalRamp, type ComparisonDifferenceMetric } from "./plugins/comparison-ramps";
 export {
@@ -1291,6 +1291,7 @@ export {
   getNetworkKpiSettings,
   getNetworkKpiSnapshot,
   getNetworkKpiStatus,
+  getNetworkKpiLiveDiagnostics,
   isNetworkKpiPanelVisible,
   loadLocalNetworkKpiFolder,
   maplibreNetworkKpiPlugin,
@@ -1348,12 +1349,13 @@ export {
   EMISSIONS_H3_PLUGIN_ID, EMISSIONS_H3_STORE_LAYER_ID, DEFAULT_EMISSIONS_H3_SETTINGS, maplibreEmissionsH3Plugin,
   EMISSIONS_H3_RESOLUTION_MIN, EMISSIONS_H3_RESOLUTION_MAX,
   openEmissionsH3Panel, closeEmissionsH3Panel, reattachEmissionsH3,
-  isEmissionsH3PanelVisible, subscribeEmissionsH3Panel, getEmissionsH3Snapshot,
+  isEmissionsH3PanelVisible, subscribeEmissionsH3Panel, getEmissionsH3Snapshot, getEmissionsH3LiveDiagnostics,
   subscribeEmissionsH3, getEmissionsH3Status, subscribeEmissionsH3Status,
-  setEmissionsH3Settings, setEmissionsH3ManifestUrl, loadLocalEmissionsH3Folder, toggleEmissionsH3IntervalPlaying, stepEmissionsH3Interval, setEmissionsH3Scenario,
+  setEmissionsH3Settings, setEmissionsH3ManifestUrl, loadLocalEmissionsH3Folder, toggleEmissionsH3IntervalPlaying, stepEmissionsH3Interval, setEmissionsH3Scenario, clearEmissionsH3Scenario,
   aggregateEmissionsH3, type EmissionsH3Settings, type EmissionsH3Status,
 } from "./plugins/maplibre-emissions-h3";
 export { computeNoiseSource, energyWeightedDb } from "./plugins/emissions-h3-data";
+export { createTestudoLiveDiagnosticsGetter, testudoLiveDiagnosticsEnabled } from "./shared/testudo-live-diagnostics";
 export { EMISSIONS_H3_METRICS, EMISSIONS_H3_RAMPS, type EmissionsH3Metric } from "./plugins/emissions-h3-ramps";
 export {
   GEOAI_CHAT_PLUGIN_ID, geoAiChatPlugin,
@@ -1381,6 +1383,9 @@ export {
   getVehiclePlaybackSettings,
   getVehiclePlaybackSnapshot,
   getVehiclePlaybackStatus,
+  getVehiclePlaybackLiveDiagnostics,
+  getVehiclePlaybackTraceSnapshot,
+  setVehiclePlaybackLiveDiagnosticsGeneration,
   isVehiclePlaybackPanelVisible,
   maplibreVehiclePlaybackPlugin,
   normalizeVehiclePlaybackSettings,
@@ -1389,6 +1394,7 @@ export {
   restoreVehiclePlayback,
   setVehiclePlaybackManifestUrl,
   setVehiclePlaybackSettings,
+  setVehiclePlaybackTraceCommandContext,
   setVehiclePlaybackTick,
   subscribeVehiclePlayback,
   subscribeVehiclePlaybackPanel,
@@ -1496,7 +1502,7 @@ export {
 
 export { readLocalNetworkKpiManifestJson } from "./plugins/network-kpi-data";
 export { setTestudoResultsSessionKey } from "./plugins/network-kpi-parquet-data";
-export { getGeolibrePackage } from "./plugins/geolibre-package-loader";
+export { getGeolibrePackage, resolveEnvironmentScenarioCoverage, verifyEnvironmentScenarioCandidates } from "./plugins/geolibre-package-loader";
 export { TestudoFeatureBridge } from "./testudo-feature-bridge";
 export { TestudoPersistentNetwork, TESTUDO_NETWORK_LAYERS } from "./shared/testudo-persistent-network";
 export { isTestudoLayout } from "./shared/testudo-layout";

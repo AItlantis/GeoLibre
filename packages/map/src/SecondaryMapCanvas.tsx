@@ -90,6 +90,7 @@ export const SecondaryMapCanvas = memo(function SecondaryMapCanvas({
       controlVisibility: { "layer-control": false },
     });
     controller.current = mc;
+    window.dispatchEvent(new CustomEvent("testudo-comparison-map-ready", { detail: { viewId: viewIdRef.current, map } }));
 
     const sameCamera = (a: MapViewState, b: MapViewState) =>
       a.center[0] === b.center[0] &&
@@ -135,6 +136,7 @@ export const SecondaryMapCanvas = memo(function SecondaryMapCanvas({
     });
 
     return () => {
+      window.dispatchEvent(new CustomEvent("testudo-comparison-map-disposed", { detail: { viewId: viewIdRef.current, map } }));
       disposeResizeScheduler();
       mc.destroy();
       controller.current = null;

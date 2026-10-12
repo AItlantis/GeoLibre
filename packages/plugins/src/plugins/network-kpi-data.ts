@@ -78,6 +78,105 @@ function safeNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(num) ? num : fallback;
 }
 
+/** Resolve a scenario's own replication by stable SCID, never by roster position. */
+export function resolveNetworkKpiScenarioReplication(
+  scenarios: readonly { scid: string | number; name?: string; replications?: readonly { did: number; didname?: string }[] }[],
+  selectedScid: string | number | null | undefined,
+  preferredDid: number | null = null,
+): { did: number; replications: Array<{ did: number; didname?: string }> } | null {
+  if (selectedScid === null || selectedScid === undefined) return null;
+  const scenario = scenarios.find(item => String(item.scid) === String(selectedScid));
+  if (!scenario) throw new Error(`Network KPI scenario ${String(selectedScid)} has no matching package scenario metadata.`);
+  const replications = (scenario.replications ?? []).filter(item => Number.isSafeInteger(item.did) && item.did >= 0)
+    .map(item => ({ did: item.did, ...(item.didname ? { didname: item.didname } : {}) }));
+  if (!replications.length) throw new Error(`Network KPI scenario ${String(selectedScid)} declares no usable replication.`);
+  const selected = replications.find(item => item.did === preferredDid) ?? replications[0];
+  return { did: selected.did, replications };
+}
+
+/** Keep an explicit replication request pinned to that replication. */
+export function networkKpiDidCandidates(requestedDid: number | null | undefined, declaredDids: readonly number[]): number[] {
+  return requestedDid == null ? [...declaredDids] : [requestedDid];
+}
+
+/** Resolve a replication choice within one active scenario before mutating settings. */
+export function resolveNetworkKpiReplicationDid(
+  replications: readonly { did: number }[],
+  requestedDid: number | null,
+  scenarioScid: string | number,
+): number {
+  const allowed = replications.map(item => item.did).filter(Number.isSafeInteger);
+  if (!allowed.length) throw new Error(`Network KPI scenario ${String(scenarioScid)} declares no usable replication.`);
+  const selected = requestedDid ?? allowed[0];
+  if (!allowed.includes(selected)) throw new Error(`Replication ${selected} is not declared for Network KPI scenario ${String(scenarioScid)}.`);
+  return selected;
+}
+
+/** Query the compatibility provider only for allowed DIDs and fail on an empty explicit selection. */
+export async function queryNetworkKpiFallbackDimension<T>(
+  requestedDid: number | null | undefined,
+  declaredDids: readonly number[],
+  query: (did: number | null) => Promise<T[]>,
+): Promise<{ did: number | null; rows: T[] }> {
+  const candidates = networkKpiDidCandidates(requestedDid, declaredDids);
+  let did = candidates[0] ?? null;
+  let rows: T[] = [];
+  for (const candidate of candidates) {
+    const result = await query(candidate);
+    if (result.length || did === null) { did = candidate; rows = result; break; }
+  }
+  assertNetworkKpiExplicitData(requestedDid, rows.length, "MISECT");
+  return { did, rows };
+}
+
+/** Run a deferred read and commit only while its owning selection is current. */
+export async function commitNetworkKpiReadIfCurrent<T>(
+  read: Promise<T>,
+  isCurrent: () => boolean,
+  commit: (value: T) => void,
+): Promise<T | undefined> {
+  const value = await read;
+  if (!isCurrent()) return undefined;
+  commit(value);
+  return value;
+}
+
+/** Fail closed when a provider cannot return the explicitly selected DID. */
+export function assertNetworkKpiExplicitDid(actualDid: number | null, requestedDid: number | null | undefined): void {
+  if (requestedDid != null && actualDid !== requestedDid) {
+    throw new Error(`Network KPI data returned did ${String(actualDid)} for explicitly selected did ${requestedDid}.`);
+  }
+}
+
+export function assertNetworkKpiExplicitData(requestedDid: number | null | undefined, rowCount: number, stage: string): void {
+  if (requestedDid != null && rowCount === 0) {
+    throw new Error(`Network KPI has no ${stage} data for explicitly selected did ${requestedDid}.`);
+  }
+}
+
+/** Resolve the SCID, pin the database read to its replication, and validate provenance. */
+export async function readNetworkKpiScenarioResults<T extends { did: number | null }>(
+  database: { read(options: { interval?: number; did?: number | null }): Promise<T> },
+  scenarios: readonly { scid: string | number; name?: string; replications?: readonly { did: number; didname?: string }[] }[],
+  selectedScid: string | number | null | undefined,
+  preferredDid: number | null,
+  options: { interval?: number },
+  onRequest?: (identity: { scid: string | number | null; did: number | null; interval: number }) => void,
+): Promise<{ results: T; replication: { did: number; replications: Array<{ did: number; didname?: string }> } | null }> {
+  const replication = resolveNetworkKpiScenarioReplication(scenarios, selectedScid, preferredDid);
+  const did = replication?.did ?? null;
+  const interval = options.interval ?? 0;
+  onRequest?.({ scid: selectedScid ?? null, did, interval });
+  const results = await database.read({ ...options, interval, did });
+  assertNetworkKpiExplicitDid(results.did, did);
+  return { results, replication };
+}
+
+/** Shared token/database fence for interval and replication reads. */
+export function isCurrentNetworkKpiRead(token: number, currentToken: number, capturedDatabase: object, activeDatabase: object | null): boolean {
+  return token === currentToken && capturedDatabase === activeDatabase;
+}
+
 /**
  * Resolve one manifest path against the manifest's own URL.
  *

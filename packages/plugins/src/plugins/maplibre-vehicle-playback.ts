@@ -33,6 +33,7 @@ import { vehicleColorRgb } from "./vehicle-shape-catalog";
 import { capabilityAvailable } from "./geolibre-package-loader";
 import { registerDuckDbLayer, releaseDuckDbLayer } from "../shared/duckdb-layer-registry";
 import { isTestudoLayout } from "../shared/testudo-layout";
+import { boundedFingerprint, liveIdentityState, testudoLiveDiagnosticsEnabled } from "../shared/testudo-live-diagnostics";
 
 /**
  * GeoLibre vehicle-playback plugin.
@@ -257,6 +258,91 @@ const IDLE_STATUS: VehiclePlaybackStatus = {
   localFolderName: null,
   timeline: null,
 };
+let vehicleDiagnosticsGeneration: number | null = null;
+let lastFrameSample: { generation: number | null; tick: number; scid: string | number | null; did: number | null; count: number; fingerprint: string } | null = null;
+type VehiclePlaybackTraceIdentity = { generation: number | null; loadToken: number; variantId: string | null; scid: string | number | null; did: string | number | null };
+type VehiclePlaybackTraceCommand = { requestId: string; generation: number | null; variantId: string | null };
+let playbackTraceCommand: VehiclePlaybackTraceCommand | null = null;
+let adoptedTraceIdentity: VehiclePlaybackTraceIdentity | null = null;
+let engineBoundTraceIdentity: VehiclePlaybackTraceIdentity | null = null;
+let playbackTraceCount = 0;
+const PLAYBACK_TRACE_LIMIT = 128;
+
+function playbackTraceEnabled(): boolean {
+  return testudoLiveDiagnosticsEnabled(import.meta.env.DEV || import.meta.env.MODE === "test", typeof window === "undefined" ? "" : window.location.search);
+}
+
+function traceVehiclePlayback(event: string, detail: Record<string, unknown> = {}): void {
+  if (!playbackTraceEnabled() || playbackTraceCount >= PLAYBACK_TRACE_LIMIT) return;
+  playbackTraceCount++;
+  const command = playbackTraceCommand;
+  console.info("[TestudoPlaybackTrace]", event, {
+    requestId: command?.requestId ?? null,
+    generation: command?.generation ?? vehicleDiagnosticsGeneration,
+    variantId: command?.variantId ?? null,
+    loadToken,
+    ...detail,
+  });
+}
+
+function traceIdentity(scenario: VehicleManifestScenario | undefined, token = loadToken): VehiclePlaybackTraceIdentity | null {
+  if (!playbackTraceEnabled() || !scenario) return null;
+  return {
+    generation: vehicleDiagnosticsGeneration,
+    loadToken: token,
+    variantId: typeof scenario.variantId === "string" ? scenario.variantId.slice(0, 160) : scenario.id.slice(0, 160),
+    scid: typeof scenario.scid === "number" || typeof scenario.scid === "string" ? scenario.scid : null,
+    did: typeof scenario.did === "number" || typeof scenario.did === "string" ? scenario.did : null,
+  };
+}
+
+/** Correlation context set by the native playback command handler; diagnostics only. */
+export function setVehiclePlaybackTraceCommandContext(context: VehiclePlaybackTraceCommand | null): void {
+  if (!playbackTraceEnabled()) {
+    playbackTraceCommand = null;
+    return;
+  }
+  playbackTraceCommand = context ? {
+    requestId: context.requestId.slice(0, 128),
+    generation: context.generation,
+    variantId: context.variantId?.slice(0, 160) ?? null,
+  } : null;
+}
+
+/** Identity checkpoints distinguish selected status from adopted and engine-bound data. */
+export function getVehiclePlaybackTraceSnapshot() {
+  if (!playbackTraceEnabled()) return null;
+  const selected = traceIdentity(status.scenarios[status.scenarioIndex]);
+  return {
+    request: playbackTraceCommand,
+    selectedStatus: selected,
+    adoptedData: adoptedTraceIdentity,
+    engineBound: engineBoundTraceIdentity,
+    loadToken,
+  };
+}
+
+export function setVehiclePlaybackLiveDiagnosticsGeneration(generation: number | null): void {
+  if (vehicleDiagnosticsGeneration !== generation) {
+    lastFrameSample = null;
+    adoptedTraceIdentity = null;
+    engineBoundTraceIdentity = null;
+    playbackTraceCommand = null;
+    playbackTraceCount = 0;
+  }
+  vehicleDiagnosticsGeneration = generation;
+}
+
+function recordFrameSample(samples: readonly VehicleSample[]): void {
+  if (!testudoLiveDiagnosticsEnabled(import.meta.env.DEV || import.meta.env.MODE === "test", typeof window === "undefined" ? "" : window.location.search)) {
+    lastFrameSample = null;
+    return;
+  }
+  const selected = status.scenarios[status.scenarioIndex];
+  lastFrameSample = { generation: vehicleDiagnosticsGeneration, tick: settings.tick, scid: selected?.scid ?? null,
+    did: selected?.did !== undefined && Number.isFinite(Number(selected.did)) ? Number(selected.did) : null, count: samples.length,
+    fingerprint: boundedFingerprint(samples.slice(0, 32).flatMap(sample => [sample.id, sample.lon, sample.lat, sample.z])) };
+}
 
 // ---------------------------------------------------------------------------
 // Map engine: owns the playback clock and the per-frame deck.gl layer.
@@ -369,6 +455,7 @@ class CesiumVehiclePlaybackAdapter {
       setFrameStats(status.vehicleCount, data.getLoadedFraction());
     }
     const samples = data.sampleAt(this.settings.tick);
+    recordFrameSample(samples);
     setFrameStats(samples.length, data.getLoadedFraction());
     const rows = buildVehicleRows(samples, data);
     const seen = new Set<string>();
@@ -835,6 +922,7 @@ class VehiclePlaybackEngine {
     }
 
     const samples = data.sampleAt(this.settings.tick);
+    recordFrameSample(samples);
     setFrameStats(samples.length, data.getLoadedFraction());
     const rows = buildVehicleRows(samples, data);
 
@@ -937,6 +1025,7 @@ function retryCesiumAttach(app: GeoLibreAppAPI): void {
 
 function startVehiclePlaybackClock(): void {
   if (playbackClockTimerId !== null || !data || !settings.playing) return;
+  traceVehiclePlayback("clock-start", { settings: { playing: settings.playing, tick: settings.tick, speed: settings.speed, loop: settings.loop } });
   playbackClockLastFrame = null;
   // Do not couple simulation advancement to the map renderer's animation
   // loop. In Cesium requestRenderMode and in MapLibre/deck overlay rebuilds
@@ -971,12 +1060,14 @@ async function vehiclePlaybackClockTick(): Promise<void> {
       setFrameStats(status.vehicleCount, requestedData.getLoadedFraction());
       if (!ready) {
         // Never advance past an interval whose chunk failed or is not resident.
+        traceVehiclePlayback("coverage-triggered-pause", { reason: "coverage-unavailable", requestedTick: targetTick, playing: settings.playing });
         setVehiclePlaybackSettings({ playing: false });
         return;
       }
       advanceVehiclePlaybackTick(deltaTicks, requestedData.manifest.maxTick);
     } catch (error) {
       console.warn("[GeoLibre] vehicle-playback: playback coverage failed", error);
+      traceVehiclePlayback("coverage-triggered-pause", { reason: "coverage-error", requestedTick: targetTick, playing: settings.playing });
       setVehiclePlaybackSettings({ playing: false });
       return;
     } finally {
@@ -1008,8 +1099,11 @@ function applyActiveVehicleTick(tick: number): void {
 
 function setActiveVehicleData(next: VehiclePlaybackData | null): void {
   if (!engine && !cesiumAdapter && appRef) attachEngine(appRef);
-  engine?.setData(next);
-  cesiumAdapter?.setData(next);
+  const boundAdapters: string[] = [];
+  if (engine) { engine.setData(next); boundAdapters.push("maplibre"); }
+  if (cesiumAdapter) { cesiumAdapter.setData(next); boundAdapters.push("cesium"); }
+  engineBoundTraceIdentity = next && boundAdapters.length > 0 ? adoptedTraceIdentity : null;
+  traceVehiclePlayback("engine-data-bound", { adapter: boundAdapters.join("+") || "none", binding: next ? boundAdapters.length ? "bound" : "pending" : "cleared", engineBound: engineBoundTraceIdentity });
   if (next && settings.playing) startVehiclePlaybackClock();
   else if (!next) stopVehiclePlaybackClock();
 }
@@ -1082,6 +1176,8 @@ function attachEngine(app: GeoLibreAppAPI): boolean {
     if (engine && engine.getMapInstance() !== map) detachEngine();
     if (!engine) {
       engine = new VehiclePlaybackEngine(map, settings, data, () => deckGLBundle, () => cesiumAdapter?.render());
+      engineBoundTraceIdentity = data ? adoptedTraceIdentity : null;
+      traceVehiclePlayback("active-adapter-selected", { adapter: "maplibre", engineBound: engineBoundTraceIdentity });
     }
     ensureDeck(app);
     return true;
@@ -1098,6 +1194,8 @@ function attachEngine(app: GeoLibreAppAPI): boolean {
   if (!cesiumAdapter || cesiumAdapter.getScene().viewer !== globe.viewer) {
     cesiumAdapter?.destroy();
     cesiumAdapter = new CesiumVehiclePlaybackAdapter(globe, settings, data);
+    engineBoundTraceIdentity = data ? adoptedTraceIdentity : null;
+    traceVehiclePlayback("active-adapter-selected", { adapter: "cesium", engineBound: engineBoundTraceIdentity });
   }
   if (data?.manifest.bounds) app.fitBounds?.(data.manifest.bounds);
   if (settings.playing && data) startVehiclePlaybackClock();
@@ -1111,6 +1209,7 @@ function detachEngine(): void {
   engine = null;
   cesiumAdapter?.destroy();
   cesiumAdapter = null;
+  engineBoundTraceIdentity = null;
 }
 
 /** True when the host is tearing down one renderer to mount the other. */
@@ -1156,6 +1255,7 @@ export function openVehiclePlaybackPanel(app: GeoLibreAppAPI): void {
  * keep streaming/decoding chunks in the background for a UI the user closed.
  */
 export function closeVehiclePlaybackPanel(_app?: GeoLibreAppAPI): void {
+  lastFrameSample = null;
   releaseDuckDbLayer("vehicle-playback");
   duckDbRegistered = false;
   appRef?.unregisterExternalNativeLayer?.(VEHICLE_PLAYBACK_STORE_LAYER_ID);
@@ -1211,6 +1311,18 @@ export function getVehiclePlaybackStatus(): VehiclePlaybackStatus {
   return status;
 }
 
+/** Current already-rendered vehicle sample; no additional sampling or loading. */
+export function getVehiclePlaybackLiveDiagnostics() {
+  const selected = status.scenarios[status.scenarioIndex];
+  const frame = lastFrameSample;
+  const loaded = !status.loading && !status.error && status.scenarios.length > 0 && status.vehicleCount > 0 && frame && frame.count > 0
+    && frame.generation === vehicleDiagnosticsGeneration && String(frame.scid) === String(selected?.scid) && frame.tick === settings.tick
+    ? { scid: frame.scid, did: frame.did, interval: frame.tick,
+      sampleCount: frame.count, sampleFingerprint: frame.fingerprint }
+    : null;
+  return liveIdentityState({ loading: status.loading, error: status.error, requested: null, loaded });
+}
+
 export function subscribeVehiclePlaybackStatus(listener: () => void): () => void {
   statusListeners.add(listener);
   return () => statusListeners.delete(listener);
@@ -1221,12 +1333,15 @@ export function subscribeVehiclePlaybackStatus(listener: () => void): () => void
  * subscribers. Returns true when something actually changed.
  */
 export function setVehiclePlaybackSettings(next: Partial<VehiclePlaybackSettings>): boolean {
+  const tracing = playbackTraceEnabled();
+  const before = tracing ? { playing: settings.playing, tick: settings.tick, speed: settings.speed, loop: settings.loop } : null;
   const normalized = normalizeVehiclePlaybackSettings(
     { ...settings, ...next },
     DEFAULT_VEHICLE_PLAYBACK_SETTINGS,
   );
   if (settingsEqual(normalized, settings)) return false;
   settings = normalized;
+  if (tracing) traceVehiclePlayback("vehicle-settings-before-after", { before, after: { playing: settings.playing, tick: settings.tick, speed: settings.speed, loop: settings.loop } });
   applyActiveVehicleSettings(settings);
   notifyState();
   return true;
@@ -1295,6 +1410,7 @@ export async function setVehiclePlaybackManifestUrl(url: string): Promise<void> 
   const trimmed = url.trim();
   const token = (loadToken += 1);
 
+  lastFrameSample = null;
   data?.destroy();
   data = null;
   setActiveVehicleData(null);
@@ -1367,6 +1483,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
 
   data?.destroy();
   data = null;
+  adoptedTraceIdentity = null;
   setActiveVehicleData(null);
 
   const capability = capabilityAvailable(pending.raw, "animation");
@@ -1390,6 +1507,8 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
   }
 
   data = loaded;
+  adoptedTraceIdentity = traceIdentity(pending.scenarios[scenarioIndex], token);
+  traceVehiclePlayback("adopted-data-identity", { adoptedData: adoptedTraceIdentity, selectedStatus: traceIdentity(status.scenarios[status.scenarioIndex]) });
   patchStatus({
     loading: true,
     error: null,
@@ -1459,6 +1578,7 @@ export async function setVehiclePlaybackScenario(scenarioIndex: number): Promise
   if (scenarioIndex < 0 || scenarioIndex >= pending.scenarios.length) throw new Error("Vehicle playback scenario index is out of range.");
 
   const token = (loadToken += 1);
+  lastFrameSample = null;
   settings = { ...settings, playing: false, tick: 0 };
   applyActiveVehicleSettings(settings);
   notifyState();
@@ -1513,6 +1633,7 @@ export async function loadLocalVehiclePlaybackFolder(selectedDirectory?: Vehicle
   }
 
   const token = (loadToken += 1);
+  lastFrameSample = null;
   data?.destroy();
   data = null;
   setActiveVehicleData(null);
