@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[54,24]},"properties":{"id":1,"name":"One","external_id":"one","groups":[]}},{"type":"Feature","geometry":{"type":"Point","coordinates":[54.1,24.1]},"properties":{"id":2,"name":"Two","external_id":"two","groups":[]}}]}

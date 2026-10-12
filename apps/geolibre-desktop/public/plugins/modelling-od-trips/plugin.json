@@ -1,0 +1,11 @@
+{
+  "id": "modelling-od-trips",
+  "name": "Modelling OD Trips",
+  "version": "0.2.0",
+  "description": "Aimsun OD trips, before/after adjustment and difference analysis in one DuckDB-WASM plugin.",
+  "entry": "dist/index.js",
+  "style": "dist/style.css",
+  "engines": [
+    "maplibre"
+  ]
+}

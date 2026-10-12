@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "run": "ASSIGNMENT_FIXTURE",
+  "analysis": "assignment",
+  "files": [
+    {
+      "table": "od",
+      "path": "assignment.parquet",
+      "format": "parquet"
+    },
+    {
+      "table": "centroids",
+      "path": "centroids.geojson",
+      "format": "geojson"
+    }
+  ]
+}
