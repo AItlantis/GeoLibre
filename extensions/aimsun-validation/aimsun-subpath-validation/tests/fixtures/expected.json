@@ -1,0 +1,55 @@
+{
+  "tolerancePct": 15,
+  "routeLevel": {
+    "n": 3,
+    "rmse": 31.70732039555955,
+    "bias": 5.25,
+    "slope": 0.29295403165033906,
+    "intercept": 98.34438583270534,
+    "r2": 0.7370777283287127,
+    "pctWithin": 33.333333333333336,
+    "meanRatio": 1.1333333333333335
+  },
+  "bucketLevel": {
+    "n": 24,
+    "rmse": 31.934177093932867,
+    "bias": 5.250000000000003,
+    "slope": 0.3956464379947232,
+    "intercept": 84.82321899736144,
+    "r2": 0.5962456087467114,
+    "pctWithin": 33.333333333333336,
+    "meanRatio": 1.1333333333333335
+  },
+  "perRoute": [
+    {
+      "route": "Route Alpha",
+      "direction": "IB",
+      "obs": 135,
+      "sim": 148.5,
+      "ratio": 1.1,
+      "nBuckets": 8
+    },
+    {
+      "route": "Route Beta",
+      "direction": "OB",
+      "obs": 77.5,
+      "sim": 116.25,
+      "ratio": 1.5,
+      "nBuckets": 8
+    },
+    {
+      "route": "Route Gamma",
+      "direction": "IB",
+      "obs": 182.5,
+      "sim": 146,
+      "ratio": 0.8,
+      "nBuckets": 8
+    }
+  ],
+  "obsOnly": [
+    "Route Delta - IB"
+  ],
+  "simOnly": [
+    "Route Echo - IB"
+  ]
+}

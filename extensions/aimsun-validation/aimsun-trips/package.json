@@ -1,0 +1,11 @@
+{
+  "name": "aimsun-trips",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "node ../_shared/node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "test": "node --import ../_shared/node_modules/tsx/dist/loader.mjs --test tests/*.test.ts"
+  }
+}
