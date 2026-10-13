@@ -3,14 +3,16 @@ import { useTranslation } from "react-i18next";
 import * as plugins from "@geolibre/plugins";
 import { useAppStore } from "@geolibre/core";
 import type { GeoAiViewerContext, GeoLibreAppAPI, TestudoCameraView, TestudoFeatureSession } from "@geolibre/plugins";
-import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
+import type { TestudoAnalysisCapabilityId, TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
 import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins, unsupportedTestudoCommand } from "../../lib/embed-api";
 import { parentOriginHintFromBrowser, pickBroadcastTargets } from "../../hooks/embedHost";
 import { mapViewFromMapLibre, type TestudoRendererReadinessRef, type TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { runWithPackageOwnerRelease, TestudoCommandGate } from "../../lib/testudo-command-gate";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, isTestudoAnalysisCapabilityId, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { TestudoAnalysisController } from "../../lib/testudo-analysis";
+import { getPluginManager } from "../../hooks/usePlugins";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
@@ -39,7 +41,9 @@ function tracePlaybackCommand(event: string, detail: Record<string, unknown>): v
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
-export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
+export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings", "analysis-counts", "analysis-od", "analysis-journey-time"];
+/** Capabilities driven through the shared `handlers` table; Analyse ids open via testudoOpenAnalysis instead. */
+const handledIds = ids.filter((id): id is Exclude<TestudoCapabilityId, TestudoAnalysisCapabilityId> => !isTestudoAnalysisCapabilityId(id));
 const featureCapabilityIds: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
 
 function consistentComparisonDurationSeconds(
@@ -59,7 +63,7 @@ function consistentComparisonDurationSeconds(
   return a && b && Math.abs(a.start - b.start) <= tolerance && Math.abs(a.end - b.end) <= tolerance
     ? a.duration : null;
 }
-const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai" && id !== "geoai-buildings");
+const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai" && id !== "geoai-buildings" && !isTestudoAnalysisCapabilityId(id));
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectablePluginId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
   { id: "flow", label: "Flow", plugin: "network-kpi" },
@@ -183,6 +187,23 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     const assertPackageOperation = (operation: number) => {
       if (!ownsPackageOperation(operation)) throw new Error("Package selection was superseded by a newer request.");
     };
+    // Analyse plugins open one at a time through PluginManager.openWithParams; reset() tears them down.
+    // Bundled drop-ins register asynchronously after startup, so wait (bounded) for the target to appear.
+    const analysisManager = getPluginManager();
+    const analysisHost = {
+      openWithParams: async (id: string, params: Record<string, string>, appApi: GeoLibreAppAPI) => {
+        if (!analysisManager.list().some(item => item.id === id)) {
+          await new Promise<void>(resolve => {
+            const stop = (): void => { clearTimeout(timer); unsubscribe(); resolve(); };
+            const unsubscribe = analysisManager.subscribe(() => { if (analysisManager.list().some(item => item.id === id)) stop(); });
+            const timer = setTimeout(stop, 15_000);
+          });
+        }
+        return analysisManager.openWithParams(id, params, appApi);
+      },
+      deactivate: (id: string, appApi: GeoLibreAppAPI) => analysisManager.deactivate(id, appApi),
+    };
+    const analysis = new TestudoAnalysisController(analysisHost, app, status => emit("testudoAnalysisStatus", status));
     const featureBridge = new plugins.TestudoFeatureBridge((packageBootstrap) => ({
       open: async (_bootstrap, context) => {
         plugins.setVehiclePlaybackLiveDiagnosticsGeneration(context.generation);
@@ -569,8 +590,8 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       } catch { /* Camera bounds are optional context; omit on map/read errors. */ }
       return context;
     };
-    const closeMapPlugins = () => { for (const id of ids) if (id !== "geoai") handlers[id].close(); };
-    const closeAllPlugins = () => { for (const id of ids) handlers[id].close(); };
+    const closeMapPlugins = () => { for (const id of handledIds) if (id !== "geoai") handlers[id].close(); };
+    const closeAllPlugins = () => { for (const id of handledIds) handlers[id].close(); };
     const diagnosticWindow = window as Window & { __testudoLiveDiagnostics?: () => unknown };
     const liveDiagnosticsGetter = plugins.createTestudoLiveDiagnosticsGetter(
       plugins.testudoLiveDiagnosticsEnabled(import.meta.env.DEV || import.meta.env.MODE === 'test', window.location.search),
@@ -931,6 +952,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       comparisonDeclared = false;
       preferredMode = undefined;
       declaredAvailableModes = [];
+      analysis.setPackage(null);
       closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; declaredScenarioRoster = []; declaredVariantScenarioRoster = []; environmentScenarioCoverage = { byScid: {}, packageEligible: true }; environmentPackageEligible = true;
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
@@ -945,6 +967,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (!candidate || containsCredentialField(payload) || (guestCredential && payload.challenge !== challenge)) throw new Error("Invalid Testudo package bootstrap");
       assertPackageOperation(operation);
       reset(); bootstrap = candidate;
+      analysis.setPackage(guestCredential ? null : candidate.analysis);
       comparisonDeclared = candidate.capabilities.some(item => item.id === "scenario-comparison" && item.available);
       const getGuestEmbedToken = guestCredential ? () => {
         if (!guestCredential || guestCredential.expiresAt <= Date.now()) throw new Error("Guest demo access expired; refresh the package to continue.");
@@ -988,7 +1011,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             reason: parentOrigin && allowed.includes(parentOrigin) ? undefined : "The Testudo host has not enabled GeoAI request handling." }
           : capability);
       update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: safeCapabilities, status: "loading" });
-      const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai")?.id as TestudoSelectablePluginId | undefined ?? null;
+      const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai" && !isTestudoAnalysisCapabilityId(item.id))?.id as TestudoSelectablePluginId | undefined ?? null;
       tracePackageLoadStage("feature-session-install", "start");
       const featureContext = await installFeatureSession(candidate, defaultPlugin, "published");
       tracePackageLoadStage("feature-session-install", "complete");
@@ -1115,15 +1138,17 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         // Local folder loads have no Testudo session (no origin or chat credential), so GeoAI
         // cannot reach the Testudo chat routes here — the alias intentionally never matches a
         // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
-        const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "", "geoai-buildings": "" };
+        const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "", "geoai-buildings": "", "analysis-counts": "", "analysis-od": "", "analysis-journey-time": "" };
         const emissions = pkg.dataContracts.emissions as { status?: string; reason?: string } | undefined;
         const comparisonCount = pkg.scenarios.reduce((count, scenario) => count + Math.max(1, scenario.replications.length), 0);
-        let capabilities = ids.map(id => ({ id, available: id !== "geoai" && id !== "geoai-buildings" && pkg.capabilities[aliases[id]]?.state === "available"
+        let capabilities = ids.map(id => ({ id, available: id !== "geoai" && id !== "geoai-buildings" && !isTestudoAnalysisCapabilityId(id) && pkg.capabilities[aliases[id]]?.state === "available"
           && (id !== "emissions-h3" || emissions?.status === "available")
           && (id !== "scenario-comparison" || comparisonCount > 1), reason: id === "geoai"
             ? "GeoAI chat is only available for packages loaded from Testudo, not local folders."
             : id === "geoai-buildings"
             ? "GeoAI building detection is only available for packages loaded from Testudo, not local folders."
+            : isTestudoAnalysisCapabilityId(id)
+            ? "Analysis is only available for packages loaded from Testudo, not local folders."
             : id === "emissions-h3"
             ? emissions?.reason ?? pkg.capabilities[aliases[id]]?.reason ?? "No usable emissions data is declared for this package." : pkg.capabilities[aliases[id]]?.reason ?? "No compatible dataset declared." }));
         const initialResultsCapability = reconcileResultsCapability(capabilities, Boolean(pkg.viewModes.results));
@@ -1322,6 +1347,14 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           return featureBridge.setActiveTView("main");
         }
         if (request.type === "testudoGetActiveTView") return featureBridge.getActiveTView();
+        if (request.type === "testudoOpenAnalysis" || request.type === "testudoCloseAnalysis") {
+          // Not under the command gate: closing must stay possible while an open is still loading.
+          if (commandGate.packageBusy) throw new Error("The viewer is loading a package. Please wait.");
+          if (guestCredential) throw new Error("Analysis is not available to guest sessions.");
+          if (request.type === "testudoCloseAnalysis") return analysis.close(request.payload);
+          if (!current.package) throw new Error("Select a package first.");
+          return await analysis.open(request.payload);
+        }
         const commandOwner = commandGate.beginCommand(request.type);
         try {
           if (request.type === "testudoDestroyTView") {
@@ -1641,7 +1674,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { removeLiveDiagnostics(); disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { removeLiveDiagnostics(); analysis.teardown(); disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
   const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));

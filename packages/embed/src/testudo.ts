@@ -1,6 +1,9 @@
-export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison" | "geoai" | "geoai-buildings";
-/** Map plugins replace one another; GeoAI chat is an independent persistent panel. */
-export type TestudoSelectablePluginId = Exclude<TestudoCapabilityId, "geoai">;
+/** Independent Analyse capabilities, each backed by one drop-in plugin (see TESTUDO_ANALYSIS_PLUGIN_IDS). */
+export type TestudoAnalysisCapabilityId = "analysis-counts" | "analysis-od" | "analysis-journey-time";
+export type TestudoAnalysisPluginId = "modelling-count-manager" | "modelling-od-trips" | "modelling-journey-time";
+export type TestudoCapabilityId = "vehicle-playback" | "network-kpi" | "path-analysis" | "emissions-h3" | "scenario-comparison" | "geoai" | "geoai-buildings" | TestudoAnalysisCapabilityId;
+/** Map plugins replace one another; GeoAI chat is an independent persistent panel; Analyse plugins open through testudoOpenAnalysis, never testudoSetPlugin. */
+export type TestudoSelectablePluginId = Exclude<TestudoCapabilityId, "geoai" | TestudoAnalysisCapabilityId>;
 export type TestudoDemoMode = "animation" | "flow" | "paths" | "density" | "results" | "comparison" | "environment";
 export interface TestudoViewModeMetadata {
   id: "results" | "comparison" | "environment" | "animation" | "paths";
@@ -16,6 +19,22 @@ export interface TestudoKpiGeometryState { showSections: boolean; showLanes: boo
 export interface TestudoMapControlState { legendVisible: boolean; esriWorldImageryVisible: boolean; renderer: "maplibre" | "cesium"; controllerReady: boolean; rendererEpoch: number; rendererError: string | null }
 export interface TestudoNetworkFilter { id: string; enabled: boolean; value?: string | number | boolean }
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
+/** Bootstrap `analysis` block (contract C4). Optional: bootstraps without it stay valid. */
+export interface TestudoAnalysisRun { run: string; label: string; available: boolean; reason?: string; manifest: string }
+export interface TestudoAnalysisPluginAvailability { pluginId: TestudoAnalysisPluginId; available: boolean; reason?: string }
+export interface TestudoAnalysisBootstrap {
+  schemaVersion: 1;
+  /** Absolute URL ending in `/`; every run manifest is relative to it. */
+  baseUrl: string;
+  runs: TestudoAnalysisRun[];
+  plugins: Partial<Record<TestudoAnalysisCapabilityId, TestudoAnalysisPluginAvailability>>;
+  /** Unix epoch milliseconds, or an ISO-8601 timestamp. */
+  expiresAt: number | string;
+}
+/** testudoOpenAnalysis payload (contract C5). `generation` must increase per plugin; stale values are rejected. */
+export interface TestudoOpenAnalysis { plugin: TestudoAnalysisPluginId; manifestUrl: string; run: string; generation: number }
+export interface TestudoCloseAnalysis { plugin: TestudoAnalysisPluginId }
+export interface TestudoAnalysisStatus { plugin: TestudoAnalysisPluginId; status: "open" | "closed" | "error"; run?: string; generation?: number; error?: string }
 export interface TestudoBootstrap {
   packageId: string;
   versionId: string;
@@ -25,6 +44,7 @@ export interface TestudoBootstrap {
   nativeManifestPath: string;
   artifactEndpoint: string;
   capabilities: TestudoCapability[];
+  analysis?: TestudoAnalysisBootstrap;
   presets: Array<{ id: string; label?: string; plugin: TestudoSelectablePluginId; settings?: Record<string, string | number | boolean>; view?: { center: [number, number]; zoom: number; pitch?: number; bearing?: number } }>;
 }
 export interface TestudoViewerState {

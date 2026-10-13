@@ -1,8 +1,22 @@
-import type { TestudoBootstrap, TestudoCapabilityId, TestudoDemoMode } from "@geolibre/embed";
+import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoBootstrap, TestudoCapabilityId, TestudoCloseAnalysis, TestudoDemoMode, TestudoOpenAnalysis } from "@geolibre/embed";
 
-const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
+/** Analyse capability id -> the drop-in plugin it opens (contract C3). */
+export const TESTUDO_ANALYSIS_PLUGIN_IDS: Record<TestudoAnalysisCapabilityId, TestudoAnalysisPluginId> = {
+  "analysis-counts": "modelling-count-manager",
+  "analysis-od": "modelling-od-trips",
+  "analysis-journey-time": "modelling-journey-time",
+};
+export const TESTUDO_ANALYSIS_CAPABILITY_IDS = Object.keys(TESTUDO_ANALYSIS_PLUGIN_IDS) as TestudoAnalysisCapabilityId[];
+export function isTestudoAnalysisCapabilityId(value: unknown): value is TestudoAnalysisCapabilityId {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(TESTUDO_ANALYSIS_PLUGIN_IDS, value);
+}
+export function isTestudoAnalysisPluginId(value: unknown): value is TestudoAnalysisPluginId {
+  return typeof value === "string" && (Object.values(TESTUDO_ANALYSIS_PLUGIN_IDS) as string[]).includes(value);
+}
+
+const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings", "analysis-counts", "analysis-od", "analysis-journey-time"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density", "results", "comparison", "environment"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -82,7 +96,8 @@ export function validateTestudoBootstrap(candidate: TestudoBootstrap, guest: boo
     || !Array.isArray(candidate.capabilities) || !Array.isArray(candidate.presets)
     || candidate.artifactEndpoint !== `/api/v1/view/${encodeURIComponent(candidate.versionId)}/artifact/`
     || candidate.capabilities.some(item => !CAPABILITY_IDS.includes(item.id) || typeof item.available !== "boolean")
-    || candidate.presets.some(item => !item || typeof item.id !== "string" || !item.id || !PRESET_PLUGIN_IDS.includes(item.plugin as typeof PRESET_PLUGIN_IDS[number]))) {
+    || candidate.presets.some(item => !item || typeof item.id !== "string" || !item.id || !PRESET_PLUGIN_IDS.includes(item.plugin as typeof PRESET_PLUGIN_IDS[number]))
+    || (candidate.analysis !== undefined && !isValidAnalysisBootstrap(candidate.analysis))) {
     throw new Error("Invalid Testudo package bootstrap");
   }
   if (guest && (candidate.packageId !== "London/testudo-package-2026-09-24-website-demo-v1"
@@ -90,6 +105,77 @@ export function validateTestudoBootstrap(candidate: TestudoBootstrap, guest: boo
     throw new Error("Guest capability is scoped to the published London demo");
   }
   return candidate;
+}
+
+const ANALYSIS_TEXT_MAX = 400;
+const isBoundedText = (value: unknown, max = ANALYSIS_TEXT_MAX): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
+const isOptionalText = (value: unknown): boolean => value === undefined || (typeof value === "string" && value.length <= ANALYSIS_TEXT_MAX);
+
+/** Parse an absolute analysis URL: https, or http only for localhost; no embedded credentials. */
+export function parseAnalysisUrl(value: unknown): URL | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 4096) return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) return null;
+  if (url.username || url.password) return null;
+  return url;
+}
+
+/** A run manifest path is relative to baseUrl: no scheme, no leading slash, no dot segments. */
+function isRelativeManifestPath(value: unknown): value is string {
+  return isBoundedText(value, 1024) && !/^[a-z][a-z0-9+.-]*:/i.test(value) && !value.startsWith("/") && !value.includes("\\")
+    && !value.split("/").some(segment => segment === ".." || segment === ".");
+}
+
+/** Epoch milliseconds or an ISO-8601 timestamp, as milliseconds; null when unusable. */
+export function analysisExpiryMs(expiresAt: unknown): number | null {
+  if (typeof expiresAt === "number") return Number.isSafeInteger(expiresAt) && expiresAt > 0 ? expiresAt : null;
+  if (typeof expiresAt === "string" && expiresAt.length > 0 && expiresAt.length <= 64) {
+    const parsed = Date.parse(expiresAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/** Validate the optional C4 `analysis` block of a package bootstrap. */
+export function isValidAnalysisBootstrap(candidate: unknown): candidate is TestudoAnalysisBootstrap {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  const analysis = candidate as Record<string, unknown>;
+  const base = parseAnalysisUrl(analysis.baseUrl);
+  if (analysis.schemaVersion !== 1 || !base || !String(analysis.baseUrl).endsWith("/")
+    || base.search || base.hash || analysisExpiryMs(analysis.expiresAt) === null
+    || !Array.isArray(analysis.runs) || analysis.runs.length > 256
+    || !analysis.plugins || typeof analysis.plugins !== "object" || Array.isArray(analysis.plugins)) return false;
+  const seen = new Set<string>();
+  for (const item of analysis.runs) {
+    if (!item || typeof item !== "object") return false;
+    const run = item as Record<string, unknown>;
+    if (!isBoundedText(run.run, 128) || seen.has(run.run) || !isBoundedText(run.label) || typeof run.available !== "boolean"
+      || !isOptionalText(run.reason) || !isRelativeManifestPath(run.manifest)) return false;
+    seen.add(run.run);
+  }
+  for (const [capability, entry] of Object.entries(analysis.plugins as Record<string, unknown>)) {
+    if (!isTestudoAnalysisCapabilityId(capability) || !entry || typeof entry !== "object") return false;
+    const plugin = entry as Record<string, unknown>;
+    if (plugin.pluginId !== TESTUDO_ANALYSIS_PLUGIN_IDS[capability] || typeof plugin.available !== "boolean" || !isOptionalText(plugin.reason)) return false;
+  }
+  return true;
+}
+
+/** Shape-check a testudoOpenAnalysis payload (challenge is checked by the caller). */
+export function isOpenAnalysisPayload(payload: unknown): payload is TestudoOpenAnalysis & { challenge: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const value = payload as Record<string, unknown>;
+  return Object.keys(value).every(key => ["challenge", "plugin", "manifestUrl", "run", "generation"].includes(key))
+    && isTestudoAnalysisPluginId(value.plugin) && parseAnalysisUrl(value.manifestUrl) !== null && isBoundedText(value.run, 128)
+    && Number.isSafeInteger(value.generation) && Number(value.generation) >= 1;
+}
+
+export function isCloseAnalysisPayload(payload: unknown): payload is TestudoCloseAnalysis & { challenge: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const value = payload as Record<string, unknown>;
+  return Object.keys(value).every(key => ["challenge", "plugin"].includes(key)) && isTestudoAnalysisPluginId(value.plugin);
 }
 
 /** Only the exact, allowlisted parent may send bounded Testudo commands. */
@@ -121,6 +207,8 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
       && payload.challenge === challenge && TESTUDO_CHALLENGE_RE.test(challenge)
       && typeof payload.question === "string" && payload.question.trim().length > 0 && payload.question.length <= 4000;
   }
+  if (request.type === "testudoOpenAnalysis") return request.payload?.challenge === challenge && isOpenAnalysisPayload(request.payload);
+  if (request.type === "testudoCloseAnalysis") return request.payload?.challenge === challenge && isCloseAnalysisPayload(request.payload);
   if (request.type === "testudoOpenLocalPackage") {
     const payload = request.payload;
     if (!payload || typeof payload !== "object" || payload.challenge !== challenge || payload.tviewId !== "main"

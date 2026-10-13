@@ -480,6 +480,32 @@ export class PluginManager {
     }
   }
 
+  /**
+   * Open exactly one plugin with URL-style parameters, without the global
+   * URL-parameter loop: only `id` is activated (when needed) and only its
+   * `handleUrlParameters` runs, even if other plugins own the same parameter
+   * names. Used by hosts that target a single plugin (the Testudo Analyse
+   * bridge). Dedup state of {@link handleUrlParameters} is untouched.
+   *
+   * Resolves `false` when the plugin is unknown, has no URL handler, does not
+   * support the current renderer, or refuses activation. A throwing handler
+   * propagates so the caller can report it.
+   */
+  async openWithParams(
+    id: string,
+    params: URLSearchParams | Record<string, string>,
+    app: GeoLibreAppAPI,
+  ): Promise<boolean> {
+    const plugin = this.plugins.get(id);
+    if (!plugin?.handleUrlParameters || !this.supportsEngine(id, app)) return false;
+    if (!this.active.has(id)) {
+      const activated = await this.activate(id, app);
+      if (!activated || !this.active.has(id)) return false;
+    }
+    await plugin.handleUrlParameters(this.scopeAppToPlugin(app, id), new URLSearchParams(params));
+    return true;
+  }
+
   setMapControlPosition(
     id: string,
     app: GeoLibreAppAPI,
