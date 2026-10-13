@@ -30,22 +30,37 @@ folder packages report them unavailable.
 ```ts
 analysis?: {
   schemaVersion: 1;
-  baseUrl: string;                 // absolute, ends with "/", https (http only for localhost), no credentials/query
+  baseUrl: string;                 // <byteOrigin>/api/v1/analysis-bytes/<versionId>/<token>/analysis/
+                                   // absolute, trailing "/", https (http only for localhost), no credentials/query
   runs: Array<{ run: string; label: string; available: boolean; reason?: string;
-                manifest: string }>; // manifest is relative to baseUrl: no scheme, no leading "/", no ".."
+                manifest: string;  // "<run>/analysis_manifest.json", relative to baseUrl: no scheme, no leading "/", no ".."
+                capabilities?: { "analysis-counts": boolean; "analysis-od": boolean; "analysis-journey-time": boolean } }>;
   plugins: Partial<Record<"analysis-counts" | "analysis-od" | "analysis-journey-time",
                           { pluginId: <matching plugin id>; available: boolean; reason?: string }>>;
-  expiresAt: number | string;      // epoch milliseconds or ISO-8601
+  expiresAt: number | string;      // integer epoch MILLISECONDS (UTC) or ISO-8601
 }
 ```
+
+`manifestUrl = baseUrl + manifest` and must start with the (normalised) `baseUrl`.
+
+**Expiry units.** `expiresAt` is epoch milliseconds. A number below `1e11` (a seconds
+timestamp is ~1.8e9, 1e11 ms is 1973) is rejected as ambiguous, never silently scaled:
+the bootstrap fails with `Invalid Testudo package bootstrap: analysis.expiresAt must be
+epoch milliseconds; <n> is below 100000000000 and looks like seconds.` ISO-8601 strings
+are still accepted.
+
+**Run capabilities.** `runs[].capabilities` is optional; when present it holds only the
+three analysis ids with strict boolean values. An open is rejected when the run has
+capabilities and the target plugin's flag is `false` (a missing key is not a rejection).
 
 Any other shape makes the whole bootstrap invalid (`Invalid Testudo package bootstrap`).
 
 ## Commands (C5)
 
-Both are bounded Testudo commands (parent origin, `v: 2`, per-session challenge
+All three are bounded Testudo commands (parent origin, `v: 2`, per-session challenge
 as for every other command; no credential-like keys). The typed client exposes
-`testudoOpenAnalysis(payload)` and `testudoCloseAnalysis(payload)`.
+`testudoOpenAnalysis(payload)`, `testudoCloseAnalysis(payload)` and
+`testudoRefreshAnalysisGrant(payload)`.
 
 - `testudoOpenAnalysis { plugin, manifestUrl, run, generation }`
   - `plugin` is a plugin id (`modelling-*`), `manifestUrl` an absolute https
@@ -53,7 +68,7 @@ as for every other command; no credential-like keys). The typed client exposes
     positive integer.
   - GeoLibre opens **only that plugin** through
     `PluginManager.openWithParams(pluginId, { aimsunPackage: manifestUrl, aimsunRun: run }, app)`:
-    activate if needed, then call that plugin's `handleUrlParameters`. The global
+    activate if needed, then call that plugin's `handleUrlParameters` and wait for it. The global
     URL-parameter loop (`handleUrlParameters`), which opens every plugin owning
     `aimsunPackage`, is never used.
   - `generation` is monotonic per plugin: a value `<=` the last accepted one is
@@ -62,17 +77,45 @@ as for every other command; no credential-like keys). The typed client exposes
     by a package switch.
   - The request must match the loaded package's `analysis` block: it must exist
     and not be expired, the plugin's capability must be `available`, the run must
-    be listed and `available`, and `manifestUrl` must be under `baseUrl`.
+    be listed and `available` (and its `capabilities` flag for the plugin not `false`),
+    and `manifestUrl` must be under the current `baseUrl` (so a URL carrying a
+    superseded token is rejected after a refresh).
   - Not available to guest sessions, nor while a package is loading.
+- `testudoRefreshAnalysisGrant { baseUrl, expiresAt }` swaps the authorization of the
+  loaded package without resetting it. The host re-fetches a bootstrap before the grant
+  expires and sends the new `baseUrl` (same shape, new token) and `expiresAt`. GeoLibre
+  replaces its stored `baseUrl`/`expiresAt` only: open plugins stay open, generations
+  and the selected tab are untouched. It is accepted only for the same loaded package
+  and only when the new `baseUrl` has the same origin and the same
+  `/api/v1/analysis-bytes/<versionId>/<token>/analysis/` shape with the same
+  `<versionId>` and a different (or equal) `<token>` segment; `expiresAt` must be a valid,
+  not yet expired millisecond (or ISO) value. Anything else leaves the grant unchanged and
+  replies `status: "error"`. The host then opens further runs with manifest URLs under the
+  new base. Not available to guests nor while a package is loading.
 - `testudoCloseAnalysis { plugin }` deactivates that plugin (teardown). Package
   load, package switch, `testudoDestroyTView` and iframe unmount close every open
   Analyse plugin as well. A close that arrives while an open is still loading wins.
 
-Replies: the ack result is a `TestudoAnalysisStatus`
-`{ plugin, status: "open" | "closed" | "error", run?, generation?, error? }`, and
-the same object is emitted as the `testudoAnalysisStatus` event (including
-`status: "error"` with the message when an open fails; stale rejections reject the
-command without an event). A failed command acks `ok: false` with the error text.
+Replies: the ack result is a `TestudoAnalysisStatus`, and the same object is emitted as
+the `testudoAnalysisStatus` event.
+
+| Command | Reply |
+|---|---|
+| open | `{ plugin, status: "open", run, generation }` once the package finished loading |
+| close | `{ plugin, status: "closed" }` |
+| refresh | `{ status: "refreshed", expiresAt }` (epoch ms), or `{ status: "error", error }` as the ack result (`ok: true`) and as an event; no `plugin` |
+
+A failed open acks `ok: false` with the error text and emits `{ plugin, status: "error",
+run, generation, error }` (stale rejections reject the command without an event).
+
+**Load semantics.** Each of the three plugins' `handleUrlParameters` resolves `true` only
+when the package finished loading, and rejects with the load error message when loading
+failed (a manifest that 404s, is malformed, has no usable run, ...). `PluginManager.openWithParams`
+returns `{ ok: boolean; error?: string }` (a handler resolving `false`, throwing, an unknown
+plugin or a refused activation is `ok: false`; a handler resolving nothing is `ok`, for
+legacy plugins). The bridge answers `status: "open"` only after `ok: true`; otherwise it
+deactivates the half-open plugin and answers `status: "error"` with the plugin's message.
+The global URL-parameter loop still ignores the returned value.
 The host opens one Analyse plugin at a time by sending `testudoCloseAnalysis` for
 the previous one; GeoLibre does not close siblings implicitly.
 

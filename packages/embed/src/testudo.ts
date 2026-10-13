@@ -20,21 +20,31 @@ export interface TestudoMapControlState { legendVisible: boolean; esriWorldImage
 export interface TestudoNetworkFilter { id: string; enabled: boolean; value?: string | number | boolean }
 export interface TestudoCapability { id: TestudoCapabilityId; available: boolean; reason?: string }
 /** Bootstrap `analysis` block (contract C4). Optional: bootstraps without it stay valid. */
-export interface TestudoAnalysisRun { run: string; label: string; available: boolean; reason?: string; manifest: string }
+export interface TestudoAnalysisRun {
+  run: string; label: string; available: boolean; reason?: string; manifest: string;
+  /** Optional per-plugin capability flags of this run; an open for a plugin whose flag is `false` is rejected. */
+  capabilities?: Partial<Record<TestudoAnalysisCapabilityId, boolean>>;
+}
 export interface TestudoAnalysisPluginAvailability { pluginId: TestudoAnalysisPluginId; available: boolean; reason?: string }
 export interface TestudoAnalysisBootstrap {
   schemaVersion: 1;
-  /** Absolute URL ending in `/`; every run manifest is relative to it. */
+  /** Absolute URL ending in `/` (`<byteOrigin>/api/v1/analysis-bytes/<versionId>/<token>/analysis/`); every run manifest is relative to it. */
   baseUrl: string;
   runs: TestudoAnalysisRun[];
   plugins: Partial<Record<TestudoAnalysisCapabilityId, TestudoAnalysisPluginAvailability>>;
-  /** Unix epoch milliseconds, or an ISO-8601 timestamp. */
+  /** Unix epoch MILLISECONDS (UTC) as an integer, or an ISO-8601 timestamp. A number below 1e11 is rejected as ambiguous (seconds). */
   expiresAt: number | string;
 }
 /** testudoOpenAnalysis payload (contract C5). `generation` must increase per plugin; stale values are rejected. */
 export interface TestudoOpenAnalysis { plugin: TestudoAnalysisPluginId; manifestUrl: string; run: string; generation: number }
 export interface TestudoCloseAnalysis { plugin: TestudoAnalysisPluginId }
-export interface TestudoAnalysisStatus { plugin: TestudoAnalysisPluginId; status: "open" | "closed" | "error"; run?: string; generation?: number; error?: string }
+/** testudoRefreshAnalysisGrant payload: a new baseUrl that differs from the current one only in the token segment, plus its expiry (ms or ISO). */
+export interface TestudoRefreshAnalysisGrant { baseUrl: string; expiresAt: number | string }
+/**
+ * Reply/event of the Analyse commands. `open`/`closed`/`error` answer open and close
+ * (`plugin` set); `refreshed`/`error` answer testudoRefreshAnalysisGrant (`plugin` absent, `expiresAt` in epoch ms).
+ */
+export interface TestudoAnalysisStatus { plugin?: TestudoAnalysisPluginId; status: "open" | "closed" | "error" | "refreshed"; run?: string; generation?: number; expiresAt?: number; error?: string }
 export interface TestudoBootstrap {
   packageId: string;
   versionId: string;

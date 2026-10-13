@@ -31,6 +31,7 @@ export {
   type TestudoSqliteRuntime,
 } from "./plugins/testudo-dataset-provider";
 export { PluginManager } from "./plugin-manager";
+export type { OpenWithParamsResult } from "./plugin-manager";
 export { MAPLIBRE_LABEL_LAYOUT, MAPLIBRE_LABEL_PAINT, declutterMapLabels, formatRoundedDifference, formatTripVolume, lineMidpoint, passesComparisonDifferenceFilter, passesDifferenceThreshold, type MapLabelPoint } from "./shared/map-labels";
 export {
   PATH_ANALYSIS_PLUGIN_ID,

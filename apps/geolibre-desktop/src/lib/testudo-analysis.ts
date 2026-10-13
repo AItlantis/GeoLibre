@@ -1,10 +1,10 @@
-import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoAnalysisStatus, TestudoCloseAnalysis, TestudoOpenAnalysis } from "@geolibre/embed";
+import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoAnalysisStatus, TestudoCloseAnalysis, TestudoOpenAnalysis, TestudoRefreshAnalysisGrant } from "@geolibre/embed";
 import { analysisExpiryMs, isTestudoAnalysisPluginId, parseAnalysisUrl, TESTUDO_ANALYSIS_CAPABILITY_IDS, TESTUDO_ANALYSIS_PLUGIN_IDS } from "./testudo-protocol";
 
 /** The slice of `PluginManager` the Analyse bridge needs (kept structural so tests can stub it). */
 export interface TestudoAnalysisHost<App> {
-  /** Activate (if needed) and run only that plugin's URL handler. Resolves false when it cannot be opened. */
-  openWithParams(id: string, params: Record<string, string>, app: App): Promise<boolean>;
+  /** Activate (if needed) and run only that plugin's URL handler. `ok` is true only after the package finished loading. */
+  openWithParams(id: string, params: Record<string, string>, app: App): Promise<{ ok: boolean; error?: string }>;
   deactivate(id: string, app: App): void;
 }
 
@@ -13,6 +13,15 @@ export class StaleAnalysisGenerationError extends Error {
     super(`Stale analysis generation ${generation} for ${plugin}; latest accepted is ${latest}.`);
     this.name = "StaleAnalysisGenerationError";
   }
+}
+
+/** `/analysis-bytes/<versionId>/<token>/analysis/`: the only base shape a grant refresh may move within. */
+const GRANT_PATH_RE = /^(.*\/analysis-bytes\/)([^/]+)\/([^/]+)\/analysis\/$/;
+function grantParts(base: string): { origin: string; prefix: string; versionId: string; token: string } | null {
+  let url: URL;
+  try { url = new URL(base); } catch { return null; }
+  const match = GRANT_PATH_RE.exec(url.pathname);
+  return match && !url.search && !url.hash ? { origin: url.origin, prefix: match[1], versionId: match[2], token: match[3] } : null;
 }
 
 export function capabilityForAnalysisPlugin(plugin: TestudoAnalysisPluginId): TestudoAnalysisCapabilityId {
@@ -30,6 +39,7 @@ export function capabilityForAnalysisPlugin(plugin: TestudoAnalysisPluginId): Te
  */
 export class TestudoAnalysisController<App> {
   private analysis: TestudoAnalysisBootstrap | null = null;
+  private versionId: string | null = null;
   private generations = new Map<TestudoAnalysisPluginId, number>();
   private epochs = new Map<TestudoAnalysisPluginId, number>();
   private wanted = new Map<TestudoAnalysisPluginId, boolean>();
@@ -43,10 +53,41 @@ export class TestudoAnalysisController<App> {
   ) {}
 
   /** Package switch: close everything and adopt the new package's analysis block (or none). */
-  setPackage(analysis: TestudoAnalysisBootstrap | null | undefined): void {
+  setPackage(analysis: TestudoAnalysisBootstrap | null | undefined, versionId: string | null = null): void {
     this.teardown();
     this.generations.clear();
     this.analysis = analysis ?? null;
+    this.versionId = versionId;
+  }
+
+  /**
+   * Replace the authorization base and expiry in place (token refresh): open plugins, generations and the
+   * selected tab are untouched. Only the token segment of `/analysis-bytes/<versionId>/<token>/analysis/` may
+   * change (same origin, same version); anything else answers `status: "error"`.
+   */
+  refreshGrant(payload: TestudoRefreshAnalysisGrant): TestudoAnalysisStatus {
+    const fail = (error: string): TestudoAnalysisStatus => {
+      const status: TestudoAnalysisStatus = { status: "error", error };
+      this.emit(status);
+      return status;
+    };
+    const analysis = this.analysis;
+    if (!analysis) return fail("The loaded package declares no analysis.");
+    const expiry = analysisExpiryMs(payload.expiresAt);
+    if (expiry === null) return fail("The refreshed expiresAt must be epoch milliseconds or an ISO-8601 timestamp.");
+    if (expiry <= this.now()) return fail("The refreshed analysis grant is already expired.");
+    const next = parseAnalysisUrl(payload.baseUrl);
+    const nextParts = next && String(payload.baseUrl).endsWith("/") ? grantParts(next.href) : null;
+    const current = grantParts(analysis.baseUrl);
+    if (!nextParts || !current) return fail("The analysis base URL does not have the /analysis-bytes/<versionId>/<token>/analysis/ shape.");
+    if (nextParts.origin !== current.origin || nextParts.prefix !== current.prefix || nextParts.versionId !== current.versionId
+      || (this.versionId !== null && nextParts.versionId !== this.versionId)) {
+      return fail("The refreshed analysis base URL may differ from the current one only in the token segment.");
+    }
+    this.analysis = { ...analysis, baseUrl: next!.href, expiresAt: expiry };
+    const status: TestudoAnalysisStatus = { status: "refreshed", expiresAt: expiry };
+    this.emit(status);
+    return status;
   }
 
   isOpen(plugin: TestudoAnalysisPluginId): boolean {
@@ -70,13 +111,22 @@ export class TestudoAnalysisController<App> {
     this.wanted.set(plugin, true);
     try {
       this.authorize(plugin, manifestUrl, run);
-      const opened = await this.host.openWithParams(plugin, { aimsunPackage: manifestUrl, aimsunRun: run }, this.app);
+      let opened: { ok: boolean; error?: string };
+      try {
+        opened = await this.host.openWithParams(plugin, { aimsunPackage: manifestUrl, aimsunRun: run }, this.app);
+      } catch (error) {
+        opened = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
       if (this.epochs.get(plugin) !== epoch) {
         // A newer open/close/package switch won the race; leave the winner's state alone.
         if (this.wanted.get(plugin) === false) this.host.deactivate(plugin, this.app);
         throw new Error(`Analysis open for ${plugin} was superseded.`);
       }
-      if (!opened) throw new Error(`Analysis plugin ${plugin} could not be opened.`);
+      if (!opened.ok) {
+        // The plugin activated but its package failed to load: tear the half-open panel down.
+        this.host.deactivate(plugin, this.app);
+        throw new Error(opened.error || `Analysis plugin ${plugin} could not be opened.`);
+      }
     } catch (error) {
       if (this.epochs.get(plugin) === epoch) {
         this.wanted.set(plugin, false);
@@ -121,6 +171,7 @@ export class TestudoAnalysisController<App> {
     if (!availability?.available) throw new Error(availability?.reason ?? `Analysis is unavailable for ${plugin} in this package.`);
     const declared = analysis.runs.find(item => item.run === run);
     if (!declared?.available) throw new Error(declared?.reason ?? `Analysis run ${run} is unavailable.`);
+    if (declared.capabilities && declared.capabilities[capabilityForAnalysisPlugin(plugin)] === false) throw new Error(`Analysis run ${run} does not provide ${capabilityForAnalysisPlugin(plugin)}.`);
     const url = parseAnalysisUrl(manifestUrl);
     if (!url || !url.href.startsWith(new URL(analysis.baseUrl).href)) throw new Error("The analysis manifest is outside the package analysis base URL.");
   }

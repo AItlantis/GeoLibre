@@ -1159,7 +1159,7 @@ export interface GeoLibrePlugin {
    * invoked. A handler that throws is not counted as handled, so a later
    * dispatch for the same context retries it.
    */
-  handleUrlParameters?: (app: GeoLibreAppAPI, params: URLSearchParams) => void | Promise<void>;
+  handleUrlParameters?: (app: GeoLibreAppAPI, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
   getMapControlPosition?: () => GeoLibreMapControlPosition;
   setMapControlPosition?: (
     app: GeoLibreAppAPI,

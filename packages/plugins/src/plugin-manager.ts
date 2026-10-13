@@ -12,6 +12,12 @@ import type {
   GeoLibreToolbarMenu,
 } from "./types";
 
+/** Outcome of {@link PluginManager.openWithParams}. */
+export interface OpenWithParamsResult {
+  ok: boolean;
+  error?: string;
+}
+
 export class PluginManager {
   private renderer: MapRendererKind | null = null;
   private deferredState: ProjectPluginState | null = null;
@@ -487,23 +493,36 @@ export class PluginManager {
    * names. Used by hosts that target a single plugin (the Testudo Analyse
    * bridge). Dedup state of {@link handleUrlParameters} is untouched.
    *
-   * Resolves `false` when the plugin is unknown, has no URL handler, does not
-   * support the current renderer, or refuses activation. A throwing handler
-   * propagates so the caller can report it.
+   * Resolves `{ ok: false, error }` when the plugin is unknown, has no URL
+   * handler, does not support the current renderer, refuses activation, or its
+   * handler resolves `false` or throws (the error message is carried). A
+   * handler that resolves `true` (or nothing, for legacy plugins) is `ok`.
    */
   async openWithParams(
     id: string,
     params: URLSearchParams | Record<string, string>,
     app: GeoLibreAppAPI,
-  ): Promise<boolean> {
+  ): Promise<OpenWithParamsResult> {
     const plugin = this.plugins.get(id);
-    if (!plugin?.handleUrlParameters || !this.supportsEngine(id, app)) return false;
-    if (!this.active.has(id)) {
-      const activated = await this.activate(id, app);
-      if (!activated || !this.active.has(id)) return false;
+    if (!plugin?.handleUrlParameters || !this.supportsEngine(id, app)) {
+      return { ok: false, error: `Plugin '${id}' cannot handle URL parameters.` };
     }
-    await plugin.handleUrlParameters(this.scopeAppToPlugin(app, id), new URLSearchParams(params));
-    return true;
+    if (!this.active.has(id)) {
+      let activated = false;
+      try {
+        activated = await this.activate(id, app);
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+      if (!activated || !this.active.has(id)) return { ok: false, error: `Plugin '${id}' could not be activated.` };
+    }
+    try {
+      const handled = await plugin.handleUrlParameters(this.scopeAppToPlugin(app, id), new URLSearchParams(params));
+      if (handled === false) return { ok: false, error: `Plugin '${id}' did not load the requested package.` };
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   setMapControlPosition(

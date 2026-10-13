@@ -967,7 +967,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (!candidate || containsCredentialField(payload) || (guestCredential && payload.challenge !== challenge)) throw new Error("Invalid Testudo package bootstrap");
       assertPackageOperation(operation);
       reset(); bootstrap = candidate;
-      analysis.setPackage(guestCredential ? null : candidate.analysis);
+      analysis.setPackage(guestCredential ? null : candidate.analysis, candidate.versionId);
       comparisonDeclared = candidate.capabilities.some(item => item.id === "scenario-comparison" && item.available);
       const getGuestEmbedToken = guestCredential ? () => {
         if (!guestCredential || guestCredential.expiresAt <= Date.now()) throw new Error("Guest demo access expired; refresh the package to continue.");
@@ -1347,11 +1347,12 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           return featureBridge.setActiveTView("main");
         }
         if (request.type === "testudoGetActiveTView") return featureBridge.getActiveTView();
-        if (request.type === "testudoOpenAnalysis" || request.type === "testudoCloseAnalysis") {
+        if (request.type === "testudoOpenAnalysis" || request.type === "testudoCloseAnalysis" || request.type === "testudoRefreshAnalysisGrant") {
           // Not under the command gate: closing must stay possible while an open is still loading.
           if (commandGate.packageBusy) throw new Error("The viewer is loading a package. Please wait.");
           if (guestCredential) throw new Error("Analysis is not available to guest sessions.");
           if (request.type === "testudoCloseAnalysis") return analysis.close(request.payload);
+          if (request.type === "testudoRefreshAnalysisGrant") return analysis.refreshGrant(request.payload);
           if (!current.package) throw new Error("Select a package first.");
           return await analysis.open(request.payload);
         }

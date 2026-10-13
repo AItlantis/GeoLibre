@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate, TestudoArtifactFetcher, TestudoArtifactRequest, TestudoTViewInfo, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter, TestudoOpenAnalysis, TestudoCloseAnalysis, TestudoAnalysisStatus } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoStyle, TestudoViewModeMetadata, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoAnalysisBootstrap, TestudoAnalysisRun, TestudoAnalysisPluginAvailability, TestudoOpenAnalysis, TestudoCloseAnalysis, TestudoAnalysisStatus } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate, TestudoArtifactFetcher, TestudoArtifactRequest, TestudoTViewInfo, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter, TestudoOpenAnalysis, TestudoCloseAnalysis, TestudoRefreshAnalysisGrant, TestudoAnalysisStatus } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoStyle, TestudoViewModeMetadata, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoAnalysisBootstrap, TestudoAnalysisRun, TestudoAnalysisPluginAvailability, TestudoOpenAnalysis, TestudoCloseAnalysis, TestudoRefreshAnalysisGrant, TestudoAnalysisStatus } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -59,7 +59,7 @@ export type EmbedEventMap = {
   testudoArtifactRequest: TestudoArtifactRequest & { challenge: string };
   testudoGeoAIRequest: TestudoGeoAIRequest;
   testudoGeoAIReply: TestudoGeoAIReply;
-  /** Result of testudoOpenAnalysis / testudoCloseAnalysis (also returned as the command ack result). */
+  /** Result of testudoOpenAnalysis / testudoCloseAnalysis / testudoRefreshAnalysisGrant (also returned as the command ack result). */
   testudoAnalysisStatus: TestudoAnalysisStatus;
   /**
    * Every command already returns a promise the client settles from this ack,
@@ -113,6 +113,8 @@ export interface GeoLibreEmbedClient {
   /** Open exactly one Analyse plugin on a run manifest. `generation` must increase per plugin; stale values are rejected. */
   testudoOpenAnalysis(payload: TestudoOpenAnalysis): Promise<TestudoAnalysisStatus>;
   testudoCloseAnalysis(payload: TestudoCloseAnalysis): Promise<TestudoAnalysisStatus>;
+  /** Swap the analysis authorization (token segment of baseUrl, and expiry) without closing open plugins; resolves `status: "refreshed"` or `"error"`. */
+  testudoRefreshAnalysisGrant(payload: TestudoRefreshAnalysisGrant): Promise<TestudoAnalysisStatus>;
   /** Subscribe to testudoGeoAiInvestigationUpdate first, then submit a question and correlate by the returned requestId. */
   testudoRequestInvestigation(question: string): Promise<{ requestId: string; accepted: true }>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
@@ -252,6 +254,7 @@ export function connect(
     testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),
     testudoOpenAnalysis: (payload) => sendTestudo<TestudoAnalysisStatus>("testudoOpenAnalysis", { ...payload }),
     testudoCloseAnalysis: (payload) => sendTestudo<TestudoAnalysisStatus>("testudoCloseAnalysis", { ...payload }),
+    testudoRefreshAnalysisGrant: (payload) => sendTestudo<TestudoAnalysisStatus>("testudoRefreshAnalysisGrant", { ...payload }),
     testudoRequestInvestigation: (question) => {
       if (typeof question !== "string" || !question.trim() || question.length > 4000) {
         return Promise.reject(new Error("Investigation question must be nonblank and at most 4000 characters"));
