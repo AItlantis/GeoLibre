@@ -24,6 +24,22 @@ function grantParts(base: string): { origin: string; prefix: string; versionId: 
   return match && !url.search && !url.hash ? { origin: url.origin, prefix: match[1], versionId: match[2], token: match[3] } : null;
 }
 
+/** True when the analysis block declares at least one available plugin and at least one available run. */
+export function hasUsableAnalysis(analysis: TestudoAnalysisBootstrap | null | undefined): boolean {
+  if (!analysis) return false;
+  return Object.values(analysis.plugins ?? {}).some(item => item?.available) && (analysis.runs ?? []).some(run => run.available);
+}
+
+/**
+ * Decides how a freshly loaded package becomes viewable: through a map plugin, through analysis only
+ * (no map plugin, no Present modes), or not at all (throws the unsupported-package error).
+ */
+export function resolveTestudoViewerKind(initialPlugin: unknown, analysis: TestudoAnalysisBootstrap | null | undefined): "map" | "analysis-only" {
+  if (initialPlugin) return "map";
+  if (hasUsableAnalysis(analysis)) return "analysis-only";
+  throw new Error("This package has no supported viewer data");
+}
+
 export function capabilityForAnalysisPlugin(plugin: TestudoAnalysisPluginId): TestudoAnalysisCapabilityId {
   return TESTUDO_ANALYSIS_CAPABILITY_IDS.find(id => TESTUDO_ANALYSIS_PLUGIN_IDS[id] === plugin)!;
 }

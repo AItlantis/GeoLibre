@@ -11,7 +11,7 @@ import {
   TESTUDO_COMMANDS,
   validateTestudoBootstrap,
 } from "../apps/geolibre-desktop/src/lib/testudo-protocol";
-import { StaleAnalysisGenerationError, TestudoAnalysisController } from "../apps/geolibre-desktop/src/lib/testudo-analysis";
+import { hasUsableAnalysis, resolveTestudoViewerKind, StaleAnalysisGenerationError, TestudoAnalysisController } from "../apps/geolibre-desktop/src/lib/testudo-analysis";
 import { DetController } from "../extensions/aimsun-validation/modelling-count-manager/src/common/controller.ts";
 import { OdController } from "../extensions/aimsun-validation/modelling-od-trips/src/_od/controller.ts";
 import { TESTUDO_BLOCKED_PLUGIN_IDS } from "../apps/geolibre-desktop/src/lib/testudo-mode";
@@ -522,4 +522,29 @@ describe("Load semantics: failed loads are errors, not opens", () => {
       } finally { restore(); }
     });
   }
+});
+
+describe("analysis-only package bootstrap", () => {
+  const usable = analysisBlock() as never;
+  it("loads without a map plugin when the analysis block is usable", () => {
+    assert.equal(hasUsableAnalysis(usable), true);
+    assert.equal(resolveTestudoViewerKind(undefined, usable), "analysis-only");
+    assert.equal(resolveTestudoViewerKind(null, usable), "analysis-only");
+  });
+  it("still selects the map path when a map plugin exists", () => {
+    assert.equal(resolveTestudoViewerKind("vehicle-playback", usable), "map");
+    assert.equal(resolveTestudoViewerKind("vehicle-playback", null), "map");
+  });
+  it("still throws for a package with neither a map plugin nor usable analysis", () => {
+    assert.throws(() => resolveTestudoViewerKind(undefined, null), /no supported viewer data/);
+    assert.throws(() => resolveTestudoViewerKind(undefined, undefined), /no supported viewer data/);
+    const unusable = analysisBlock({ runs: [{ run: "r", label: "R", available: false, reason: "x", manifest: "r/analysis_manifest.json" }] }) as never;
+    assert.equal(hasUsableAnalysis(unusable), false);
+    assert.throws(() => resolveTestudoViewerKind(undefined, unusable), /no supported viewer data/);
+  });
+  it("keeps analysis ids out of the selectable map plugin ids (testudoSetPlugin stays 'Unknown map plugin')", () => {
+    const source = readFileSync(new URL("../apps/geolibre-desktop/src/components/layout/TestudoControls.tsx", import.meta.url), "utf8");
+    assert.match(source, /const selectableIds = ids\.filter\(.*!isTestudoAnalysisCapabilityId\(id\)\)/);
+    assert.match(source, /if \(!selectableIds\.includes\(id\)\) throw new Error\("Unknown map plugin"\)/);
+  });
 });

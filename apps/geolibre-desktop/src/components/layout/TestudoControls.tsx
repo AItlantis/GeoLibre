@@ -11,7 +11,7 @@ import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { runWithPackageOwnerRelease, TestudoCommandGate } from "../../lib/testudo-command-gate";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
 import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, isTestudoAnalysisCapabilityId, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
-import { TestudoAnalysisController } from "../../lib/testudo-analysis";
+import { resolveTestudoViewerKind, TestudoAnalysisController } from "../../lib/testudo-analysis";
 import { getPluginManager } from "../../hooks/usePlugins";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
@@ -1102,7 +1102,13 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         installedSession.scenarios = initialScenarioRoster;
         installedSession.selectedScenarioId = initialScenarioId;
       }
-      if (!initialPlugin) throw new Error("This package has no supported viewer data");
+      const viewerKind = resolveTestudoViewerKind(initialPlugin, guestCredential ? null : candidate.analysis);
+      if (viewerKind === "analysis-only" || !initialPlugin) {
+        // Analysis-only package: no map plugin to initialise; keep package identity and the analysis grant.
+        tracePackageLoadStage("initial-mode-and-plugin-selection", "complete");
+        update({ selectedPlugin: undefined, selectedMode: undefined, status: "ready", error: undefined });
+        return current;
+      }
       const modeForPlugin: Partial<Record<TestudoSelectablePluginId, TestudoDemoMode>> = { "vehicle-playback": "animation", "network-kpi": "results", "scenario-comparison": "comparison", "emissions-h3": "environment", "path-analysis": "paths" };
       const requestedMode = payload.selectedPlugin ? modeForPlugin[payload.selectedPlugin] : initialMode;
       tracePackageLoadStage("initial-mode-and-plugin-selection", "start");
