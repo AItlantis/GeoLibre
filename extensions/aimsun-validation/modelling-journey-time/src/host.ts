@@ -42,7 +42,7 @@ export interface HostPlugin {
   urlParameterNames?: string[];
   activate: (app: HostApp) => boolean | void | Promise<boolean | void>;
   deactivate: (app: HostApp) => void;
-  handleUrlParameters?: (app: HostApp, params: URLSearchParams) => void | Promise<void>;
+  handleUrlParameters?: (app: HostApp, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
   getProjectState?: () => unknown;
   applyProjectState?: (app: HostApp, state: unknown) => boolean | void;
 }

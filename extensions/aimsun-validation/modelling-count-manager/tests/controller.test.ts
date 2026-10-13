@@ -227,3 +227,13 @@ test("withLock serialises overlapping work", async () => {
   assert.equal(order.at(-1), "after");
 });
 
+
+test("loadUrl resolves false (never true) when the manifest 404s, is malformed or has no runs", async () => {
+  const mk = (res: () => Response) => new DetController({ getDb: async () => { throw new Error("no database"); }, prefix: "mcm_", fetchImpl: (async () => res()) as unknown as typeof fetch });
+  for (const res of [() => new Response("nf", { status: 404 }), () => new Response("{not json", { status: 200 }), () => new Response(JSON.stringify({ schemaVersion: 1, files: [] }), { status: 200 })]) {
+    const c = mk(res);
+    assert.equal(await c.loadUrl("http://localhost/data/manifest.json"), false);
+    assert.equal(c.state.phase, "error");
+    assert.ok(c.state.error);
+  }
+});

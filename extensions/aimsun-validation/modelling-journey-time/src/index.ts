@@ -52,10 +52,12 @@ const plugin: HostPlugin = {
 
   async handleUrlParameters(a, params) {
     const url = params.get("aimsunPackage");
-    if (!url) return;
+    if (!url || !controller) return false;
     app = a;
     a.openRightPanel?.(PLUGIN_ID);
-    await controller?.loadUrl(url);
+    // Resolves true only once the package finished loading; rejects with the load error message otherwise.
+    if (!(await controller.loadUrl(url))) throw new Error(controller.loadError ?? "The analysis package could not be loaded.");
+    return true;
   },
 
   getProjectState: () => controller?.getState() ?? pendingState ?? undefined,

@@ -59,7 +59,8 @@ async function fixtureModes(ctx) {
 async function malformedSim(ctx) {
   const { assert, $, waitFor } = ctx;
   const p = await ctx.startPlugin(ID);
-  await p.plugin.handleUrlParameters(p.app, new URLSearchParams({ aimsunPackage: pkgUrl("BADSIM") }));
+  const failure = await p.plugin.handleUrlParameters(p.app, new URLSearchParams({ aimsunPackage: pkgUrl("BADSIM") })).then(() => null, (e) => e);
+  assert(failure instanceof Error && /subpath_sim_jt is missing column/.test(failure.message), "handleUrlParameters rejects with the load error");
   await waitFor(() => $(p.container, '[data-avp-state="error"]'), "malformed simulation table error");
   assert(/subpath_sim_jt is missing column/.test($(p.container, '[role="alert"]').textContent), "error identifies malformed sim schema");
   return {};

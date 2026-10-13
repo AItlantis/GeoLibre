@@ -124,7 +124,8 @@ export class OdController {
     return this.state.phase === "ready";
   }
 
-  async loadUrl(url: string, run?: string): Promise<void> {
+  /** Resolves true only when the package finished loading (phase "ready"); false on any failure (see `state.message`). */
+  async loadUrl(url: string, run?: string): Promise<boolean> {
     this.set({ ...initial(), phase: "loading", message: "Reading manifest…" });
     try {
       const idx = await indexFromManifestUrl(url);
@@ -133,6 +134,7 @@ export class OdController {
     } catch (e) {
       this.fail(e);
     }
+    return this.state.phase === "ready";
   }
 
   async loadFiles(list: ArrayLike<File>): Promise<void> {

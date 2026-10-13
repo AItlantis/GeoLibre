@@ -111,7 +111,8 @@ export class DetController {
     return this.geo !== null && this.geo.count > 0;
   }
 
-  async loadUrl(input: string, preferredRun?: string): Promise<void> {
+  /** Resolves true only when the package finished loading (state is "ready"); false on any failure (see `state.error`). */
+  async loadUrl(input: string, preferredRun?: string): Promise<boolean> {
     this.dispatch({ type: "package-loading" });
     try {
       const idx = await indexFromManifestUrl(input, this.deps.fetchImpl);
@@ -120,6 +121,7 @@ export class DetController {
     } catch (e) {
       this.fail(e);
     }
+    return this.state.phase === "ready";
   }
 
   async loadFiles(files: readonly FileLikeItem[], label = "folder"): Promise<void> {

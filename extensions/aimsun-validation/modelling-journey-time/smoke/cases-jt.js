@@ -132,7 +132,10 @@ async function noMapRenderer(ctx) {
 
 async function badUrl(ctx) {
   const { assert, $ } = ctx;
-  const p = await open(ctx, "NOPE");
+  const p = await ctx.startPlugin(ID);
+  // Bridge contract: a failed load rejects with the plugin's message instead of resolving as a successful open.
+  const failure = await p.plugin.handleUrlParameters(p.app, new URLSearchParams({ aimsunPackage: pkgUrl("NOPE") })).then(() => null, (e) => e);
+  assert(failure instanceof Error && /HTTP 404/.test(failure.message), "handleUrlParameters rejects with the load error");
   await ctx.waitFor(() => $(p.container, '[data-avp-state="error"]'), "error state");
   assert(/HTTP 404/.test($(p.container, '[role="alert"]').textContent), "HTTP 404 reported");
   return {};

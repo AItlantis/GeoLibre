@@ -196,17 +196,22 @@ export class JourneyTimeController {
   }
 
   // ---- loading ---------------------------------------------------------------------------------
-  async loadUrl(url: string): Promise<void> {
+  /** Resolves true only when the package finished loading; false on any failure (see `loadError`). */
+  async loadUrl(url: string): Promise<boolean> {
     this.lastUrl = url;
     this.bar?.setUrl(url);
-    await this.load((s) => loadFromManifestUrl(s, url));
+    return this.load((s) => loadFromManifestUrl(s, url));
+  }
+
+  get loadError(): string | null {
+    return this.error;
   }
 
   async loadFiles(files: File[]): Promise<void> {
     await this.load((s) => loadFromFiles(s, files));
   }
 
-  private async load(fn: (s: Session) => Promise<PackageSummary>): Promise<void> {
+  private async load(fn: (s: Session) => Promise<PackageSummary>): Promise<boolean> {
     const { t } = this.d;
     this.busy = true;
     this.error = null;
@@ -215,11 +220,11 @@ export class JourneyTimeController {
     try {
       this.overlay.remove();
       const h = await this.d.getDuck();
-      if (this.disposed) return;
+      if (this.disposed) return false;
       const opened = this.session ?? (await openSession(h, "modelling_journey_time"));
       if (this.disposed) {
         await opened.dispose(); // deactivated while the session was opening: nothing may outlive the plugin
-        return;
+        return false;
       }
       this.session = opened;
       const s = opened;
@@ -261,11 +266,13 @@ export class JourneyTimeController {
       this.pickDefaults();
       if (this.viewMode === VIEW_VALIDATION && !this.simRows.length) this.viewMode = VIEW_JT;
       this.status = t("status.loaded", "Loaded {{n}} observed rows from {{origin}}.", { n: this.rows.length, origin: pkg.origin });
+      return true;
     } catch (e) {
       this.pkg = null;
       this.rows = [];
       this.error = e instanceof Error ? e.message : String(e);
       this.status = this.error;
+      return false;
     } finally {
       this.busy = false;
       this.build();

@@ -104,3 +104,18 @@ test("trips queries on real data: top pairs, selection stats and histogram agree
   near(h.reduce((s, x) => s + Number(x.trips), 0), Number(st.trips), 1e-6 * Number(st.trips));
   assert.ok(Number(sub[0].trips) <= Number(st.trips));
 });
+
+test("loadUrl resolves false (never true) when the manifest 404s, is malformed or has no runs", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    for (const res of [() => new Response("nf", { status: 404 }), () => new Response("{not json", { status: 200 }), () => new Response(JSON.stringify({ schemaVersion: 1, files: [] }), { status: 200 })]) {
+      globalThis.fetch = (async () => res()) as unknown as typeof fetch;
+      const c = new OdController({} as never);
+      assert.equal(await c.loadUrl("http://localhost/data/manifest.json"), false);
+      assert.equal(c.state.phase, "error");
+      assert.ok(c.state.message);
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

@@ -261,12 +261,14 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       dispose(a);
     },
 
+    /** Resolves true only once the package finished loading; rejects with the load error message otherwise. */
     async handleUrlParameters(a: AppLike, params: URLSearchParams) {
       const u = params.get("aimsunPackage");
-      if (!u || !ctl) return;
+      if (!u || !ctl) return false;
       urlBox?.setUrl(u);
       a.openRightPanel?.(panelId);
-      await ctl.loadUrl(u, params.get("aimsunRun") ?? undefined);
+      if (!(await ctl.loadUrl(u, params.get("aimsunRun") ?? undefined))) throw new Error(ctl.state.error ?? "The analysis package could not be loaded.");
+      return true;
     },
 
     getProjectState(): SavedState | undefined {

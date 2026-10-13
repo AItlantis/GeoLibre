@@ -71,7 +71,7 @@ export interface PluginLike {
   urlParameterNames?: string[];
   activate: (app: AppLike) => boolean | void | Promise<boolean | void>;
   deactivate: (app: AppLike) => void;
-  handleUrlParameters?: (app: AppLike, params: URLSearchParams) => void | Promise<void>;
+  handleUrlParameters?: (app: AppLike, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
   getProjectState?: () => unknown;
   applyProjectState?: (app: AppLike, state: unknown) => boolean | void;
 }

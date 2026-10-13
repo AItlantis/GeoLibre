@@ -252,12 +252,14 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
 
     async handleUrlParameters(a: AppLike, params: URLSearchParams) {
       const u = params.get("aimsunPackage");
-      if (!u || !ctl) return;
+      if (!u || !ctl) return false;
       if (urlInput) urlInput.value = u;
       a.openRightPanel?.(panelId);
-      await ctl.loadUrl(u, params.get("aimsunRun") ?? undefined);
+      // Resolves true only once the package finished loading; rejects with the load error message otherwise.
+      if (!(await ctl.loadUrl(u, params.get("aimsunRun") ?? undefined))) throw new Error(ctl.state.message || "The analysis package could not be loaded.");
       const g = params.get("aimsunGrouping");
       if (g && ctl.ready && ctl.state.groupings.some((x) => x.name === g)) await ctl.selectGrouping(g);
+      return true;
     },
 
     getProjectState(): Saved | undefined {
