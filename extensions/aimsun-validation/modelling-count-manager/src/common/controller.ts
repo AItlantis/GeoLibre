@@ -56,6 +56,12 @@ import {
   type SourceChoice,
 } from "./sql.ts";
 
+/** Keep the counts sources of `observed_sources`; no counts source at all (e.g. a journey-time-only list) = legacy mode (null). */
+export function countsSourcesOnly(list: ObservedSource[] | undefined | null): ObservedSource[] | null {
+  const counts = (list ?? []).filter((s) => s.role === "counts");
+  return counts.length ? counts : null;
+}
+
 export type DbLike = Pick<DuckDbHandle, "query" | "exec" | "registerBuffer" | "dropFile">;
 
 /** Serialise DuckDB view use across every plugin bundle in the page (shared mutex, aliases the old det lock). */
@@ -343,7 +349,9 @@ export class DetController {
     const pick = (key: string): unknown => perRun(key) ?? o[key];
     return {
       observed: e.observed ?? parseObserved(pick("observed"), `${where}: observed`) ?? null,
-      sources: e.observedSources ?? parseObservedSources(pick("observed_sources"), `${where}: observed_sources`) ?? null,
+      // Journey-time sources share the list: only 'counts' sources switch the v2 (source-specific) mode on;
+      // a list without any counts source leaves the legacy C3 `observed` handling untouched.
+      sources: countsSourcesOnly(e.observedSources ?? parseObservedSources(pick("observed_sources"), `${where}: observed_sources`)),
       reports: e.reports ?? parseReports(pick("reports"), `${where}: reports`) ?? [],
     };
   }

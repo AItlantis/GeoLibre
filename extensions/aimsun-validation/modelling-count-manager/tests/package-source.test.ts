@@ -145,3 +145,13 @@ test("locate prefers oid then eid; buildFeatures keeps only located detectors", 
   assert.deepEqual(fc.features[0].geometry.coordinates, [1, 2]);
   assert.equal(buildFeatures(aggs, null).located, 0);
 });
+
+import { countsSourcesOnly } from "../src/common/controller.ts";
+test("journey-only observed_sources keeps counts in legacy mode; mixed lists keep counts only", () => {
+  const base = { file: null, adapter: null, referenceDay: null, dateKind: "unknown", gridSeconds: null, durationSeconds: null, timestampConvention: "unknown", units: "unknown", unitConfidence: "unknown", eligibility: null, rows: null, detectors: null } as const;
+  const jt = { ...base, sourceId: "jt", role: "journey_time" } as never;
+  const ct = { ...base, sourceId: "ct", role: "counts" } as never;
+  assert.equal(countsSourcesOnly([jt]), null);
+  assert.equal(countsSourcesOnly(undefined), null);
+  assert.deepEqual((countsSourcesOnly([jt, ct]) ?? []).map((s) => s.sourceId), ["ct"]);
+});
