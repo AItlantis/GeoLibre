@@ -16,7 +16,9 @@ import { parseDetectorGeo, type GeoIndex } from "./geo.ts";
 import {
   indexFromFiles,
   indexFromManifestUrl,
+  parseObserved,
   type FileLikeItem,
+  type ObservedMeta,
   type PackageIndex,
   type RunEntry,
 } from "./package-source.ts";
@@ -29,6 +31,7 @@ import {
   unmatchedSimSql,
   bucketOptions,
   detViewScript,
+  obsGridMinutes,
   rawTableNames,
   windowQuery,
   type ObsSource,
@@ -71,6 +74,10 @@ export class DetController {
   /** Simulated detectors with flow and no eid, for the loaded run (excluded from validation). */
   unmatched: UnmatchedDet[] = [];
   hasObs = false;
+  /** Observation metadata of the loaded run (manifest `observed`); null = legacy defaults (2025-01-01, 5 min, interval-end). */
+  observed: ObservedMeta | null = null;
+  /** Set when a detectors_sim table mixes interval lengths: only rows of this length (s) are validated. */
+  private simDurationSeconds: number | null = null;
   dayProfiles: Record<ProfileScope, { observed: Array<{ minute: number; value: number }>; simulated: Array<{ value: number; startMin: number; endMin: number }> }> = { mean: { observed: [], simulated: [] }, sum: { observed: [], simulated: [] }, detector: { observed: [], simulated: [] } };
   index: PackageIndex | null = null;
   packageUrl: string | null = null;
@@ -211,6 +218,32 @@ export class DetController {
     return e;
   }
 
+  /** Adapter + det views for the loaded run, with the manifest's observation metadata. */
+  private viewScript(obsSource: ObsSource, bucketMinutes: number): string {
+    return detViewScript({
+      prefix: this.deps.prefix,
+      obsSource,
+      bucketMinutes,
+      observed: this.observed ?? undefined,
+      simDurationSeconds: this.simDurationSeconds,
+    });
+  }
+
+  /** `observed` from the manifest entry, else from the run's analysis_manifest.json / analysis.json. */
+  private async resolveObserved(e: RunEntry): Promise<ObservedMeta | null> {
+    if (e.observed) return e.observed;
+    if (!e.meta) return null;
+    let json: unknown;
+    try {
+      json = JSON.parse(new TextDecoder().decode(await e.meta.read()));
+    } catch (err) {
+      throw new Error(`${e.meta.path}: unreadable (${err instanceof Error ? err.message : String(err)})`);
+    }
+    const o = json && typeof json === "object" ? (json as { observed?: unknown; runs?: Array<{ run?: unknown; observed?: unknown }> }) : {};
+    const perRun = Array.isArray(o.runs) ? o.runs.find((r) => r?.run === e.run && r.observed !== undefined) : undefined;
+    return parseObserved(perRun?.observed ?? o.observed, `${e.meta.path}: observed`) ?? null;
+  }
+
   private async loadRun(run: string): Promise<void> {
     const my = ++this.req;
     try {
@@ -218,7 +251,11 @@ export class DetController {
       const e = this.entry(run);
       const t = rawTableNames(this.deps.prefix);
       const [sim, obs] = await Promise.all([e.sim.read(), e.obs?.read()]);
+      const observed = await this.resolveObserved(e);
+      if (observed) obsGridMinutes(observed); // reject an unusable grid before touching the database
       this.hasObs = Boolean(e.obs);
+      this.observed = observed;
+      this.simDurationSeconds = null;
       this.dayProfileBaseKey = null;
       this.dayProfileSelectedId = null;
       if (my !== this.req) return;
@@ -252,14 +289,17 @@ export class DetController {
       }
       // probe the simulated grid with the default bucket to derive window + bucket options
       const probe = await withLock(async () => {
-        await db.exec(detViewScript({ prefix: this.deps.prefix, obsSource: this.state.obsSource, bucketMinutes: 60 }));
-        return (await db.query<{ start_min: number | null; end_min: number | null; dur_min: number | null }>(PROBE_SIM_SQL))[0];
+        await db.exec(this.viewScript(this.state.obsSource, 60));
+        return (await db.query<{ start_min: number | null; end_min: number | null; dur_min: number | null; min_dur_min: number | null; n_durations: number | null }>(PROBE_SIM_SQL))[0];
       });
       if (my !== this.req) return;
+      // micro (300 s) and macro (3600 s) rows in one table would double count in a bucket: keep the finest
+      const minDur = Number(probe?.min_dur_min ?? probe?.dur_min ?? 60);
+      this.simDurationSeconds = Number(probe?.n_durations ?? 1) > 1 && minDur > 0 ? Math.round(minDur * 60) : null;
       const start = Number(probe?.start_min ?? 0);
       const end = Number(probe?.end_min ?? 1440);
-      const dur = Number(probe?.dur_min ?? 60);
-      const opts = bucketOptions(dur, start, end);
+      const dur = this.simDurationSeconds !== null ? minDur : Number(probe?.dur_min ?? 60);
+      const opts = bucketOptions(dur, start, end, this.observed ? obsGridMinutes(this.observed) : undefined);
       this.dispatch({
         type: "probe-ready",
         fromMin: start,
@@ -280,7 +320,7 @@ export class DetController {
       const db = await this.deps.getDb();
       const s = this.state;
       const out = await withLock(async () => {
-        await db.exec(detViewScript({ prefix: this.deps.prefix, obsSource: s.obsSource, bucketMinutes: s.bucket }));
+        await db.exec(this.viewScript(s.obsSource, s.bucket));
         const rows = await db.query<ValRow>(windowQuery(s.fromMin, s.toMin));
         const ns = (await db.query<{ n_sim: number }>(PROBE_SIM_SQL))[0];
         const no = (await db.query<{ n_obs: number }>(PROBE_OBS_SQL))[0];
@@ -335,6 +375,7 @@ export class DetController {
     const profileReq = ++this.dayProfileReq;
     const profileState = this.state;
     const profileHasObs = this.hasObs;
+    const obsGrid = this.observed ? obsGridMinutes(this.observed) : 5;
     const profileKey = [profileState.sourceLabel ?? "", this.packageUrl ?? "", profileState.run ?? "", profileState.obsSource, String(profileHasObs)].join("|");
     const refreshBase = profileKey !== this.dayProfileBaseKey;
     const refreshSelected = refreshBase || selectedId !== this.dayProfileSelectedId;
@@ -342,17 +383,17 @@ export class DetController {
     try {
       const db = await this.deps.getDb();
       const profiles = await withLock(async () => {
-        await db.exec(detViewScript({ prefix: this.deps.prefix, obsSource: profileState.obsSource, bucketMinutes: profileState.bucket }));
+        await db.exec(this.viewScript(profileState.obsSource, profileState.bucket));
         const out = { ...this.dayProfiles };
         if (refreshBase) {
           for (const scope of ["mean", "sum"] as const) {
-            const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery(scope)) : [];
+            const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery(scope, undefined, obsGrid)) : [];
             const sim = await db.query<{ interval_start_s: number; duration_s: number; profile_value: number }>(dayProfileSimQuery(scope, undefined, profileHasObs));
             out[scope] = { observed: obs.map((r) => ({ minute: Number(r.profile_minute), value: Number(r.profile_value) })), simulated: sim.map((r) => ({ value: Number(r.profile_value), startMin: Number(r.interval_start_s) / 60, endMin: (Number(r.interval_start_s) + Number(r.duration_s)) / 60 })) };
           }
         }
         if (refreshSelected && selectedId) {
-          const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery("detector", selectedId)) : [];
+          const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery("detector", selectedId, obsGrid)) : [];
           const sim = await db.query<{ interval_start_s: number; duration_s: number; profile_value: number }>(dayProfileSimQuery("detector", selectedId));
           out.detector = { observed: obs.map((r) => ({ minute: Number(r.profile_minute), value: Number(r.profile_value) })), simulated: sim.map((r) => ({ value: Number(r.profile_value), startMin: Number(r.interval_start_s) / 60, endMin: (Number(r.interval_start_s) + Number(r.duration_s)) / 60 })) };
         } else if (refreshSelected) out.detector = { observed: [], simulated: [] };

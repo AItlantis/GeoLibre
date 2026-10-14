@@ -20,11 +20,24 @@ export function intArg(v: unknown, name: string): number {
 
 const PREFIX = /^[a-z][a-z0-9_]*$/;
 
+/** Observation metadata from the run/analysis manifest (contract C3). */
+export interface ObservedMeta {
+  referenceDay: string;
+  gridSeconds: number;
+  units: "veh/h";
+  timestampConvention: "interval-end" | "interval-start";
+  source?: string;
+}
+
 export interface DetViewConfig {
   /** Prefix of this plugin's private raw tables (two plugins share one DuckDB instance). */
   prefix: string;
   obsSource: ObsSource;
   bucketMinutes: number;
+  /** From the manifest; absent = 2025-01-01, 5-minute grid, interval-end (the legacy assumption). */
+  observed?: ObservedMeta;
+  /** Keep only simulated rows of this length (seconds) when the table mixes micro and macro rows. */
+  simDurationSeconds?: number | null;
 }
 
 export function rawTableNames(prefix: string): { sim: string; obs: string } {
@@ -38,8 +51,15 @@ export function detViewScript(cfg: DetViewConfig): string {
   if (!isObsSource(cfg.obsSource)) throw new Error("invalid obsSource");
   const bucket = intArg(cfg.bucketMinutes, "bucketMinutes");
   if (bucket <= 0) throw new Error("bucketMinutes must be > 0");
+  const adapter: Parameters<typeof buildAdapterSql>[0] = { rawSimTable: t.sim, rawObsTable: t.obs, obsSource: cfg.obsSource };
+  if (cfg.observed) {
+    adapter.obsRefDay = cfg.observed.referenceDay;
+    adapter.obsGridMin = obsGridMinutes(cfg.observed);
+    adapter.obsTsLabel = cfg.observed.timestampConvention === "interval-start" ? "start" : "end";
+  }
+  if (cfg.simDurationSeconds != null) adapter.simDurationSeconds = cfg.simDurationSeconds;
   return (
-    buildAdapterSql({ rawSimTable: t.sim, rawObsTable: t.obs, obsSource: cfg.obsSource }) +
+    buildAdapterSql(adapter) +
     "\n" +
     buildViewsSql({ only: ["det"], bucketMinutes: bucket, ...ADAPTED_RELATIONS })
   );
@@ -55,8 +75,17 @@ export function windowQuery(fromMin: number, toMin: number): string {
   );
 }
 
+/** Observed grid in whole minutes (the views work in minutes). */
+export function obsGridMinutes(o: Pick<ObservedMeta, "gridSeconds">): number {
+  if (!Number.isInteger(o.gridSeconds) || o.gridSeconds <= 0 || o.gridSeconds % 60 !== 0) {
+    throw new Error("observed.gridSeconds must be a positive whole number of minutes");
+  }
+  return o.gridSeconds / 60;
+}
+
 export const PROBE_SIM_SQL =
   "SELECT min(t_start_min) AS start_min, max(t_start_min + dur_min) AS end_min, max(dur_min) AS dur_min, " +
+  "min(dur_min) AS min_dur_min, count(DISTINCT dur_min) AS n_durations, " +
   "count(DISTINCT eid) AS n_sim FROM v_sim_norm";
 export const PROBE_OBS_SQL = "SELECT count(DISTINCT detector_id) AS n_obs FROM v_obs_norm";
 
@@ -78,30 +107,38 @@ export function unmatchedSimSql(prefix: string): string {
 /** Names of the shared det views, dropped on dispose (every consumer re-creates them per query). */
 export const DET_VIEWS = ["v_det_summary", "v_det_validation", "v_obs_norm", "v_sim_norm"] as const;
 
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+
 /**
- * Buckets that compare like with like. Simulated MADET intervals are `simDur` long (60 in the
- * delivery), and v_det_validation drops buckets that are not fully covered, so a bucket must be
- * a multiple of simDur, fit in the simulated span, and start on the simulated grid.
+ * Buckets that compare like with like. v_det_validation drops buckets that are not fully covered
+ * and assigns each interval to the bucket holding its start, so a bucket must be a multiple of the
+ * simulated interval AND (when the observed grid is known) of the observed grid, otherwise a coarse
+ * observation (15 min) could pass the coverage check of a fine bucket (5 min). It must also fit in
+ * the simulated span and start on the grid. Without `obsGridMin` only the simulated interval counts.
  */
-export function bucketOptions(simDurMin: number, simStartMin: number, simEndMin: number): number[] {
+export function bucketOptions(simDurMin: number, simStartMin: number, simEndMin: number, obsGridMin?: number): number[] {
   if (!(simDurMin > 0)) return [60];
+  const grid = obsGridMin !== undefined && obsGridMin > 0 ? obsGridMin : simDurMin;
+  const step = (simDurMin * grid) / gcd(simDurMin, grid);
   const span = simEndMin - simStartMin;
   const out: number[] = [];
-  for (let b = simDurMin; b <= Math.max(span, simDurMin); b += simDurMin) {
-    if (b === simDurMin || simStartMin % b === 0) out.push(b);
+  for (let b = step; b <= Math.max(span, step); b += step) {
+    if (b === step || simStartMin % b === 0) out.push(b);
   }
   return out;
 }
 
 export type ProfileScope = "mean" | "sum" | "detector";
-/** Bounded full-day observed profile (maximum 288 five-minute points). */
-export function dayProfileObsQuery(scope: ProfileScope, detectorId?: string): string {
+/** Bounded full-day observed profile (maximum 1440/grid points; 288 for the legacy 5-minute grid). */
+export function dayProfileObsQuery(scope: ProfileScope, detectorId?: string, gridMin = 5): string {
+  const grid = intArg(gridMin, "gridMin");
+  if (grid <= 0) throw new Error("gridMin must be > 0");
   const id = detectorId === undefined ? "" : detectorId.replace(/'/g, "''");
   const match = scope === "detector" ? `AND CAST(o.detector_id AS VARCHAR) = '${id}'` : "";
   const aggregate = scope === "sum" ? "SUM(o.flow)" : "AVG(o.flow)";
   return `WITH matched AS (SELECT DISTINCT CAST(eid AS VARCHAR) detector_id FROM v_sim_norm WHERE eid IS NOT NULL AND trim(CAST(eid AS VARCHAR)) <> '')\n` +
     `SELECT CAST(o.t_start_min AS INTEGER) AS profile_minute, ${aggregate} AS profile_value FROM v_obs_norm o JOIN matched m ON m.detector_id = CAST(o.detector_id AS VARCHAR) ` +
-    `WHERE o.dur_min = 5 ${match} GROUP BY o.t_start_min ORDER BY o.t_start_min LIMIT 288`;
+    `WHERE o.dur_min = ${grid} ${match} GROUP BY o.t_start_min ORDER BY o.t_start_min LIMIT ${Math.ceil(1440 / grid)}`;
 }
 
 /** Simulated profile as one row per (interval start, duration), preserving mixed durations. */

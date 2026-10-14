@@ -1505,6 +1505,7 @@ export { readLocalNetworkKpiManifestJson } from "./plugins/network-kpi-data";
 export { setTestudoResultsSessionKey } from "./plugins/network-kpi-parquet-data";
 export { getGeolibrePackage, resolveEnvironmentScenarioCoverage, verifyEnvironmentScenarioCandidates } from "./plugins/geolibre-package-loader";
 export { TestudoFeatureBridge } from "./testudo-feature-bridge";
+export { validateTestudoCameraView } from "./plugins/testudo-camera";
 export { TestudoPersistentNetwork, TESTUDO_NETWORK_LAYERS } from "./shared/testudo-persistent-network";
 export { isTestudoLayout } from "./shared/testudo-layout";
 export { TestudoGenerationMount, TestudoGenerationResourceCache } from "./shared/testudo-generation-resources";

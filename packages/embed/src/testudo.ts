@@ -57,8 +57,19 @@ export interface TestudoBootstrap {
   analysis?: TestudoAnalysisBootstrap;
   presets: Array<{ id: string; label?: string; plugin: TestudoSelectablePluginId; settings?: Record<string, string | number | boolean>; view?: { center: [number, number]; zoom: number; pitch?: number; bearing?: number } }>;
 }
+/**
+ * testudoSetPanels payload (without challenge): which GeoLibre side panels the embedded shell shows.
+ * Strict booleans, unknown keys rejected, latest call wins, reset to all-hidden on package reset.
+ * `layersCollapsed` defaults to true (Layers shown as a rail entry). `hostGeoAi` hides the in-iframe "Ask GeoAI" overlay when the host drives GeoAI.
+ */
+export interface TestudoPanels { layers: boolean; plugins: boolean; comments: boolean; layersCollapsed?: boolean; hostGeoAi?: boolean }
+export interface TestudoSetPanels extends TestudoPanels { tviewId?: string }
+/** Camera reply: the camera plus the renderer it was read from / applied to. */
+export interface TestudoCameraViewState { center: [number, number]; zoom: number; bearing: number; pitch: number; renderer: "maplibre" | "cesium" }
 export interface TestudoViewerState {
   tviewId?: string;
+  /** Echo of the last testudoSetPanels (all false/default until the command is sent). */
+  panels?: Required<TestudoPanels>;
   generation?: number;
   package: { packageId: string; versionId: string | null; label: string; origin: "published" | "local" } | null;
   selectedPlugin: TestudoSelectablePluginId | null;

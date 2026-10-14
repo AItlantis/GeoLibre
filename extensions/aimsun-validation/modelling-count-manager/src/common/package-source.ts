@@ -16,8 +16,36 @@
  * directory name, else the manifest `run`.
  */
 import { isSafePackagePath, resolveInsidePackage, sha256Hex } from "../../../_shared/src/package.ts";
+import type { ObservedMeta } from "./sql.ts";
 
-export type FileKind = "sim" | "obs" | "geo";
+export type { ObservedMeta };
+export type FileKind = "sim" | "obs" | "geo" | "meta";
+
+/**
+ * Validate the `observed` block of a run/analysis manifest (contract C3). Returns undefined when
+ * absent (legacy: 2025-01-01, 5-minute grid, interval-end); throws a descriptive Error when present
+ * but unusable, so a wrong grid or unit is never silently validated against.
+ */
+export function parseObserved(v: unknown, where = "observed"): ObservedMeta | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "object") throw new Error(`${where}: must be an object`);
+  const o = v as Record<string, unknown>;
+  const day = o.referenceDay;
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(`${day}T00:00:00Z`))) {
+    throw new Error(`${where}.referenceDay must be YYYY-MM-DD`);
+  }
+  const grid = o.gridSeconds;
+  if (typeof grid !== "number" || !Number.isInteger(grid) || grid <= 0 || grid % 60 !== 0) {
+    throw new Error(`${where}.gridSeconds must be a positive whole number of minutes (in seconds)`);
+  }
+  const units = o.units ?? "veh/h";
+  if (units !== "veh/h") throw new Error(`${where}.units '${String(units)}' is not supported (expected veh/h)`);
+  const conv = o.timestampConvention ?? "interval-end";
+  if (conv !== "interval-end" && conv !== "interval-start") {
+    throw new Error(`${where}.timestampConvention must be interval-end or interval-start`);
+  }
+  return { referenceDay: day, gridSeconds: grid, units: "veh/h", timestampConvention: conv, source: typeof o.source === "string" ? o.source : undefined };
+}
 
 export interface PkgFile {
   path: string;
@@ -32,6 +60,10 @@ export interface RunEntry {
   sim: PkgFile;
   obs?: PkgFile;
   geo: PkgFile | null;
+  /** From the manifest (`observed`, top level or per run); wins over `meta`. */
+  observed?: ObservedMeta;
+  /** analysis_manifest.json (run folder) / analysis.json (shared) carrying `observed`. */
+  meta?: PkgFile | null;
 }
 
 export interface PackageIndex {
@@ -48,6 +80,8 @@ const NAMES: Record<string, FileKind> = {
   "detectors_obs.parquet": "obs",
   "detectors.geojson": "geo",
   "detectors.json": "geo",
+  "analysis_manifest.json": "meta",
+  "analysis.json": "meta",
 };
 
 export function classifyPath(path: string): { run: string; kind: FileKind } | null {
@@ -74,7 +108,12 @@ export interface RawItem {
 }
 
 /** Group items into runs. Files with no run directory ("") are shared defaults for runs lacking that kind. */
-export function buildIndex(label: string, items: readonly RawItem[], excludeRuns: ReadonlySet<string> = new Set()): PackageIndex {
+export function buildIndex(
+  label: string,
+  items: readonly RawItem[],
+  excludeRuns: ReadonlySet<string> = new Set(),
+  observed?: { shared?: ObservedMeta; byRun?: ReadonlyMap<string, ObservedMeta> },
+): PackageIndex {
   const byRun = new Map<string, Partial<Record<FileKind, PkgFile>>>();
   for (const it of items) {
     const c = classifyPath(it.path);
@@ -96,7 +135,9 @@ export function buildIndex(label: string, items: readonly RawItem[], excludeRuns
     const sim = s.sim ?? (name === "" ? undefined : shared.sim);
     const obs = s.obs ?? (name === "" ? undefined : shared.obs);
     const geo = s.geo ?? shared.geo ?? null;
-    if (sim) runs.push({ run: name || label, sim, obs, geo });
+    const meta = s.meta ?? shared.meta ?? null;
+    const declared = observed?.byRun?.get(name) ?? observed?.shared;
+    if (sim) runs.push({ run: name || label, sim, obs, geo, ...(declared ? { observed: declared } : {}), ...(meta ? { meta } : {}) });
     else incomplete.push(name || label);
   }
   return { label, runs, incomplete };
@@ -127,7 +168,8 @@ interface ManifestShape {
   run?: unknown;
   files?: Array<{ table?: string; path?: string; run?: string; sha256?: string }>;
   outputs_sha256?: Record<string, string>;
-  runs?: Array<{ run?: string; available?: boolean }>;
+  runs?: Array<{ run?: string; available?: boolean; observed?: unknown }>;
+  observed?: unknown;
 }
 
 /** Turn a parsed manifest into raw items (pure; `fetchBytes` is injected). */
@@ -135,7 +177,7 @@ export function itemsFromManifest(
   manifestUrl: string,
   manifest: unknown,
   fetchBytes: (url: string, path: string, sha256: string | undefined) => Promise<Uint8Array>,
-): { items: RawItem[]; exclude: Set<string> } {
+): { items: RawItem[]; exclude: Set<string>; observed: { shared?: ObservedMeta; byRun: Map<string, ObservedMeta> } } {
   if (!manifest || typeof manifest !== "object") throw new Error("manifest: not an object");
   const m = manifest as ManifestShape;
   if (m.schema_version !== 1) throw new Error(`manifest: unsupported schema_version ${String(m.schema_version)} (expected 1)`);
@@ -165,7 +207,13 @@ export function itemsFromManifest(
       read: () => fetchBytes(url, e.path, e.sha256),
     };
   });
-  return { items, exclude };
+  const byRun = new Map<string, ObservedMeta>();
+  for (const [i, r] of (m.runs ?? []).entries()) {
+    if (typeof r?.run !== "string") continue;
+    const ob = parseObserved(r.observed, `manifest.runs[${i}].observed`);
+    if (ob) byRun.set(r.run, ob);
+  }
+  return { items, exclude, observed: { shared: parseObserved(m.observed, "manifest.observed"), byRun } };
 }
 
 export async function fetchChecked(url: string, path: string, sha256: string | undefined, f: typeof fetch = fetch): Promise<Uint8Array> {
@@ -184,8 +232,8 @@ export async function indexFromManifestUrl(input: string, f: typeof fetch = fetc
   const res = await f(url, { cache: "no-cache" });
   if (!res.ok) throw new Error(`Could not fetch manifest ${url}: HTTP ${res.status}`);
   const json = (await res.json()) as unknown;
-  const { items, exclude } = itemsFromManifest(url, json, (u, p, sha) => fetchChecked(u, p, sha, f));
-  const idx = buildIndex(url.replace(/[#?].*$/, "").split("/").slice(-2, -1)[0] || url, items, exclude);
+  const { items, exclude, observed } = itemsFromManifest(url, json, (u, p, sha) => fetchChecked(u, p, sha, f));
+  const idx = buildIndex(url.replace(/[#?].*$/, "").split("/").slice(-2, -1)[0] || url, items, exclude, observed);
   return idx;
 }
 

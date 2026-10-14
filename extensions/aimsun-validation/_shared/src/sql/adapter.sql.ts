@@ -37,6 +37,12 @@ export interface AdapterOptions {
   obsGridMin?: number;
   /** 'end' (default, the real files) or 'start': what obs `ts` labels. */
   obsTsLabel?: "end" | "start";
+  /**
+   * Keep only simulated rows of this interval length (seconds). A detectors_sim table may mix micro
+   * (e.g. 300 s) and macro (3600 s) rows; summing both into one bucket would double count, so the
+   * caller picks the finest. Default: no filter (today's behaviour).
+   */
+  simDurationSeconds?: number | null;
 }
 
 export function buildAdapterSql(o: AdapterOptions = {}): string {
@@ -52,6 +58,8 @@ export function buildAdapterSql(o: AdapterOptions = {}): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error("obsRefDay must be YYYY-MM-DD");
   const grid = o.obsGridMin ?? 5;
   if (!Number.isInteger(grid) || grid <= 0) throw new Error("obsGridMin must be a positive integer");
+  const simDur = o.simDurationSeconds ?? null;
+  if (simDur !== null && (!Number.isInteger(simDur) || simDur <= 0)) throw new Error("simDurationSeconds must be a positive integer or null");
   const label = o.obsTsLabel ?? "end";
   const srcFilter = src === "both" ? "" : `AND source_file = '${src}'`;
   const order = pref.map((p, i) => `WHEN '${p}' THEN ${i}`).join(" ");
@@ -65,7 +73,7 @@ SELECT oid, eid,
        CAST(duration_s / 60 AS INTEGER)       AS dur_min,
        flow
 FROM ${rawSim}
-WHERE duration_s > 0 ${cls === null ? "" : `AND sid = ${cls}`};
+WHERE duration_s > 0 ${cls === null ? "" : `AND sid = ${cls}`} ${simDur === null ? "" : `AND duration_s = ${simDur}`};
 
 -- ===== Adapter: observed detectors (dedup validation/calibration, ts -> minute of day) =====
 -- Preference on duplicates (detector_id, ts): ${pref.join(" > ")}. Observed ts labels the interval
