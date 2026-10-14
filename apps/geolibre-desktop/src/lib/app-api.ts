@@ -127,6 +127,7 @@ export interface AppApiHost extends Pick<
   | "openFloatingPanel"
   | "closeFloatingPanel"
   | "getOpenFloatingPanels"
+  | "getGeometryEditTargetLayerId"
 > {
   /** The shared plugin manager, for `activatePlugin`/`deactivatePlugin`. */
   plugins: Pick<
@@ -256,6 +257,25 @@ export function createAppAPI(
     addGeoJsonLayer: (name: string, data: GeoJSON.FeatureCollection, sourcePath?: string) => {
       const id = store.addGeoJsonLayer(name, data, sourcePath);
       return id;
+    },
+    updateGeoJsonLayer: (layerId: string, data: GeoJSON.FeatureCollection) => {
+      const state = useAppStore.getState();
+      const layer = state.layers.find((candidate) => candidate.id === layerId);
+      // Replacing the features under an open GeoEditor session would lose the
+      // edits on save, so the plugin must wait for the session to end.
+      if (layer?.type !== "geojson" || host.getGeometryEditTargetLayerId() === layerId) {
+        return false;
+      }
+      state.updateLayer(layerId, { geojson: data });
+      return true;
+    },
+    removeLayer: (layerId: string) => {
+      const state = useAppStore.getState();
+      if (state.layers.some((layer) => layer.id === layerId)) {
+        // A plugin-painted native layer's bridge lives outside the store.
+        clearExternalNativePaintBridge(layerId);
+        state.removeLayer(layerId);
+      }
     },
     ...createPluginLayerQueries(),
     getActiveMapTool: () => activeMapTool(useAppStore.getState(), manager),
