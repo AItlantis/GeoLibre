@@ -11,7 +11,7 @@ import { controlsSection, packageSection, statusBanner, type Ctx } from "./panel
 import { locate, locateOid, type DetFeatureCollection } from "./geo.ts";
 import { clear, el, field, makeFormat, makeTranslate } from "./ui.ts";
 import type { ObsSource } from "./sql.ts";
-import { isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
+import { assertStillOpen, isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 import type { ComparisonRun } from "./comparison.ts";
 import { validateCriteria, type Criteria } from "./aggregate.ts";
 
@@ -280,8 +280,9 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
 
     /** Host-only run switch (Testudo); no-op unless the host opened this plugin. */
     async setRun(run: string): Promise<boolean> {
-      if (!hostManaged || !ctl || !ctl.state.runs.includes(run)) return false;
-      if (ctl.state.run !== run) await ctl.selectRun(run);
+      const c = ctl;
+      if (!hostManaged || !c || !c.state.runs.includes(run)) return false;
+      if (c.state.run !== run) await c.selectRun(run);
       return true;
     },
 
@@ -293,7 +294,8 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     /** Resolves true only once the package finished loading; rejects with the load error message otherwise. */
     async handleUrlParameters(a: AppLike, params: URLSearchParams) {
       const u = params.get("aimsunPackage");
-      if (!u || !ctl) return false;
+      const c = ctl; // deactivate() nulls the module-level ctl; keep the controller this open started with across the awaits
+      if (!u || !c) return false;
       const run = params.get("aimsunRun") ?? undefined;
       const host = isHostOpen(params);
       if (hostManaged !== host) {
@@ -303,11 +305,14 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       urlBox?.setUrl(u);
       a.openRightPanel?.(panelId);
       // The host switches run on the already loaded package without reloading it.
-      if (host && ctl.packageUrl === u && ctl.state.phase === "ready" && run && ctl.state.runs.includes(run)) {
-        if (ctl.state.run !== run) await ctl.selectRun(run);
+      if (host && c.packageUrl === u && c.state.phase === "ready" && run && c.state.runs.includes(run)) {
+        if (c.state.run !== run) await c.selectRun(run);
+        assertStillOpen(c, ctl);
         return true;
       }
-      if (!(await ctl.loadUrl(u, run))) throw new Error(ctl.state.error ?? "The analysis package could not be loaded.");
+      const loaded = await c.loadUrl(u, run);
+      assertStillOpen(c, ctl);
+      if (!loaded) throw new Error(c.state.error ?? "The analysis package could not be loaded.");
       return true;
     },
 

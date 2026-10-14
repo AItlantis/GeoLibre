@@ -20,3 +20,11 @@ test("hostLabel omits unknown parts", () => {
   assert.equal(hostLabel(null, "AMPK_3", t), "Run: AMPK_3");
   assert.equal(hostLabel("p", undefined, t), "Package: p");
 });
+
+test("assertStillOpen returns the started controller while it is current and rejects once deactivate() nulled it", async () => {
+  const { assertStillOpen, CLOSED_DURING_LOAD } = await import("../src/host-managed.ts");
+  const started = { state: { phase: "ready" } };
+  assert.equal(assertStillOpen(started, started), started);
+  assert.throws(() => assertStillOpen(started, null), { message: CLOSED_DURING_LOAD });
+  assert.throws(() => assertStillOpen(started, { state: { phase: "ready" } }), { message: CLOSED_DURING_LOAD });
+});

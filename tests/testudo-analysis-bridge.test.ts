@@ -201,7 +201,7 @@ describe("TestudoAnalysisController", () => {
     const { c, events } = controller(host);
     const status = await c.open(open("modelling-count-manager", 1));
     assert.deepEqual(status, { plugin: "modelling-count-manager", status: "open", run: "run1", generation: 1 });
-    assert.deepEqual(opens, [{ id: "modelling-count-manager", params: { aimsunPackage: MANIFEST, aimsunRun: "run1" } }]);
+    assert.deepEqual(opens, [{ id: "modelling-count-manager", params: { aimsunPackage: MANIFEST, aimsunRun: "run1", aimsunHost: "testudo" } }]);
     assert.deepEqual(events, [status]);
     assert.equal(c.isOpen("modelling-count-manager"), true);
     assert.equal(c.isOpen("modelling-od-trips"), false);

@@ -11,7 +11,7 @@ import { RunFitter } from "../../../_shared/src/fit-extent.ts";
 import { MapOverlay, type OverlayLayerSpec } from "./overlay.ts";
 import { verifySrcHash } from "./verify.ts";
 import { clear, el, field, makeFormat, makeTranslate, select, type Fmt, type Translate } from "./ui.ts";
-import { hostLabel, isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
+import { assertStillOpen, hostLabel, isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 
 export interface ViewEnv {
   app: AppLike;
@@ -94,12 +94,15 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
   const dataKey = (c: OdController): string => `${c.state.phase}|${c.state.run}|${c.state.grouping}`;
 
   const restore = async (): Promise<void> => {
-    if (!ctl || !pending) return;
+    const c = ctl; // deactivate() nulls ctl while the load is in flight
+    if (!c || !pending) return;
     const s = pending;
     pending = null;
     if (!s.packageUrl) return;
-    await ctl.loadUrl(s.packageUrl, s.run);
-    if (ctl.ready && s.grouping && s.grouping !== ctl.state.grouping && ctl.state.groupings.some((g) => g.name === s.grouping)) await ctl.selectGrouping(s.grouping);
+    await c.loadUrl(s.packageUrl, s.run);
+    if (ctl !== c) return;
+    if (c.ready && s.grouping && s.grouping !== c.state.grouping && c.state.groupings.some((g) => g.name === s.grouping)) await c.selectGrouping(s.grouping);
+    if (ctl !== c) return;
     if (s.view !== undefined) view?.setState(s.view);
   };
 
@@ -248,8 +251,9 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
 
     /** Host-only run switch (Testudo); no-op unless the host opened this plugin. */
     async setRun(run: string): Promise<boolean> {
-      if (!hostManaged || !ctl || !ctl.state.runs.includes(run)) return false;
-      if (ctl.state.run !== run) await ctl.selectRun(run);
+      const c = ctl;
+      if (!hostManaged || !c || !c.state.runs.includes(run)) return false;
+      if (c.state.run !== run) await c.selectRun(run);
       return true;
     },
 
@@ -280,7 +284,8 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
 
     async handleUrlParameters(a: AppLike, params: URLSearchParams) {
       const u = params.get("aimsunPackage");
-      if (!u || !ctl) return false;
+      const c = ctl; // deactivate() nulls the module-level ctl; keep the controller this open started with across the awaits
+      if (!u || !c) return false;
       const run = params.get("aimsunRun") ?? undefined;
       const host = isHostOpen(params);
       if (hostManaged !== host) {
@@ -290,14 +295,18 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
       if (urlInput) urlInput.value = u;
       a.openRightPanel?.(panelId);
       // The host switches run on the already loaded package without reloading it.
-      if (host && ctl.packageUrl === u && ctl.ready && run && ctl.state.runs.includes(run)) {
-        if (ctl.state.run !== run) await ctl.selectRun(run);
+      if (host && c.packageUrl === u && c.ready && run && c.state.runs.includes(run)) {
+        if (c.state.run !== run) await c.selectRun(run);
+        assertStillOpen(c, ctl);
         return true;
       }
       // Resolves true only once the package finished loading; rejects with the load error message otherwise.
-      if (!(await ctl.loadUrl(u, run))) throw new Error(ctl.state.message || "The analysis package could not be loaded.");
+      const loaded = await c.loadUrl(u, run);
+      assertStillOpen(c, ctl);
+      if (!loaded) throw new Error(c.state.message || "The analysis package could not be loaded.");
       const g = params.get("aimsunGrouping");
-      if (g && ctl.ready && ctl.state.groupings.some((x) => x.name === g)) await ctl.selectGrouping(g);
+      if (g && c.ready && c.state.groupings.some((x) => x.name === g)) await c.selectGrouping(g);
+      assertStillOpen(c, ctl);
       return true;
     },
 

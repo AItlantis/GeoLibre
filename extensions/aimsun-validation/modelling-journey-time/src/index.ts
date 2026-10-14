@@ -2,7 +2,7 @@ import { getDuckDbInline } from "../../_shared/src/browser";
 import type { HostApp, HostPlugin } from "./host";
 import { makeTranslator } from "./i18n";
 import pkg from "../package.json";
-import { isHostOpen } from "../../_shared/src/host-managed";
+import { assertStillOpen, isHostOpen } from "../../_shared/src/host-managed";
 import { JourneyTimeController, PLUGIN_ID, type SavedState } from "./panel";
 
 let app: HostApp | null = null;
@@ -53,12 +53,15 @@ const plugin: HostPlugin = {
 
   async handleUrlParameters(a, params) {
     const url = params.get("aimsunPackage");
-    if (!url || !controller) return false;
+    const c = controller; // deactivate() nulls the module-level controller across the await below
+    if (!url || !c) return false;
     app = a;
-    controller.setHostManaged(isHostOpen(params));
+    c.setHostManaged(isHostOpen(params));
     a.openRightPanel?.(PLUGIN_ID);
     // Resolves true only once the package finished loading; rejects with the load error message otherwise.
-    if (!(await controller.loadUrl(url))) throw new Error(controller.loadError ?? "The analysis package could not be loaded.");
+    const loaded = await c.loadUrl(url);
+    assertStillOpen(c, controller);
+    if (!loaded) throw new Error(c.loadError ?? "The analysis package could not be loaded.");
     return true;
   },
 

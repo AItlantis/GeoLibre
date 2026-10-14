@@ -644,7 +644,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         () => plugins.setEmissionsH3Settings({ intervalPlaying: false }), () => { void Promise.resolve(featureBridge.playback("main", "pause")).catch(() => undefined); }]) {
         try { stop(); } catch { /* no active session or plugin: nothing to pause */ }
       }
-      closeMapPlugins(); // the independent GeoAI assistant panel is left alone
+      // The independent GeoAI assistant panel is left alone. A plugin that was never opened (or has no session) may throw from close():
+      // isolate each one so suspending can never abort the mode switch.
+      for (const id of handledIds) { if (id === "geoai") continue; try { handlers[id].close(); } catch (error) { console.warn("[Testudo] suspend: closing " + id + " failed", error); } }
       update({ presentSuspended: true });
     };
     const resumePresent = () => {

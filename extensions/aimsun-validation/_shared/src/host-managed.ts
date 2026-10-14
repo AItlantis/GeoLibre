@@ -34,3 +34,16 @@ export function hostLabel(pkg: string | null | undefined, run: string | null | u
   if (run) parts.push(t("host.run", "Run: {{run}}", { run }));
   return parts.join(" / ");
 }
+
+/** Message of the error a host-driven open rejects with when the plugin was deactivated while its package was loading. */
+export const CLOSED_DURING_LOAD = "The analysis panel was closed before the package finished loading.";
+
+/**
+ * Plugins keep their controller in a module-level `let` that deactivate() nulls. After any `await` in
+ * handleUrlParameters / setRun the live binding may be null, so callers keep the controller they started
+ * with and call this to turn "deactivated meanwhile" into an explicit error (never a null dereference).
+ */
+export function assertStillOpen<T>(started: T, current: T | null): T {
+  if (current !== started) throw new Error(CLOSED_DURING_LOAD);
+  return started;
+}
