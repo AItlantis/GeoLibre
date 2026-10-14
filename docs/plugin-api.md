@@ -180,6 +180,11 @@ export interface GeoLibreAppAPI {
     url: string,
     options?: GeoLibreTileLayerOptions
   ) => string;
+  addVectorTileLayer?: (
+    name: string,
+    url: string,
+    options: GeoLibreVectorTileLayerOptions
+  ) => string;
   addWmsLayer?: (name: string, options: GeoLibreWmsLayerOptions) => string;
   addWfsLayer?: (name: string, options: GeoLibreWfsLayerOptions) => Promise<string>;
   // Native client-side COG (reads the GeoTIFF directly; band/rescale/colormap/
@@ -987,6 +992,30 @@ const layerId = await app.addWfsLayer?.("Roads", {
 The helpers are typed optional for forward-compatibility with host variants, so call them with optional chaining (`app.addTileLayer?.(...)`).
 
 > **Desktop (Tauri) note:** The desktop app enforces a Content Security Policy. Its `connect-src` allows any `https:` or `http:` host, so tile and data requests from a plugin reach their server, but `script-src` only allows the app itself, `blob:` URLs and a short list of version-pinned CDN paths. A plugin that injects a `<script>` or `import()`s a module from another host is blocked; bundle that code into the plugin instead. A bundled (first-party) plugin can add the path to `script-src` in `apps/geolibre-desktop/src-tauri/tauri.conf.json` (see [Desktop CSP `script-src` allowlist](maintenance.md#desktop-csp-script-src-allowlist)). The web build is unaffected.
+
+### Vector tile layers
+
+`addVectorTileLayer` adds a vector tile (MVT) layer from a tile URL template (`{z}`/`{x}`/`{y}`) or a TileJSON URL and returns its id. The layer is the same as one added from **Add Data → OGC Vector Tiles**: it appears in the Layers panel, takes the Style panel's controls, and persists with the project. Vector tiles carry no styling, so name the tileset's source layers to draw; GeoLibre reads the geometry type and attribute names from the tiles it loads.
+
+```typescript
+export interface GeoLibreVectorTileLayerOptions {
+  sourceLayers: string[]; // at least one
+  bounds?: [number, number, number, number]; // [west, south, east, north] in WGS84
+  minzoom?: number; // 0-24
+  maxzoom?: number; // 0-24; overzoomed beyond it
+  visible?: boolean; // default true
+  opacity?: number; // default 1
+  beforeLayerId?: string; // insert beneath this layer
+  metadata?: Record<string, unknown>; // provenance merged into layer.metadata
+}
+
+const layerId = app.addVectorTileLayer?.("Sites", "https://tiles.example.org/sites/{z}/{x}/{y}.pbf", {
+  sourceLayers: ["sites"],
+  maxzoom: 14,
+});
+```
+
+The URL must be absolute HTTP(S), and a template needs all three of `{z}`, `{x}` and `{y}`, written in lowercase (a URL with none is read as TileJSON). Other placeholders such as `{s}` or `{-y}` aren't recognized; for a TMS tileset, serve or rewrite an XYZ template. It throws when that isn't so, `name` is blank or not a string, `sourceLayers` is missing, empty or holds a blank name, `bounds` is not four numbers, the zoom range is out of bounds or inverted, or `opacity` is outside 0–1. With a TileJSON URL, MapLibre reads the zoom range from the TileJSON, so `minzoom` and `maxzoom` throw there; `bounds` is still kept as the extent **Zoom to layer** uses. `bounds` must lie within ±180° and ±90° with `west` ≤ `east` and `south` ≤ `north` (an extent can't cross the antimeridian). Tiles are drawn on MapLibre, Mapbox and the ArcGIS renderer, and draped on the Cesium globe, like other vector tile layers.
 
 ## Zarr layers
 

@@ -33,6 +33,7 @@ import type {
   GeoLibreFileDialogOptions,
   GeoLibreRasterWindowOptions,
   GeoLibreTileLayerOptions,
+  GeoLibreVectorTileLayerOptions,
   GeoLibreWmsLayerOptions,
   GeoLibreZarrLayerOptions,
   GeoLibreZarrQueryGeometry,
@@ -71,6 +72,7 @@ import { createPluginLocaleApi, type PluginLocaleI18n } from "./plugin-locale";
 import { createPluginHttpSend, createPluginNativeFetch } from "./plugin-native-fetch";
 import { authorizeInPopup, getPluginOAuthRedirectUri } from "./plugin-oauth";
 import { openProjectFromUrlForPlugin } from "./plugin-open-project";
+import { addPluginVectorTileLayer } from "./plugin-vector-tile-layer";
 import { createRemoteDownload, type RemoteDownloadProgress } from "./remote-download";
 import { requestSpaceborneLidarGranule } from "./spaceborne-lidar-handoff";
 import { addPluginWfsLayer } from "./plugin-wfs-layer";
@@ -315,6 +317,8 @@ export function createAppAPI(
         { type: "wmts", tiles: [url], url, ...tileLayerStoreOptions("addWmtsLayer", options) },
         options?.beforeLayerId ?? null,
       ),
+    addVectorTileLayer: (name: string, url: string, options: GeoLibreVectorTileLayerOptions) =>
+      addPluginVectorTileLayer(name, url, options),
     addWmsLayer: (name: string, options: GeoLibreWmsLayerOptions) => {
       const {
         beforeLayerId,
