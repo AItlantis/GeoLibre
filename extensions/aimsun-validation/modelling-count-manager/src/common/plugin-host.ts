@@ -11,6 +11,7 @@ import { controlsSection, packageSection, statusBanner, type Ctx } from "./panel
 import { locate, locateOid, type DetFeatureCollection } from "./geo.ts";
 import { clear, el, field, makeFormat, makeTranslate } from "./ui.ts";
 import type { ObsSource } from "./sql.ts";
+import { isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 import type { ComparisonRun } from "./comparison.ts";
 import { validateCriteria, type Criteria } from "./aggregate.ts";
 
@@ -79,6 +80,8 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
   let renderers = new Set<() => void>();
   let urlBox: { setUrl: (u: string) => void } | null = null;
   let pending: SavedState | null = null;
+  /** True while the Testudo host owns package/run selection (set by handleUrlParameters, cleared on deactivate). */
+  let hostManaged = false;
   let openTimer: ReturnType<typeof setTimeout> | null = null;
   let disposeTask: Promise<void> = Promise.resolve();
 
@@ -157,10 +160,13 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     const dyn = el("div", { class: "av-dyn" });
     const results = el("div", { class: "av-results" });
     root.append(pkg.root, dyn, results);
+    const syncPkg = (): void => { pkg.root.style.display = packageUiPlan(hostManaged).showPackagePicker ? "" : "none"; };
+    renderers.add(syncPkg);
+    syncPkg();
     container.append(root);
     const paint = (): void => {
       clear(dyn);
-      dyn.append(statusBanner(c), controlsSection(c));
+      dyn.append(statusBanner(c, hostManaged), controlsSection(c, hostManaged));
       const chooseMode = (v: ViewMode): void => {
         if (v === "validation" && !c.ctl.hasObs) return;
         if (v === "comparison" && c.ctl.state.runs.length < 2) return;
@@ -185,6 +191,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     paint();
     return () => {
       renderers.delete(paint);
+      renderers.delete(syncPkg);
       urlBox = null;
     };
   };
@@ -271,7 +278,15 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       void restore();
     },
 
+    /** Host-only run switch (Testudo); no-op unless the host opened this plugin. */
+    async setRun(run: string): Promise<boolean> {
+      if (!hostManaged || !ctl || !ctl.state.runs.includes(run)) return false;
+      if (ctl.state.run !== run) await ctl.selectRun(run);
+      return true;
+    },
+
     deactivate(a: AppLike) {
+      hostManaged = false;
       dispose(a);
     },
 
@@ -279,9 +294,20 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     async handleUrlParameters(a: AppLike, params: URLSearchParams) {
       const u = params.get("aimsunPackage");
       if (!u || !ctl) return false;
+      const run = params.get("aimsunRun") ?? undefined;
+      const host = isHostOpen(params);
+      if (hostManaged !== host) {
+        hostManaged = host;
+        renderers.forEach((r) => r());
+      }
       urlBox?.setUrl(u);
       a.openRightPanel?.(panelId);
-      if (!(await ctl.loadUrl(u, params.get("aimsunRun") ?? undefined))) throw new Error(ctl.state.error ?? "The analysis package could not be loaded.");
+      // The host switches run on the already loaded package without reloading it.
+      if (host && ctl.packageUrl === u && ctl.state.phase === "ready" && run && ctl.state.runs.includes(run)) {
+        if (ctl.state.run !== run) await ctl.selectRun(run);
+        return true;
+      }
+      if (!(await ctl.loadUrl(u, run))) throw new Error(ctl.state.error ?? "The analysis package could not be loaded.");
       return true;
     },
 

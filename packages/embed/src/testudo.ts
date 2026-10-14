@@ -64,12 +64,16 @@ export interface TestudoBootstrap {
  */
 export interface TestudoPanels { layers: boolean; plugins: boolean; comments: boolean; layersCollapsed?: boolean; hostGeoAi?: boolean }
 export interface TestudoSetPanels extends TestudoPanels { tviewId?: string }
+/** testudoSetPresentSuspended payload (without challenge): strict boolean, optional tviewId. */
+export interface TestudoSetPresentSuspended { suspended: boolean; tviewId?: string }
 /** Camera reply: the camera plus the renderer it was read from / applied to. */
 export interface TestudoCameraViewState { center: [number, number]; zoom: number; bearing: number; pitch: number; renderer: "maplibre" | "cesium" }
 export interface TestudoViewerState {
   tviewId?: string;
   /** Echo of the last testudoSetPanels (all false/default until the command is sent). */
   panels?: Required<TestudoPanels>;
+  /** True while the Present plugin panel(s) are suspended by testudoSetPresentSuspended (reset on package reset). */
+  presentSuspended?: boolean;
   generation?: number;
   package: { packageId: string; versionId: string | null; label: string; origin: "published" | "local" } | null;
   selectedPlugin: TestudoSelectablePluginId | null;

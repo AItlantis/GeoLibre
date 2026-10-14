@@ -29,6 +29,7 @@ import { openSession, type Session } from "./session";
 import { banner, clear, el, fmt, packageBar, type PackageBar } from "./ui";
 import { buildSimSql, classifyTsType, missingSimColumns, type TsKind } from "./simtable";
 import { DEFAULT_CRITERIA, joinComparison, journeyTimeBands, kpis, pairObsSim, perRoute, validateCriteria, type Criteria, type PairingResult, type SimRow, type Window } from "./validation";
+import { hostLabel, packageUiPlan } from "../../_shared/src/host-managed";
 
 export const PLUGIN_ID = "modelling-journey-time";
 const BUCKET = 15;
@@ -167,6 +168,15 @@ export class JourneyTimeController {
     this.root = this.bar = this.body = null;
   }
 
+  /** True while the Testudo host owns package/run selection (set by the plugin, cleared on deactivate). */
+  hostManaged = false;
+
+  setHostManaged(on: boolean): void {
+    if (this.hostManaged === on) return;
+    this.hostManaged = on;
+    this.build();
+  }
+
   /** Rebuild the whole panel (first mount, language change). */
   build(): void {
     if (!this.root) return;
@@ -180,7 +190,10 @@ export class JourneyTimeController {
     });
     if (this.lastUrl) this.bar.setUrl(this.lastUrl);
     this.body = el("div", { class: "avp-body", "data-avp-state": this.stateName() });
-    this.root.append(this.bar.root, this.body);
+    const ui = packageUiPlan(this.hostManaged);
+    if (ui.showPackagePicker) this.root.append(this.bar.root);
+    else this.root.append(el("p", { class: "avp-hint", "data-testid": "host-label", text: hostLabel(this.pkg?.origin ?? null, this.pkg?.run ?? null, t) }), el("p", { class: this.error ? "avp-alert" : "avp-hint", role: "status", text: this.status }));
+    this.root.append(this.body);
     this.bar.setStatus(this.status, this.error ? "error" : this.busy ? "busy" : "info");
     this.renderBody();
   }

@@ -129,7 +129,7 @@ export class TestudoAnalysisController<App> {
       this.authorize(plugin, manifestUrl, run);
       let opened: { ok: boolean; error?: string };
       try {
-        opened = await this.host.openWithParams(plugin, { aimsunPackage: manifestUrl, aimsunRun: run }, this.app);
+        opened = await this.host.openWithParams(plugin, { aimsunPackage: manifestUrl, aimsunRun: run, aimsunHost: "testudo" }, this.app);
       } catch (error) {
         opened = { ok: false, error: error instanceof Error ? error.message : String(error) };
       }

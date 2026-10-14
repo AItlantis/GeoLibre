@@ -16,7 +16,7 @@ export function isTestudoAnalysisPluginId(value: unknown): value is TestudoAnaly
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings", "analysis-counts", "analysis-od", "analysis-journey-time"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPanels", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis", "testudoRefreshAnalysisGrant"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPanels", "testudoSetPresentSuspended", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis", "testudoRefreshAnalysisGrant"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density", "results", "comparison", "environment"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -202,6 +202,14 @@ export function isCloseAnalysisPayload(payload: unknown): payload is TestudoClos
   return Object.keys(value).every(key => ["challenge", "plugin"].includes(key)) && isTestudoAnalysisPluginId(value.plugin);
 }
 
+/** Strict testudoSetPresentSuspended payload: challenge + required boolean suspended, optional tviewId "main"; nothing else. */
+export function isSetPresentSuspendedPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const value = payload as Record<string, unknown>;
+  return Object.keys(value).every(key => ["challenge", "tviewId", "suspended"].includes(key))
+    && typeof value.suspended === "boolean" && (value.tviewId === undefined || value.tviewId === "main");
+}
+
 /** Strict testudoSetPanels payload: challenge + required boolean layers/plugins/comments, optional boolean layersCollapsed/hostGeoAi, optional tviewId "main"; nothing else. */
 export function isSetPanelsPayload(payload: unknown): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
@@ -235,6 +243,7 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
     return keys.length === 2 && keys.includes("challenge") && keys.includes("open")
       && payload.challenge === challenge && typeof payload.open === "boolean";
   }
+  if (request.type === "testudoSetPresentSuspended") return request.payload?.challenge === challenge && isSetPresentSuspendedPayload(request.payload);
   if (request.type === "testudoSetPanels") return request.payload?.challenge === challenge && isSetPanelsPayload(request.payload);
   if (request.type === "testudoRequestInvestigation") {
     const payload = request.payload;

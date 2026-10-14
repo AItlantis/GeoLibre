@@ -72,6 +72,8 @@ export interface PluginLike {
   activate: (app: AppLike) => boolean | void | Promise<boolean | void>;
   deactivate: (app: AppLike) => void;
   handleUrlParameters?: (app: AppLike, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
+  /** Host-only run switch (Testudo analysis bridge); resolves false unless the host opened the plugin. */
+  setRun?: (run: string) => Promise<boolean>;
   getProjectState?: () => unknown;
   applyProjectState?: (app: AppLike, state: unknown) => boolean | void;
 }

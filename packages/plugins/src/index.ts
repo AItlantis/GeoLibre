@@ -1507,6 +1507,7 @@ export { getGeolibrePackage, resolveEnvironmentScenarioCoverage, verifyEnvironme
 export { TestudoFeatureBridge } from "./testudo-feature-bridge";
 export { validateTestudoCameraView } from "./plugins/testudo-camera";
 export { TestudoPersistentNetwork, TESTUDO_NETWORK_LAYERS } from "./shared/testudo-persistent-network";
+export { PackageFitter, manifestBounds, parsePackageBounds, geometryBounds, decidePackageFit, cameraForBounds, isValidPackageBounds, PACKAGE_FIT_PADDING, PACKAGE_FIT_MAX_ZOOM, type PackageBounds, type FitDecision, type PackageFitMap } from "./shared/testudo-package-fit";
 export { isTestudoLayout } from "./shared/testudo-layout";
 export { TestudoGenerationMount, TestudoGenerationResourceCache } from "./shared/testudo-generation-resources";
 export type { TestudoFeatureProviderFactory, TestudoFeatureProviderResolver, TestudoPackageBootstrap, TestudoArtifactRequest, TestudoArtifactFetcher, TestudoFeatureViewerState, TestudoTViewInfo } from "./testudo-feature-bridge";

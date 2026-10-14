@@ -6,6 +6,7 @@ import { locateOid } from "./geo.ts";
 import { filesFromInput } from "./package-source.ts";
 import { durationLabel, OBS_SOURCES, WHOLE_PERIOD, type ObsSource } from "./sql.ts";
 import { minToLabel, TIME_STEPS } from "./state.ts";
+import { hostLabel, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 import { el, field, selectEl, STATUS_COLORS, type Translate, makeFormat } from "./ui.ts";
 
 export interface Ctx {
@@ -70,19 +71,23 @@ export function packageSection(ctx: Ctx, initialUrl?: string): { root: HTMLEleme
 }
 
 /** Loading / error / source banner (re-rendered). */
-export function statusBanner(ctx: Ctx): HTMLElement {
+export function statusBanner(ctx: Ctx, hostManaged = false): HTMLElement {
   const { t, ctl } = ctx;
   const s = ctl.state;
   const box = el("div", { class: "av-status" });
   if (s.phase === "error") box.append(el("p", { class: "av-alert av-bad", text: s.error ?? t("err.generic", "Something went wrong."), attrs: { role: "alert" } }));
   else if (s.phase === "loading" || s.busy) box.append(el("p", { class: "av-hint", text: t("status.loading", "Loading…"), attrs: { role: "status" } }));
-  if (s.sourceLabel && s.phase !== "empty") box.append(el("p", { class: "av-hint", text: t("pkg.source", "Package: {{label}}", { label: s.sourceLabel }) }));
+  if (hostManaged) {
+    const label = hostLabel(s.sourceLabel, s.run, t);
+    if (label && s.phase !== "empty") box.append(el("p", { class: "av-hint", text: label, attrs: { "data-testid": "host-label" } }));
+  } else if (s.sourceLabel && s.phase !== "empty") box.append(el("p", { class: "av-hint", text: t("pkg.source", "Package: {{label}}", { label: s.sourceLabel }) }));
   return box;
 }
 
 /** Run, observed source, time window, bucket. */
-export function controlsSection(ctx: Ctx): HTMLElement {
+export function controlsSection(ctx: Ctx, hostManaged = false): HTMLElement {
   const { t, ctl } = ctx;
+  const ui = packageUiPlan(hostManaged);
   const s = ctl.state;
   if (s.phase === "empty" || s.phase === "error" || !s.runs.length) return el("div");
   const disabled = s.phase === "loading";
@@ -115,7 +120,7 @@ export function controlsSection(ctx: Ctx): HTMLElement {
   for (const c of [run, from, to, bucket]) c.disabled = disabled;
   obs.disabled = disabled || !ctl.hasObs;
   return el("section", { class: "av-section av-grid" }, [
-    field(t("ctl.run", "Run"), run),
+    ...(ui.showRunSelector ? [field(t("ctl.run", "Run"), run)] : []),
     field(t("ctl.obsSource", "Observed source"), obs),
     field(t("ctl.from", "From"), from),
     field(t("ctl.to", "To"), to),

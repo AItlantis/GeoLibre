@@ -11,6 +11,7 @@ import { RunFitter } from "../../../_shared/src/fit-extent.ts";
 import { MapOverlay, type OverlayLayerSpec } from "./overlay.ts";
 import { verifySrcHash } from "./verify.ts";
 import { clear, el, field, makeFormat, makeTranslate, select, type Fmt, type Translate } from "./ui.ts";
+import { hostLabel, isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 
 export interface ViewEnv {
   app: AppLike;
@@ -88,6 +89,8 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
     };
   };
 
+  /** True while the Testudo host owns package/run selection (set by handleUrlParameters, cleared on deactivate). */
+  let hostManaged = false;
   const dataKey = (c: OdController): string => `${c.state.phase}|${c.state.run}|${c.state.grouping}`;
 
   const restore = async (): Promise<void> => {
@@ -111,6 +114,9 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
     const results = el("div", { class: "ao-results" });
     root.append(pkg, status, controls, results);
     container.append(root);
+    const syncPkg = (): void => { pkg.style.display = packageUiPlan(hostManaged).showPackagePicker ? "" : "none"; };
+    repaint.add(syncPkg);
+    syncPkg();
 
     // package loader (built once; not repainted so the typed URL survives)
     const url = el("input", { class: "ao-input ao-grow", attrs: { type: "url", placeholder: t("pkg.urlPh", "Manifest URL (…/manifest.json or data folder URL)"), "aria-label": t("pkg.url", "Package manifest URL") } });
@@ -137,6 +143,10 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
     const paint = (): void => {
       const s = c.state;
       clear(status);
+      if (hostManaged && s.phase !== "idle") {
+        const label = hostLabel(c.packageUrl ? t("host.pkgOd", "OD package") : null, s.run, t);
+        if (label) status.append(el("p", { class: "ao-hint", text: label, attrs: { "data-testid": "host-label" } }));
+      }
       if (s.phase === "loading") status.append(el("p", { class: "ao-alert", text: s.message || t("status.loading", "Loading…") }));
       if (s.phase === "error") status.append(el("p", { class: "ao-alert ao-bad", text: s.message }));
       if (s.phase === "ready") {
@@ -153,7 +163,7 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
       clear(controls);
       if (s.phase !== "ready" && !s.runs.length) return;
       const row = el("div", { class: "ao-grid" });
-      if (s.runs.length) row.append(field(t("run", "Run"), select(s.runs.map((r) => ({ value: r, label: r })), s.run ?? "", (v) => void c.selectRun(v))));
+      if (s.runs.length && packageUiPlan(hostManaged).showRunSelector) row.append(field(t("run", "Run"), select(s.runs.map((r) => ({ value: r, label: r })), s.run ?? "", (v) => void c.selectRun(v))));
       if (s.groupings.length) {
         row.append(
           field(
@@ -179,6 +189,7 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
     view.onPanelOpen?.();
     return () => {
       repaint.delete(paint);
+      repaint.delete(syncPkg);
       view?.onPanelClose?.();
       urlInput = null;
     };
@@ -235,7 +246,15 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
       void restore();
     },
 
+    /** Host-only run switch (Testudo); no-op unless the host opened this plugin. */
+    async setRun(run: string): Promise<boolean> {
+      if (!hostManaged || !ctl || !ctl.state.runs.includes(run)) return false;
+      if (ctl.state.run !== run) await ctl.selectRun(run);
+      return true;
+    },
+
     deactivate(a: AppLike) {
+      hostManaged = false;
       for (const u of unsubscribers) {
         try {
           u();
@@ -262,10 +281,21 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
     async handleUrlParameters(a: AppLike, params: URLSearchParams) {
       const u = params.get("aimsunPackage");
       if (!u || !ctl) return false;
+      const run = params.get("aimsunRun") ?? undefined;
+      const host = isHostOpen(params);
+      if (hostManaged !== host) {
+        hostManaged = host;
+        repaint.forEach((r) => r());
+      }
       if (urlInput) urlInput.value = u;
       a.openRightPanel?.(panelId);
+      // The host switches run on the already loaded package without reloading it.
+      if (host && ctl.packageUrl === u && ctl.ready && run && ctl.state.runs.includes(run)) {
+        if (ctl.state.run !== run) await ctl.selectRun(run);
+        return true;
+      }
       // Resolves true only once the package finished loading; rejects with the load error message otherwise.
-      if (!(await ctl.loadUrl(u, params.get("aimsunRun") ?? undefined))) throw new Error(ctl.state.message || "The analysis package could not be loaded.");
+      if (!(await ctl.loadUrl(u, run))) throw new Error(ctl.state.message || "The analysis package could not be loaded.");
       const g = params.get("aimsunGrouping");
       if (g && ctl.ready && ctl.state.groupings.some((x) => x.name === g)) await ctl.selectGrouping(g);
       return true;
