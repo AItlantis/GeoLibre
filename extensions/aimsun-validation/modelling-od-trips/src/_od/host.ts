@@ -21,6 +21,7 @@ export interface MapLike {
   getPitch?(): number;
   easeTo?(opts: Record<string, unknown>): void;
   flyTo(opts: Record<string, unknown>): void;
+  fitBounds?(bounds: [[number, number], [number, number]], opts?: Record<string, unknown>): void;
 }
 
 export interface RightPanelRegistration {

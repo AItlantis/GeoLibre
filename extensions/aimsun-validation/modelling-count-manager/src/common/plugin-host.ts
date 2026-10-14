@@ -5,6 +5,7 @@
  */
 import { DetController, type DbLike } from "./controller.ts";
 import type { AppLike, PluginLike } from "./host.ts";
+import { RunFitter } from "../../../_shared/src/fit-extent.ts";
 import { DetectorMapLayer, type CircleStyle } from "./map-layer.ts";
 import { controlsSection, packageSection, statusBanner, type Ctx } from "./panel-parts.ts";
 import { locate, locateOid, type DetFeatureCollection } from "./geo.ts";
@@ -70,6 +71,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
   let app: AppLike | null = null;
   let ctl: DetController | null = null;
   let layer: DetectorMapLayer | null = null;
+  let fitter: RunFitter | null = null;
   let ctx: Ctx | null = null;
   let sections: Sections | null = null;
   let activeMode: ViewMode = "counts";
@@ -91,6 +93,8 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     renderers.clear();
     a.closeRightPanel?.(panelId);
     layer?.dispose();
+    fitter?.dispose();
+    fitter = null;
     const oldController = ctl;
     disposeTask = oldController?.dispose() ?? Promise.resolve();
     ctl = null;
@@ -101,6 +105,15 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     app = null;
   };
 
+  /** Fit once per run/package to the detectors placed on the map (all detectors when none matched). */
+  const fitRun = (): void => {
+    if (!ctl || !app || ctl.state.phase !== "ready" || !ctl.geo) return;
+    fitter ??= new RunFitter(app);
+    const pts = ctl.aggs.map((a) => locate(ctl!.geo, a)).filter((p): p is { lon: number; lat: number } => !!p);
+    const all = pts.length ? pts : [...ctl.geo.byOid.values(), ...ctl.geo.byEid.values()];
+    fitter.fit(`${ctl.packageUrl ?? ctl.state.sourceLabel ?? ""}|${ctl.state.run ?? ""}`, all);
+  };
+
   const pushMap = (): void => {
     if (!ctl || !layer || !sections) return;
     const m = ctl.hasGeo || activeMode === "comparison" ? sections.map() : null;
@@ -109,6 +122,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       const sel = ctl.state.selectedId ? ctl.aggs.find((a) => a.id === ctl!.state.selectedId) : undefined;
       const p = sel ? locate(ctl.geo, sel) : null;
       layer.setSelected(p ? [p.lon, p.lat] : null);
+      fitRun();
     } else {
       layer.clear();
     }

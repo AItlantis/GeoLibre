@@ -10,7 +10,6 @@
  * on every selection change, so they stay plugin-owned native layers (the detector plugins do the same).
  */
 import type { FC } from "./calc.ts";
-import { boundsOf } from "./calc.ts";
 import type { AppLike, MapLike } from "./host.ts";
 
 export interface OverlayLayerSpec {
@@ -202,17 +201,11 @@ export class MapOverlay {
     this.registered = true;
   }
 
-  /** Zoom the map to the union of all current features. */
-  fit(): void {
-    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-    for (const fc of this.data.values()) {
-      const b = boundsOf(fc);
-      if (b) {
-        w = Math.min(w, b[0]); s = Math.min(s, b[1]); e = Math.max(e, b[2]); n = Math.max(n, b[3]);
-      }
-    }
-    if (w <= e && this.app.fitBounds) this.app.fitBounds([w, s, e, n]);
-  }
+  /**
+   * Intentionally a no-op: the camera is fitted once per run/package load by the plugin (RunFitter),
+   * never on filter/selection changes, and never after the user moved the map.
+   */
+  fit(): void {}
 
   zoomTo(lon: number, lat: number, zoom = 12): void {
     const map = this.app.getMap?.();

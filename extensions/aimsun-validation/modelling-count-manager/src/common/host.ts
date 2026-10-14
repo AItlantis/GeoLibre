@@ -20,6 +20,7 @@ export interface MapLike {
   getCanvas(): HTMLCanvasElement;
   getZoom(): number;
   flyTo(opts: Record<string, unknown>): void;
+  fitBounds?(bounds: [[number, number], [number, number]], opts?: Record<string, unknown>): void;
 }
 
 export interface RightPanelRegistration {

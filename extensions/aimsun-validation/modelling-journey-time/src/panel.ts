@@ -6,6 +6,7 @@
 import type { DuckDbHandle } from "../../_shared/src/duckdb";
 import { buildSubpathSql } from "../../_shared/src/sql/subpath.sql";
 import { groupedBarSvg, histogramSvg, mountChart, scatterSvg, stackedBarSvg, STATUS_COLORS } from "../../_shared/src/charts";
+import { geometryPositions, RunFitter } from "../../_shared/src/fit-extent";
 import type { GeoJSONFC, HostApp } from "./host";
 import type { Translator } from "./i18n";
 import { lineSvg } from "./lineSvg";
@@ -96,7 +97,7 @@ export class JourneyTimeController {
   private error: string | null = null;
   private status = "";
   private overlayNote = "";
-  private fitted = false;
+  private fitter: RunFitter | null = null;
   private readonly overlay: MapOverlay;
   // DOM
   private root: HTMLElement | null = null;
@@ -190,6 +191,8 @@ export class JourneyTimeController {
 
   dispose(): void {
     this.overlay.remove();
+    this.fitter?.dispose();
+    this.fitter = null;
     this.disposed = true;
     void this.session?.dispose(); // drops this panel's tables/views, detaches its catalog, closes its connection
     this.session = null;
@@ -261,7 +264,6 @@ export class JourneyTimeController {
       this.pkg = pkg;
       this.geo = pkg.geo;
       if (!this.sources.some((s) => s.source === this.source)) this.source = this.sources[0]?.source ?? "";
-      this.fitted = false;
       if (!this.rows.some((r) => r.source === this.source && `${r.route}\u0000${r.direction_norm}` === this.routeKey)) this.routeKey = "";
       this.pickDefaults();
       if (this.viewMode === VIEW_VALIDATION && !this.simRows.length) this.viewMode = VIEW_JT;
@@ -655,11 +657,15 @@ export class JourneyTimeController {
       : this.viewMode === VIEW_COMPARISON
         ? t("map.comparisonDrawn", "{{n}} subpath lines coloured by change between the selected runs.", { n: fc.features.length })
         : t("map.drawn", "{{n}} subpath lines drawn for {{time}} as a live plugin overlay.", { n: fc.features.length, time: bucketLabel(this.bucket) }));
-    if (!this.fitted) {
-      const b = featuresBounds(fc);
-      if (b) this.d.getApp()?.fitBounds?.(b);
-      this.fitted = true;
-    }
+    this.fitRun();
+  }
+
+  /** Fit once per run/package to the whole subpath geometry; never on source/bucket/window changes. */
+  private fitRun(): void {
+    const app = this.d.getApp();
+    if (!app || !this.geo || !this.pkg) return;
+    this.fitter ??= new RunFitter({ getMap: () => (this.d.getApp()?.getMap?.() as never) ?? null, fitBounds: (b) => this.d.getApp()?.fitBounds?.(b) });
+    this.fitter.fit(`${this.lastUrl}|${this.pkg.origin ?? ""}|${this.pkg.run ?? ""}`, geometryPositions(this.geo.features.map((f) => f.geometry as { coordinates?: unknown })));
   }
 
   private criteriaSection(onChange: () => void): HTMLElement {

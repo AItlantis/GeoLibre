@@ -7,6 +7,7 @@
 import { withDuckDbLock } from "../../../_shared/src/lock.ts";
 import { OdController, type OdDb } from "./controller.ts";
 import type { AppLike, PluginLike } from "./host.ts";
+import { RunFitter } from "../../../_shared/src/fit-extent.ts";
 import { MapOverlay, type OverlayLayerSpec } from "./overlay.ts";
 import { verifySrcHash } from "./verify.ts";
 import { clear, el, field, makeFormat, makeTranslate, select, type Fmt, type Translate } from "./ui.ts";
@@ -59,6 +60,7 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
   let app: AppLike | null = null;
   let ctl: OdController | null = null;
   let overlay: MapOverlay | null = null;
+  let fitter: RunFitter | null = null;
   let view: OdView | null = null;
   let env: ViewEnv | null = null;
   let unsubscribers: Array<() => void> = [];
@@ -205,6 +207,11 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
             lastKey = k;
             if (controller.ready) view?.onData();
           }
+          // fit once per run/package to the centroids (group centres lie inside their hull)
+          if (controller.ready && app) {
+            fitter ??= new RunFitter(app);
+            fitter.fit(`${controller.packageUrl ?? ""}|${controller.state.run ?? ""}`, controller.state.centroids.flatMap((c) => (c.lon === null || c.lat === null ? [] : [[c.lon, c.lat] as [number, number]])));
+          }
         }),
       );
       const stopLocale = a.onLocaleChange?.((loc) => {
@@ -241,6 +248,8 @@ export function makeOdPlugin(cfg: OdPluginConfig): PluginLike {
       a.closeRightPanel?.(panelId);
       view?.dispose();
       overlay?.dispose();
+      fitter?.dispose();
+      fitter = null;
       void ctl?.dispose();
       ctl = null;
       overlay = null;
