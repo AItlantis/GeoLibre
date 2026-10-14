@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { tool } from "@strands-agents/sdk";
 import { z } from "zod";
 import { getExternalNativePaintBridge, useAppStore } from "@geolibre/core";
 import type { MapEngine } from "@geolibre/map";
 import { createAppAPI, type AppApiHost } from "../apps/geolibre-desktop/src/lib/app-api";
+import { GEOMETRY_EDIT_QUEUE_WAIT_MS } from "../apps/geolibre-desktop/src/lib/geometry-edit-session";
 import {
   listAssistantToolEntries,
   registerAssistantGuidance,
@@ -43,6 +44,7 @@ import {
 import type {
   GeoLibreActiveMapTool,
   GeoLibreAppAPI,
+  GeoLibreEditSessionChange,
   GeoLibrePlugin,
 } from "../packages/plugins/src/types";
 
@@ -191,6 +193,11 @@ function fakeHost(overrides: Partial<AppApiHost> = {}): { host: AppApiHost; call
     closeFloatingPanel,
     getOpenFloatingPanels,
     getGeometryEditTargetLayerId: () => null,
+    getLastGeometryEditEnd: () => null,
+    subscribeGeometryEdit: () => () => undefined,
+    isPluginEngineSupported: () => true,
+    maplibreGeoEditorPlugin: {},
+    startLayerGeometryEdit: unused("startLayerGeometryEdit"),
     ...overrides,
   } as unknown as AppApiHost;
   return { host, calls };
@@ -330,6 +337,352 @@ describe("plugin app API map tools", () => {
 
     await manager.activate(GEO_EDITOR_PLUGIN_ID, api as unknown as GeoLibreAppAPI);
     assert.equal(events.length, 6);
+  });
+});
+
+/** A GeoEditor session a test drives by hand, through the host's hooks. */
+function fakeEditSessions() {
+  let layerId: string | null = null;
+  let lastEnd: { layerId: string; saved: boolean } | null = null;
+  const listeners = new Set<() => void>();
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
+  return {
+    host: {
+      getGeometryEditTargetLayerId: () => layerId,
+      getLastGeometryEditEnd: () => lastEnd,
+      subscribeGeometryEdit: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    },
+    start(id: string) {
+      if (layerId) this.end(true);
+      layerId = id;
+      notify();
+    },
+    end(saved: boolean) {
+      if (layerId) lastEnd = { layerId, saved };
+      layerId = null;
+      notify();
+    },
+    // Ends the open session without recording how it ended.
+    endWithoutRecord() {
+      layerId = null;
+      notify();
+    },
+    // Ends the open session and starts another on the same layer, notifying
+    // once for both.
+    restartInOneNotification(saved: boolean) {
+      if (layerId) lastEnd = { layerId, saved };
+      notify();
+    },
+  };
+}
+
+const EMPTY_COLLECTION: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
+describe("plugin app API edit sessions", () => {
+  beforeEach(() => {
+    useAppStore.getState().newProject({ name: "App API edit sessions" });
+  });
+
+  it("reports sessions starting and ending, saved or not, and unsubscribes", () => {
+    const sessions = fakeEditSessions();
+    const api = createAppAPI(undefined, fakeHost(sessions.host).host);
+    const changes: GeoLibreEditSessionChange[] = [];
+    const unsubscribe = api.onEditSessionChange((change) => changes.push(change));
+
+    sessions.start("roads");
+    assert.equal(api.getEditSessionLayerId(), "roads");
+    sessions.end(true);
+    sessions.start("rivers");
+    sessions.end(false);
+    unsubscribe();
+    sessions.start("after-unsubscribe");
+
+    assert.equal(api.getEditSessionLayerId(), "after-unsubscribe");
+    assert.deepEqual(changes, [
+      { layerId: "roads", state: "started" },
+      { layerId: "roads", state: "ended", saved: true },
+      { layerId: "rivers", state: "started" },
+      { layerId: "rivers", state: "ended", saved: false },
+    ]);
+  });
+
+  it("reports the old session ending before the new one starts on a switch", () => {
+    const sessions = fakeEditSessions();
+    const api = createAppAPI(undefined, fakeHost(sessions.host).host);
+    sessions.start("roads");
+    const changes: GeoLibreEditSessionChange[] = [];
+    api.onEditSessionChange((change) => changes.push(change));
+
+    sessions.start("rivers");
+
+    assert.deepEqual(changes, [
+      { layerId: "roads", state: "ended", saved: true },
+      { layerId: "rivers", state: "started" },
+    ]);
+  });
+
+  it("reports a session that ends and restarts on the same layer in one notification", () => {
+    const sessions = fakeEditSessions();
+    const api = createAppAPI(undefined, fakeHost(sessions.host).host);
+    sessions.start("roads");
+    const changes: GeoLibreEditSessionChange[] = [];
+    api.onEditSessionChange((change) => changes.push(change));
+
+    sessions.restartInOneNotification(true);
+
+    assert.deepEqual(changes, [
+      { layerId: "roads", state: "ended", saved: true },
+      { layerId: "roads", state: "started" },
+    ]);
+  });
+
+  it("doesn't report an earlier session's save for a session that ended without a record", () => {
+    const sessions = fakeEditSessions();
+    const api = createAppAPI(undefined, fakeHost(sessions.host).host);
+    sessions.start("roads");
+    sessions.end(true);
+    sessions.start("roads");
+    const changes: GeoLibreEditSessionChange[] = [];
+    api.onEditSessionChange((change) => changes.push(change));
+
+    sessions.endWithoutRecord();
+
+    assert.deepEqual(changes, [{ layerId: "roads", state: "ended", saved: false }]);
+  });
+
+  it("still reports the new session to a callback that threw on the old one's end", () => {
+    const sessions = fakeEditSessions();
+    const api = createAppAPI(undefined, fakeHost(sessions.host).host);
+    sessions.start("roads");
+    const changes: GeoLibreEditSessionChange[] = [];
+    api.onEditSessionChange((change) => {
+      changes.push(change);
+      if (change.state === "ended") throw new Error("plugin bug");
+    });
+    const originalConsoleError = console.error;
+    console.error = () => undefined;
+    try {
+      sessions.restartInOneNotification(true);
+      sessions.start("rivers");
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    assert.deepEqual(changes, [
+      { layerId: "roads", state: "ended", saved: true },
+      { layerId: "roads", state: "started" },
+      { layerId: "roads", state: "ended", saved: true },
+      { layerId: "rivers", state: "started" },
+    ]);
+  });
+
+  it("runs overlapping starts one after another", async () => {
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => undefined,
+      deactivate: () => undefined,
+    });
+    const steps: string[] = [];
+    const api = createAppAPI(
+      undefined,
+      fakeHost({
+        plugins: manager,
+        startLayerGeometryEdit: async (_app: GeoLibreAppAPI, layerId: string) => {
+          steps.push(`begin ${layerId}`);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          steps.push(`end ${layerId}`);
+          return true;
+        },
+      }).host,
+    );
+
+    const roads = api.addGeoJsonLayer("Roads", EMPTY_COLLECTION);
+    const rivers = api.addGeoJsonLayer("Rivers", EMPTY_COLLECTION);
+
+    const results = await Promise.all([api.startEditSession(roads), api.startEditSession(rivers)]);
+
+    assert.deepEqual(results, [true, true]);
+    assert.deepEqual(steps, [`begin ${roads}`, `end ${roads}`, `begin ${rivers}`, `end ${rivers}`]);
+  });
+
+  it("gives up waiting behind a start that never finishes, without running alongside it", async () => {
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => undefined,
+      deactivate: () => undefined,
+    });
+    let releaseStuckStart!: (started: boolean) => void;
+    const ran: string[] = [];
+    const api = createAppAPI(
+      undefined,
+      fakeHost({
+        plugins: manager,
+        startLayerGeometryEdit: (_app: GeoLibreAppAPI, layerId: string) => {
+          ran.push(layerId);
+          return ran.length === 1
+            ? new Promise<boolean>((resolve) => {
+                releaseStuckStart = resolve;
+              })
+            : Promise.resolve(true);
+        },
+      }).host,
+    );
+    const stuck = api.addGeoJsonLayer("Stuck", EMPTY_COLLECTION);
+    const later = api.addGeoJsonLayer("Later", EMPTY_COLLECTION);
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const stuckStart = api.startEditSession(stuck);
+      const waitingStart = api.startEditSession(later);
+      await flush();
+      mock.timers.tick(GEOMETRY_EDIT_QUEUE_WAIT_MS);
+      assert.equal(await waitingStart, false);
+      assert.deepEqual(ran, [stuck], "the waiting start never ran alongside the stuck one");
+
+      releaseStuckStart(true);
+      assert.equal(await stuckStart, true);
+      assert.equal(await api.startEditSession(later), true);
+      assert.deepEqual(ran, [stuck, later]);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("starts a session, activating the GeoEditor first", async () => {
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => undefined,
+      deactivate: () => undefined,
+    });
+    const started: string[] = [];
+    const api = createAppAPI(
+      undefined,
+      fakeHost({
+        plugins: manager,
+        startLayerGeometryEdit: async (_app: GeoLibreAppAPI, layerId: string) => {
+          started.push(layerId);
+          return true;
+        },
+      }).host,
+    );
+
+    const roads = api.addGeoJsonLayer("Roads", EMPTY_COLLECTION);
+
+    assert.equal(await api.startEditSession(roads), true);
+    assert.equal(manager.isActive(GEO_EDITOR_PLUGIN_ID), true);
+    assert.deepEqual(started, [roads]);
+  });
+
+  it("reports false when the GeoEditor can't be activated", async () => {
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => {
+        throw new Error("the editor's packages failed to load");
+      },
+      deactivate: () => undefined,
+    });
+    const started: string[] = [];
+    const api = createAppAPI(
+      undefined,
+      fakeHost({
+        plugins: manager,
+        startLayerGeometryEdit: async (_app: GeoLibreAppAPI, layerId: string) => {
+          started.push(layerId);
+          return true;
+        },
+      }).host,
+    );
+    const roads = api.addGeoJsonLayer("Roads", EMPTY_COLLECTION);
+
+    assert.equal(await api.startEditSession(roads), false);
+    assert.deepEqual(started, [], "no session starts without the editor");
+  });
+
+  it("reports false when starting the session throws", async () => {
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => undefined,
+      deactivate: () => undefined,
+    });
+    const api = createAppAPI(
+      undefined,
+      fakeHost({
+        plugins: manager,
+        startLayerGeometryEdit: async () => {
+          throw new Error("restoring the sketches failed");
+        },
+      }).host,
+    );
+    const roads = api.addGeoJsonLayer("Roads", EMPTY_COLLECTION);
+    const originalConsoleError = console.error;
+    console.error = () => undefined;
+    try {
+      assert.equal(await api.startEditSession(roads), false);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
+  it("refuses a layer that doesn't exist without activating the GeoEditor", async () => {
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => undefined,
+      deactivate: () => undefined,
+    });
+    const api = createAppAPI(undefined, fakeHost({ plugins: manager }).host);
+
+    assert.equal(await api.startEditSession("missing"), false);
+    assert.equal(manager.isActive(GEO_EDITOR_PLUGIN_ID), false);
+  });
+
+  it("refuses to start on an unsupported renderer, or when the layer can't be edited", async () => {
+    const unsupported = createAppAPI(
+      undefined,
+      fakeHost({ isPluginEngineSupported: () => false }).host,
+    );
+    const roads = unsupported.addGeoJsonLayer("Roads", EMPTY_COLLECTION);
+    assert.equal(await unsupported.startEditSession(roads), false);
+
+    const manager = new PluginManager();
+    manager.register({
+      id: GEO_EDITOR_PLUGIN_ID,
+      name: "GeoEditor",
+      version: "0.0.0",
+      activate: () => undefined,
+      deactivate: () => undefined,
+    });
+    const notEditable = createAppAPI(
+      undefined,
+      fakeHost({ plugins: manager, startLayerGeometryEdit: async () => false }).host,
+    );
+    const tiles = notEditable.addTileLayer("Tiles", "https://tiles.example.com/{z}/{x}/{y}.png");
+    assert.equal(await notEditable.startEditSession(tiles), false);
   });
 });
 
