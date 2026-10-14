@@ -34,6 +34,8 @@ export interface DetViewConfig {
   prefix: string;
   obsSource: ObsSource;
   bucketMinutes: number;
+  /** Minute-of-day the bucket grid starts at (whole-period buckets start at the window start). Default 0. */
+  bucketOriginMin?: number;
   /** From the manifest; absent = 2025-01-01, 5-minute grid, interval-end (the legacy assumption). */
   observed?: ObservedMeta;
   /** Keep only simulated rows of this length (seconds) when the table mixes micro and macro rows. */
@@ -61,17 +63,18 @@ export function detViewScript(cfg: DetViewConfig): string {
   return (
     buildAdapterSql(adapter) +
     "\n" +
-    buildViewsSql({ only: ["det"], bucketMinutes: bucket, ...ADAPTED_RELATIONS })
+    buildViewsSql({ only: ["det"], bucketMinutes: bucket, ...(cfg.bucketOriginMin ? { bucketOriginMin: intArg(cfg.bucketOriginMin, "bucketOriginMin") } : {}), ...ADAPTED_RELATIONS })
   );
 }
 
 /** Rows of v_det_validation whose bucket starts in [fromMin, toMin). */
-export function windowQuery(fromMin: number, toMin: number): string {
+/** With `bucketMin`, a bucket must also END inside the window (a bucket overrunning To is not a complete bucket of the span). */
+export function windowQuery(fromMin: number, toMin: number, bucketMin?: number): string {
   const a = intArg(fromMin, "fromMin");
   const b = intArg(toMin, "toMin");
   return (
     "SELECT detector_id, oid, bucket_start_min, sim_flow_h, obs_flow_h, geh, status FROM v_det_validation " +
-    `WHERE bucket_start_min >= ${a} AND bucket_start_min < ${b} ORDER BY detector_id, bucket_start_min`
+    `WHERE bucket_start_min >= ${a} AND bucket_start_min < ${b}${bucketMin === undefined ? "" : ` AND bucket_start_min + ${intArg(bucketMin, "bucketMin")} <= ${b}`} ORDER BY detector_id, bucket_start_min`
   );
 }
 
@@ -116,16 +119,46 @@ const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
  * observation (15 min) could pass the coverage check of a fine bucket (5 min). It must also fit in
  * the simulated span and start on the grid. Without `obsGridMin` only the simulated interval counts.
  */
+export const BUCKET_CHOICES = [5, 10, 15, 20, 30, 60] as const;
+/** Bucket value meaning "the whole selected From-To period in one bucket". */
+export const WHOLE_PERIOD = 0;
+
 export function bucketOptions(simDurMin: number, simStartMin: number, simEndMin: number, obsGridMin?: number): number[] {
   if (!(simDurMin > 0)) return [60];
   const grid = obsGridMin !== undefined && obsGridMin > 0 ? obsGridMin : simDurMin;
   const step = (simDurMin * grid) / gcd(simDurMin, grid);
   const span = simEndMin - simStartMin;
-  const out: number[] = [];
-  for (let b = step; b <= Math.max(span, step); b += step) {
-    if (b === step || simStartMin % b === 0) out.push(b);
-  }
-  return out;
+  // Sub-hourly grid: the conventional 5/10/15/20/30/60-minute buckets (never 45, 105, ...). Hourly or coarser: every aligned multiple.
+  const candidates: number[] = [];
+  if (step < 60) candidates.push(...BUCKET_CHOICES);
+  else for (let b = step; b <= Math.max(span, step); b += step) candidates.push(b);
+  const out = candidates.filter((b) => b % step === 0 && b <= Math.max(span, step) && (b === step || simStartMin % b === 0));
+  return out.length ? [...out] : [step];
+}
+
+/** Smallest bucket (minutes) that is a whole multiple of both the simulated interval and the observed grid. */
+export function bucketStep(simDurMin: number, obsGridMin?: number): number {
+  if (!(simDurMin > 0)) return 60;
+  const grid = obsGridMin !== undefined && obsGridMin > 0 ? obsGridMin : simDurMin;
+  return (simDurMin * grid) / gcd(simDurMin, grid);
+}
+
+/**
+ * The selected window as ONE bucket: starts at the first interval boundary at or after `fromMin`,
+ * lasts a whole number of `step` minutes (clamped to complete intervals), null when none fits.
+ */
+export function wholePeriod(fromMin: number, toMin: number, step: number): { originMin: number; minutes: number } | null {
+  if (!(step > 0)) return null;
+  const originMin = Math.ceil(fromMin / step) * step;
+  const minutes = Math.floor((toMin - originMin) / step) * step;
+  return minutes > 0 ? { originMin, minutes } : null;
+}
+
+/** "2 h 15 min", "45 min", "3 h". */
+export function durationLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return [h ? `${h} h` : "", m ? `${m} min` : ""].filter(Boolean).join(" ") || "0 min";
 }
 
 export type ProfileScope = "mean" | "sum" | "detector";

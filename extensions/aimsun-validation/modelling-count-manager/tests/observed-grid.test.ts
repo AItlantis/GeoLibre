@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DetController } from "../src/common/controller.ts";
-import { bucketOptions, detViewScript, obsGridMinutes, dayProfileObsQuery } from "../src/common/sql.ts";
+import { bucketOptions, WHOLE_PERIOD, detViewScript, obsGridMinutes, dayProfileObsQuery } from "../src/common/sql.ts";
 import { buildIndex, itemsFromManifest, parseObserved } from "../src/common/package-source.ts";
 import { openNodeDb } from "./node-db.ts";
 
@@ -51,7 +51,7 @@ const settle = async (c: DetController): Promise<void> => {
 
 test("bucketOptions: multiples of both the simulated interval and the observed grid", () => {
   assert.deepEqual(bucketOptions(5, 420, 480, 15), [15, 30, 60]); // 5-min bucket NOT offered; 45 does not align
-  assert.deepEqual(bucketOptions(5, 420, 480), [5, 10, 15, 20, 30, 35, 60]); // legacy: sim grid only
+  assert.deepEqual(bucketOptions(5, 420, 480), [5, 10, 15, 20, 30, 60]); // legacy: sim grid only, conventional buckets (no 35)
   assert.deepEqual(bucketOptions(60, 420, 660, 15), [60]); // hourly sim: unchanged
   assert.deepEqual(bucketOptions(60, 0, 240, 5), bucketOptions(60, 0, 240));
   assert.deepEqual(bucketOptions(5, 0, 120, 60), [60, 120]); // hourly observations
@@ -95,7 +95,7 @@ test("Jumeira-like: micro 5-min sim vs 15-min observed on 2020-01-01 (analysis_m
     await settle(c);
     assert.equal(c.state.phase, "ready", c.state.error ?? "");
     assert.equal(c.observed?.referenceDay, "2020-01-01");
-    assert.deepEqual(c.state.bucketOptions, [15, 30, 60]);
+    assert.deepEqual(c.state.bucketOptions, [15, 30, 60, WHOLE_PERIOD]);
     assert.ok(!c.state.bucketOptions.includes(5), "the 5-minute bucket is not offered");
     assert.equal(c.state.bucket, 60, "hourly is the default when offered");
     assert.deepEqual([c.state.fromMin, c.state.toMin], [420, 480]);
@@ -127,7 +127,7 @@ test("observed from the manifest entry (URL path) behaves like analysis_manifest
     await (c as unknown as { openIndex(i: typeof idx): Promise<void> }).openIndex(idx);
     await settle(c);
     assert.equal(c.state.phase, "ready", c.state.error ?? "");
-    assert.deepEqual(c.state.bucketOptions, [15, 30, 60]);
+    assert.deepEqual(c.state.bucketOptions, [15, 30, 60, WHOLE_PERIOD]);
     assert.equal(c.rows.length, 2);
     await c.dispose();
     // Same data but declared on another reference day: nothing lines up (no silent 2025 fallback).
@@ -171,7 +171,7 @@ COPY l_obs TO 'lobs.parquet' (FORMAT parquet);`);
     await c.loadFiles(files(sim, obs), "data");
     await settle(c);
     assert.equal(c.observed, null);
-    assert.deepEqual(c.state.bucketOptions, [60]);
+    assert.deepEqual(c.state.bucketOptions, [60, WHOLE_PERIOD]);
     assert.deepEqual(c.rows.map((r) => [r.detector_id, r.sim_flow_h, r.obs_flow_h]), [["E1", 100, 90]]);
     assert.equal(c.dayProfiles.mean.observed.length, 12);
     await c.dispose();
@@ -189,7 +189,7 @@ test("detectors_sim mixing micro 300 s and macro 3600 s rows: finest rows only, 
     await c.loadFiles(files(sim, obs, { observed: OBSERVED }), "data");
     await settle(c);
     assert.equal(c.state.phase, "ready", c.state.error ?? "");
-    assert.deepEqual(c.state.bucketOptions, [15, 30, 60]);
+    assert.deepEqual(c.state.bucketOptions, [15, 30, 60, WHOLE_PERIOD]);
     const e1 = c.rows.find((r) => r.detector_id === "E1")!;
     assert.deepEqual([e1.sim_flow_h, e1.obs_flow_h], [600, 540]);
     await c.dispose();

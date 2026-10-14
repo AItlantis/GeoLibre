@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "run": "1.1---Static-Assignment-Experiment-AM",
+  "files": [
+    {
+      "table": "centroids_geo",
+      "path": "centroids.geojson",
+      "format": "geojson",
+      "sha256": "0a80a6ed6f6325424d051b7e6d29e644227e293af249b5674371e23a876b61e6",
+      "bytes": 11655,
+      "rows": 35
+    },
+    {
+      "table": "detectors_geo",
+      "path": "detectors.geojson",
+      "format": "geojson",
+      "sha256": "686a50ba889744415a901bb1852459728a8d01ccd4bf8fcadb099c02dfe77293",
+      "bytes": 99973,
+      "rows": 292
+    },
+    {
+      "table": "detectors_obs",
+      "path": "detectors_obs.parquet",
+      "format": "parquet",
+      "sha256": "1fbb8ba24ca81c7ee39d4e06700b121fb9ac3450ec465cd2dd7ac1ae2bea308d",
+      "bytes": 17711,
+      "rows": 8724
+    },
+    {
+      "table": "detectors_sim",
+      "path": "detectors_sim.parquet",
+      "format": "parquet",
+      "sha256": "f3ff6d62e83762919ab7e86d02371670182dedbf354170ba393e9fc0e90d0635",
+      "bytes": 11790,
+      "rows": 900
+    },
+    {
+      "table": "groupings",
+      "path": "groupings.parquet",
+      "format": "parquet",
+      "sha256": "fb726d04bb371e66a0cc59e8a33f405e0a79cd25f23a127bed1019d6f8e5c406",
+      "bytes": 330,
+      "rows": 0
+    },
+    {
+      "table": "convergence",
+      "path": "plcov/convergence.parquet",
+      "format": "parquet",
+      "sha256": "b557a9b7e837345f0c255b3c7e5aec73ec74a22b9c9138fe9d625247291f10f9",
+      "bytes": 1272,
+      "rows": 4
+    },
+    {
+      "table": "subpaths",
+      "path": "subpaths.geojson",
+      "format": "geojson",
+      "sha256": "dd6cc68f1f2490c07858386d69cc4e94d0da6db7d17360555bdf6a9e5dee18b4",
+      "bytes": 73943,
+      "rows": 6
+    }
+  ],
+  "provenance": [
+    {
+      "path": "provenance/centroids_raw.json",
+      "sha256": "48cb876b80f73adbf744e6b3b902d9b1fada69660dda9b4824a14a0ff0bf0aa6",
+      "bytes": 3523
+    },
+    {
+      "path": "provenance/detectors_raw.json",
+      "sha256": "96b22f915215c62497f3e23e80f57d9979b34483bfbd31334c3ecc23bd8b7f36",
+      "bytes": 55353
+    },
+    {
+      "path": "provenance/export_log.json",
+      "sha256": "4849f16bcf4586299e0e1049f72e33f9b0910838ef4f18e34bdd77eb92808475",
+      "bytes": 4561
+    },
+    {
+      "path": "provenance/groupings_raw.json",
+      "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
+      "bytes": 4
+    },
+    {
+      "path": "provenance/subpaths_raw.json",
+      "sha256": "de19d1d65cf30ee7aff3b18a25230d8ef89e1f83d9fd845ed33d15393667bb13",
+      "bytes": 39165
+    }
+  ],
+  "observed": {
+    "source": "pattern_rds_4.csv;traffic_survey_rds.csv",
+    "referenceDay": "2020-01-01",
+    "gridSeconds": 900,
+    "timestampConvention": "interval-end",
+    "units": "veh/h"
+  }
+}

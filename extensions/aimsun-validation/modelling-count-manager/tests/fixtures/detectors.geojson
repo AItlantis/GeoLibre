@@ -1,0 +1,4970 @@
+{
+  "type": "FeatureCollection",
+  "name": "detectors",
+  "features": [
+    {
+      "type": "Feature",
+      "id": 291496,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2277723,
+          25.1699308
+        ]
+      },
+      "properties": {
+        "oid": 291496,
+        "eid": "J91_DET1A",
+        "name": "",
+        "section_id": 35975
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291351,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881155,
+          25.1331923
+        ]
+      },
+      "properties": {
+        "oid": 291351,
+        "eid": "J254_DET16E",
+        "name": "",
+        "section_id": 26629
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291159,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204493,
+          25.1561282
+        ]
+      },
+      "properties": {
+        "oid": 291159,
+        "eid": "J584_A",
+        "name": "",
+        "section_id": 291149
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293315,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2280414,
+          25.1696207
+        ]
+      },
+      "properties": {
+        "oid": 293315,
+        "eid": "J91_DET19X",
+        "name": "",
+        "section_id": 286575
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293132,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.19944,
+          25.1340655
+        ]
+      },
+      "properties": {
+        "oid": 293132,
+        "eid": "J1531_DET6D",
+        "name": "",
+        "section_id": 135115
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293215,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.195225,
+          25.1278841
+        ]
+      },
+      "properties": {
+        "oid": 293215,
+        "eid": "J93_DET10E",
+        "name": "",
+        "section_id": 26108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291266,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950723,
+          25.1449277
+        ]
+      },
+      "properties": {
+        "oid": 291266,
+        "eid": "J587_N",
+        "name": "",
+        "section_id": 291251
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291508,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2273167,
+          25.1696815
+        ]
+      },
+      "properties": {
+        "oid": 291508,
+        "eid": "J91_DET21Z",
+        "name": "",
+        "section_id": 286602
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291488,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2220989,
+          25.1626495
+        ]
+      },
+      "properties": {
+        "oid": 291488,
+        "eid": "J557_B",
+        "name": "",
+        "section_id": 291480
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291442,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2157789,
+          25.1544851
+        ]
+      },
+      "properties": {
+        "oid": 291442,
+        "eid": "J143_DET4B",
+        "name": "",
+        "section_id": 285939
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291069,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2197621,
+          25.1745101
+        ]
+      },
+      "properties": {
+        "oid": 291069,
+        "eid": "J80_DET7E",
+        "name": "",
+        "section_id": 27096
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291133,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2082673,
+          25.1599627
+        ]
+      },
+      "properties": {
+        "oid": 291133,
+        "eid": "J81_DET4C",
+        "name": "",
+        "section_id": 281694
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293213,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1945964,
+          25.1281228
+        ]
+      },
+      "properties": {
+        "oid": 293213,
+        "eid": "J93_DET1A",
+        "name": "",
+        "section_id": 26923
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291128,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2080274,
+          25.1602455
+        ]
+      },
+      "properties": {
+        "oid": 291128,
+        "eid": "J81_DET3B",
+        "name": "",
+        "section_id": 35327
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293122,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1888842,
+          25.1381356
+        ]
+      },
+      "properties": {
+        "oid": 293122,
+        "eid": "J203_DET1G",
+        "name": "",
+        "section_id": 282467
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291434,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2096488,
+          25.1467684
+        ]
+      },
+      "properties": {
+        "oid": 291434,
+        "eid": "J643_B",
+        "name": "",
+        "section_id": 26889
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293297,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162088,
+          25.1545746
+        ]
+      },
+      "properties": {
+        "oid": 293297,
+        "eid": "J143_DET17H",
+        "name": "",
+        "section_id": 27137
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291244,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1957182,
+          25.1462289
+        ]
+      },
+      "properties": {
+        "oid": 291244,
+        "eid": "J82_DET9F",
+        "name": "",
+        "section_id": 1265
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292219,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878605,
+          25.1329988
+        ]
+      },
+      "properties": {
+        "oid": 292219,
+        "eid": "J254_DET10D",
+        "name": "",
+        "section_id": 38130
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291502,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2275648,
+          25.1693766
+        ]
+      },
+      "properties": {
+        "oid": 291502,
+        "eid": "J91_DET12E",
+        "name": "",
+        "section_id": 27104
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291457,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2160472,
+          25.1549629
+        ]
+      },
+      "properties": {
+        "oid": 291457,
+        "eid": "J143_DET11E",
+        "name": "",
+        "section_id": 27132
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293281,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204377,
+          25.1398303
+        ]
+      },
+      "properties": {
+        "oid": 293281,
+        "eid": "J92_DET1A",
+        "name": "",
+        "section_id": 283282
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291464,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162492,
+          25.1546316
+        ]
+      },
+      "properties": {
+        "oid": 291464,
+        "eid": "J143_DET15G",
+        "name": "",
+        "section_id": 285966
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291312,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1888308,
+          25.1376813
+        ]
+      },
+      "properties": {
+        "oid": 291312,
+        "eid": "J203_DET5B",
+        "name": "",
+        "section_id": 26730
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293313,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2274239,
+          25.1698113
+        ]
+      },
+      "properties": {
+        "oid": 293313,
+        "eid": "J91_DET17H",
+        "name": "",
+        "section_id": 286586
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293465,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162247,
+          25.1544977
+        ]
+      },
+      "properties": {
+        "oid": 293465,
+        "eid": "J143_DET22S",
+        "name": "",
+        "section_id": 292286
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291406,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2043769,
+          25.1398303
+        ]
+      },
+      "properties": {
+        "oid": 291406,
+        "eid": "J92_DET2A",
+        "name": "",
+        "section_id": 283282
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291201,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2001783,
+          25.1511401
+        ]
+      },
+      "properties": {
+        "oid": 291201,
+        "eid": "J585_A",
+        "name": "",
+        "section_id": 291184
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293123,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1890059,
+          25.138076
+        ]
+      },
+      "properties": {
+        "oid": 293123,
+        "eid": "J203_DET2E",
+        "name": "",
+        "section_id": 26633
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291262,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950452,
+          25.1451589
+        ]
+      },
+      "properties": {
+        "oid": 291262,
+        "eid": "J587_M",
+        "name": "",
+        "section_id": 291254
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293284,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2045196,
+          25.1404503
+        ]
+      },
+      "properties": {
+        "oid": 293284,
+        "eid": "J92_DET19Y",
+        "name": "",
+        "section_id": 283391
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291353,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881155,
+          25.1331928
+        ]
+      },
+      "properties": {
+        "oid": 291353,
+        "eid": "J254_DET14E",
+        "name": "",
+        "section_id": 26629
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291348,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878606,
+          25.1329988
+        ]
+      },
+      "properties": {
+        "oid": 291348,
+        "eid": "J254_DET12D",
+        "name": "",
+        "section_id": 38130
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291415,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2045835,
+          25.1403551
+        ]
+      },
+      "properties": {
+        "oid": 291415,
+        "eid": "J92_DET9E",
+        "name": "",
+        "section_id": 283309
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291091,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2167016,
+          25.1708478
+        ]
+      },
+      "properties": {
+        "oid": 291091,
+        "eid": "J582_A",
+        "name": "",
+        "section_id": 291081
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291487,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2220575,
+          25.1624117
+        ]
+      },
+      "properties": {
+        "oid": 291487,
+        "eid": "J557_A",
+        "name": "",
+        "section_id": 291477
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291440,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2158445,
+          25.1544476
+        ]
+      },
+      "properties": {
+        "oid": 291440,
+        "eid": "J143_DET2A",
+        "name": "",
+        "section_id": 27140
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291071,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2197628,
+          25.174511
+        ]
+      },
+      "properties": {
+        "oid": 291071,
+        "eid": "J80_DET6E",
+        "name": "",
+        "section_id": 27096
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291063,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2199385,
+          25.174938
+        ]
+      },
+      "properties": {
+        "oid": 291063,
+        "eid": "J80_DET1A",
+        "name": "",
+        "section_id": 26779
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291093,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.216701,
+          25.1708469
+        ]
+      },
+      "properties": {
+        "oid": 291093,
+        "eid": "J582_A",
+        "name": "",
+        "section_id": 291081
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291409,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2043131,
+          25.1398709
+        ]
+      },
+      "properties": {
+        "oid": 291409,
+        "eid": "J92_DET3B",
+        "name": "",
+        "section_id": 27192
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291364,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1945962,
+          25.1281229
+        ]
+      },
+      "properties": {
+        "oid": 291364,
+        "eid": "J93_DET3A",
+        "name": "",
+        "section_id": 26923
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291212,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1981116,
+          25.1485111
+        ]
+      },
+      "properties": {
+        "oid": 291212,
+        "eid": "J586_F",
+        "name": "",
+        "section_id": 291202
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292212,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878606,
+          25.1329987
+        ]
+      },
+      "properties": {
+        "oid": 292212,
+        "eid": "J254_DET11D",
+        "name": "",
+        "section_id": 38130
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293196,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1884747,
+          25.1326722
+        ]
+      },
+      "properties": {
+        "oid": 293196,
+        "eid": "J254_DET1A",
+        "name": "",
+        "section_id": 4010
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291131,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.208027,
+          25.1602451
+        ]
+      },
+      "properties": {
+        "oid": 291131,
+        "eid": "J81_DET1A",
+        "name": "",
+        "section_id": 35327
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291412,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2042311,
+          25.1402636
+        ]
+      },
+      "properties": {
+        "oid": 291412,
+        "eid": "J92_DET8D",
+        "name": "",
+        "section_id": 283295
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291344,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881845,
+          25.1324806
+        ]
+      },
+      "properties": {
+        "oid": 291344,
+        "eid": "J254_DET5B",
+        "name": "",
+        "section_id": 26737
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291354,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1882086,
+          25.1331873
+        ]
+      },
+      "properties": {
+        "oid": 291354,
+        "eid": "J254_DET18F",
+        "name": "",
+        "section_id": 291334
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291339,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1884752,
+          25.1326718
+        ]
+      },
+      "properties": {
+        "oid": 291339,
+        "eid": "J254_DET3A",
+        "name": "",
+        "section_id": 4010
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291236,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1961742,
+          25.1459699
+        ]
+      },
+      "properties": {
+        "oid": 291236,
+        "eid": "J82_DET4C",
+        "name": "",
+        "section_id": 27163
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293121,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1890062,
+          25.1380764
+        ]
+      },
+      "properties": {
+        "oid": 293121,
+        "eid": "J203_DET3F",
+        "name": "",
+        "section_id": 26633
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291283,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1928919,
+          25.1426151
+        ]
+      },
+      "properties": {
+        "oid": 291283,
+        "eid": "J384_C",
+        "name": "",
+        "section_id": 26644
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291372,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1952252,
+          25.127884
+        ]
+      },
+      "properties": {
+        "oid": 291372,
+        "eid": "J93_DET12E",
+        "name": "",
+        "section_id": 26108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291421,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2047201,
+          25.1399449
+        ]
+      },
+      "properties": {
+        "oid": 291421,
+        "eid": "J92_DET15H",
+        "name": "",
+        "section_id": 27067
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291370,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950744,
+          25.1282176
+        ]
+      },
+      "properties": {
+        "oid": 291370,
+        "eid": "J93_DET9D",
+        "name": "",
+        "section_id": 26101
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291274,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1929192,
+          25.1423943
+        ]
+      },
+      "properties": {
+        "oid": 291274,
+        "eid": "J384_A",
+        "name": "",
+        "section_id": 26724
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291501,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2279537,
+          25.1695367
+        ]
+      },
+      "properties": {
+        "oid": 291501,
+        "eid": "J91_DET6C",
+        "name": "",
+        "section_id": 26761
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292292,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2278465,
+          25.1698838
+        ]
+      },
+      "properties": {
+        "oid": 292292,
+        "eid": "J91_DET5B",
+        "name": "",
+        "section_id": 286554
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291391,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1996839,
+          25.1341637
+        ]
+      },
+      "properties": {
+        "oid": 291391,
+        "eid": "J1531_DET1F",
+        "name": "",
+        "section_id": 283121
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291503,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2275648,
+          25.1693767
+        ]
+      },
+      "properties": {
+        "oid": 291503,
+        "eid": "J91_DET11E",
+        "name": "",
+        "section_id": 27104
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291410,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204181,
+          25.1401988
+        ]
+      },
+      "properties": {
+        "oid": 291410,
+        "eid": "J92_DET6C",
+        "name": "",
+        "section_id": 27195
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291240,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1958558,
+          25.145906
+        ]
+      },
+      "properties": {
+        "oid": 291240,
+        "eid": "J82_DET7D",
+        "name": "",
+        "section_id": 27166
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291447,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2156743,
+          25.1547801
+        ]
+      },
+      "properties": {
+        "oid": 291447,
+        "eid": "J143_DET7C",
+        "name": "",
+        "section_id": 27145
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291338,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1884755,
+          25.1326716
+        ]
+      },
+      "properties": {
+        "oid": 291338,
+        "eid": "J254_DET4A",
+        "name": "",
+        "section_id": 4010
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293316,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.22763,
+          25.1693155
+        ]
+      },
+      "properties": {
+        "oid": 293316,
+        "eid": "J91_DET20Y",
+        "name": "",
+        "section_id": 286572
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292906,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2142781,
+          25.1675346
+        ]
+      },
+      "properties": {
+        "oid": 292906,
+        "eid": "J382_DET4C",
+        "name": "",
+        "section_id": 291094
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291414,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2045835,
+          25.140355
+        ]
+      },
+      "properties": {
+        "oid": 291414,
+        "eid": "J92_DET10E",
+        "name": "",
+        "section_id": 283309
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291395,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1995274,
+          25.1337525
+        ]
+      },
+      "properties": {
+        "oid": 291395,
+        "eid": "J1531_DET4C",
+        "name": "",
+        "section_id": 283077
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291239,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1958557,
+          25.1459059
+        ]
+      },
+      "properties": {
+        "oid": 291239,
+        "eid": "J82_DET8E",
+        "name": "",
+        "section_id": 27166
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291265,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950723,
+          25.1449277
+        ]
+      },
+      "properties": {
+        "oid": 291265,
+        "eid": "J587_N",
+        "name": "",
+        "section_id": 291251
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291065,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2201913,
+          25.1746329
+        ]
+      },
+      "properties": {
+        "oid": 291065,
+        "eid": "J80_DET4C",
+        "name": "",
+        "section_id": 281272
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291494,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2277724,
+          25.169931
+        ]
+      },
+      "properties": {
+        "oid": 291494,
+        "eid": "J91_DET3A",
+        "name": "",
+        "section_id": 35975
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291161,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204493,
+          25.1561282
+        ]
+      },
+      "properties": {
+        "oid": 291161,
+        "eid": "J584_A",
+        "name": "",
+        "section_id": 291149
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293282,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2044188,
+          25.1397235
+        ]
+      },
+      "properties": {
+        "oid": 293282,
+        "eid": "J92_DET17W",
+        "name": "",
+        "section_id": 283383
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291450,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2157344,
+          25.1548471
+        ]
+      },
+      "properties": {
+        "oid": 291450,
+        "eid": "J143_DET8D",
+        "name": "",
+        "section_id": 285950
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291199,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2001783,
+          25.1511401
+        ]
+      },
+      "properties": {
+        "oid": 291199,
+        "eid": "J585_A",
+        "name": "",
+        "section_id": 291184
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291342,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881846,
+          25.1324808
+        ]
+      },
+      "properties": {
+        "oid": 291342,
+        "eid": "J254_DET7B",
+        "name": "",
+        "section_id": 26737
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291061,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2199384,
+          25.174938
+        ]
+      },
+      "properties": {
+        "oid": 291061,
+        "eid": "J80_DET2A",
+        "name": "",
+        "section_id": 26779
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291129,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2080273,
+          25.1602455
+        ]
+      },
+      "properties": {
+        "oid": 291129,
+        "eid": "J81_DET2A",
+        "name": "",
+        "section_id": 35327
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291092,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2167011,
+          25.1708472
+        ]
+      },
+      "properties": {
+        "oid": 291092,
+        "eid": "J582_A",
+        "name": "",
+        "section_id": 291081
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293198,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1882778,
+          25.1322234
+        ]
+      },
+      "properties": {
+        "oid": 293198,
+        "eid": "J254_DET20X",
+        "name": "",
+        "section_id": 282699
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293131,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1997075,
+          25.1340993
+        ]
+      },
+      "properties": {
+        "oid": 293131,
+        "eid": "J1531_DET2A",
+        "name": "",
+        "section_id": 135119
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291486,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2220575,
+          25.1624117
+        ]
+      },
+      "properties": {
+        "oid": 291486,
+        "eid": "J557_A",
+        "name": "",
+        "section_id": 291477
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293197,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1886064,
+          25.132798
+        ]
+      },
+      "properties": {
+        "oid": 293197,
+        "eid": "J254_DET19W",
+        "name": "",
+        "section_id": 4518
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291343,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881845,
+          25.1324806
+        ]
+      },
+      "properties": {
+        "oid": 291343,
+        "eid": "J254_DET6B",
+        "name": "",
+        "section_id": 26737
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291443,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2157792,
+          25.1544855
+        ]
+      },
+      "properties": {
+        "oid": 291443,
+        "eid": "J143_DET3B",
+        "name": "",
+        "section_id": 285939
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291287,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1925906,
+          25.1425684
+        ]
+      },
+      "properties": {
+        "oid": 291287,
+        "eid": "J384_E",
+        "name": "",
+        "section_id": 130752
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291089,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2166842,
+          25.1706289
+        ]
+      },
+      "properties": {
+        "oid": 291089,
+        "eid": "J582_B",
+        "name": "",
+        "section_id": 291078
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291264,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950723,
+          25.1449277
+        ]
+      },
+      "properties": {
+        "oid": 291264,
+        "eid": "J587_N",
+        "name": "",
+        "section_id": 291251
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291235,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1961743,
+          25.1459699
+        ]
+      },
+      "properties": {
+        "oid": 291235,
+        "eid": "J82_DET5C",
+        "name": "",
+        "section_id": 27163
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291417,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2046438,
+          25.1403146
+        ]
+      },
+      "properties": {
+        "oid": 291417,
+        "eid": "J92_DET11F",
+        "name": "",
+        "section_id": 36933
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291497,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2278461,
+          25.1698833
+        ]
+      },
+      "properties": {
+        "oid": 291497,
+        "eid": "J91_DET4B",
+        "name": "",
+        "section_id": 286554
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291345,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1880857,
+          25.1324774
+        ]
+      },
+      "properties": {
+        "oid": 291345,
+        "eid": "J254_DET9C",
+        "name": "",
+        "section_id": 18668
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291433,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2096393,
+          25.146568
+        ]
+      },
+      "properties": {
+        "oid": 291433,
+        "eid": "J643_A",
+        "name": "",
+        "section_id": 285662
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291499,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2279537,
+          25.1695368
+        ]
+      },
+      "properties": {
+        "oid": 291499,
+        "eid": "J91_DET8D",
+        "name": "",
+        "section_id": 26761
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291068,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2197621,
+          25.1745101
+        ]
+      },
+      "properties": {
+        "oid": 291068,
+        "eid": "J80_DET8F",
+        "name": "",
+        "section_id": 27096
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291393,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1996109,
+          25.1337577
+        ]
+      },
+      "properties": {
+        "oid": 291393,
+        "eid": "J1531_DET3B",
+        "name": "",
+        "section_id": 38165
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291136,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2078178,
+          25.1598277
+        ]
+      },
+      "properties": {
+        "oid": 291136,
+        "eid": "J81_DET8F",
+        "name": "",
+        "section_id": 27129
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291107,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2141781,
+          25.1674364
+        ]
+      },
+      "properties": {
+        "oid": 291107,
+        "eid": "J382_DET6D",
+        "name": "",
+        "section_id": 26805
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291137,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2078179,
+          25.1598278
+        ]
+      },
+      "properties": {
+        "oid": 291137,
+        "eid": "J81_DET7E",
+        "name": "",
+        "section_id": 27129
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291263,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950452,
+          25.1451589
+        ]
+      },
+      "properties": {
+        "oid": 291263,
+        "eid": "J587_M",
+        "name": "",
+        "section_id": 291254
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291465,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.216249,
+          25.1546318
+        ]
+      },
+      "properties": {
+        "oid": 291465,
+        "eid": "J143_DET14G",
+        "name": "",
+        "section_id": 285966
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292223,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878605,
+          25.1329988
+        ]
+      },
+      "properties": {
+        "oid": 292223,
+        "eid": "J254_DET13D",
+        "name": "",
+        "section_id": 38130
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291467,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162087,
+          25.1545747
+        ]
+      },
+      "properties": {
+        "oid": 291467,
+        "eid": "J143_DET16H",
+        "name": "",
+        "section_id": 27137
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291396,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1994252,
+          25.1340234
+        ]
+      },
+      "properties": {
+        "oid": 291396,
+        "eid": "J1531_DET5E",
+        "name": "",
+        "section_id": 283125
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291067,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2200906,
+          25.1746127
+        ]
+      },
+      "properties": {
+        "oid": 291067,
+        "eid": "J80_DET5D",
+        "name": "",
+        "section_id": 8490
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291355,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1882086,
+          25.1331873
+        ]
+      },
+      "properties": {
+        "oid": 291355,
+        "eid": "J254_DET17F",
+        "name": "",
+        "section_id": 291334
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291164,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2044648,
+          25.1559162
+        ]
+      },
+      "properties": {
+        "oid": 291164,
+        "eid": "J584_B",
+        "name": "",
+        "section_id": 291146
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291179,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2017874,
+          25.1530241
+        ]
+      },
+      "properties": {
+        "oid": 291179,
+        "eid": "J383_C",
+        "name": "",
+        "section_id": 291168
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291466,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2163253,
+          25.1547041
+        ]
+      },
+      "properties": {
+        "oid": 291466,
+        "eid": "J143_DET21Z",
+        "name": "",
+        "section_id": 285968
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291432,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2096393,
+          25.146568
+        ]
+      },
+      "properties": {
+        "oid": 291432,
+        "eid": "J643_A",
+        "name": "",
+        "section_id": 285662
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291088,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2166842,
+          25.1706289
+        ]
+      },
+      "properties": {
+        "oid": 291088,
+        "eid": "J582_B",
+        "name": "",
+        "section_id": 291078
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291213,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1981116,
+          25.1485111
+        ]
+      },
+      "properties": {
+        "oid": 291213,
+        "eid": "J586_F",
+        "name": "",
+        "section_id": 291202
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292285,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2156745,
+          25.15478
+        ]
+      },
+      "properties": {
+        "oid": 292285,
+        "eid": "J143_DET6C",
+        "name": "",
+        "section_id": 27145
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291507,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2273708,
+          25.1697407
+        ]
+      },
+      "properties": {
+        "oid": 291507,
+        "eid": "J91_DET14G",
+        "name": "",
+        "section_id": 27108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291231,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.196022,
+          25.1462778
+        ]
+      },
+      "properties": {
+        "oid": 291231,
+        "eid": "J82_DET3B",
+        "name": "",
+        "section_id": 27155
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291113,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.211671,
+          25.164272
+        ]
+      },
+      "properties": {
+        "oid": 291113,
+        "eid": "J583_B",
+        "name": "",
+        "section_id": 26795
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291373,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1952251,
+          25.1278841
+        ]
+      },
+      "properties": {
+        "oid": 291373,
+        "eid": "J93_DET11E",
+        "name": "",
+        "section_id": 26108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291198,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2001623,
+          25.1509368
+        ]
+      },
+      "properties": {
+        "oid": 291198,
+        "eid": "J585_B",
+        "name": "",
+        "section_id": 26693
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291366,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1945965,
+          25.1281227
+        ]
+      },
+      "properties": {
+        "oid": 291366,
+        "eid": "J93_DET2A",
+        "name": "",
+        "section_id": 26923
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291341,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1879782,
+          25.1333913
+        ]
+      },
+      "properties": {
+        "oid": 291341,
+        "eid": "J254_DET22Z",
+        "name": "",
+        "section_id": 282686
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291139,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2078181,
+          25.1598281
+        ]
+      },
+      "properties": {
+        "oid": 291139,
+        "eid": "J81_DET6E",
+        "name": "",
+        "section_id": 27129
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291489,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2220989,
+          25.1626495
+        ]
+      },
+      "properties": {
+        "oid": 291489,
+        "eid": "J557_B",
+        "name": "",
+        "section_id": 291480
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291418,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204764,
+          25.1400034
+        ]
+      },
+      "properties": {
+        "oid": 291418,
+        "eid": "J92_DET14G",
+        "name": "",
+        "section_id": 283332
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293214,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1946553,
+          25.1281876
+        ]
+      },
+      "properties": {
+        "oid": 293214,
+        "eid": "J93_DET4B",
+        "name": "",
+        "section_id": 282852
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293283,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2041027,
+          25.1401351
+        ]
+      },
+      "properties": {
+        "oid": 293283,
+        "eid": "J92_DET18X",
+        "name": "",
+        "section_id": 283395
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291115,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.211671,
+          25.164272
+        ]
+      },
+      "properties": {
+        "oid": 291115,
+        "eid": "J583_B",
+        "name": "",
+        "section_id": 26795
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291216,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1981094,
+          25.1487276
+        ]
+      },
+      "properties": {
+        "oid": 291216,
+        "eid": "J586_E",
+        "name": "",
+        "section_id": 291205
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291178,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2017874,
+          25.1530241
+        ]
+      },
+      "properties": {
+        "oid": 291178,
+        "eid": "J383_C",
+        "name": "",
+        "section_id": 291168
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291346,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1880857,
+          25.1324775
+        ]
+      },
+      "properties": {
+        "oid": 291346,
+        "eid": "J254_DET8C",
+        "name": "",
+        "section_id": 18668
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291322,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1886891,
+          25.1379995
+        ]
+      },
+      "properties": {
+        "oid": 291322,
+        "eid": "J203_DET7D",
+        "name": "",
+        "section_id": 76916
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291175,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.201804,
+          25.1528175
+        ]
+      },
+      "properties": {
+        "oid": 291175,
+        "eid": "J383_A",
+        "name": "",
+        "section_id": 291165
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291278,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1927523,
+          25.1423314
+        ]
+      },
+      "properties": {
+        "oid": 291278,
+        "eid": "J384_B",
+        "name": "",
+        "section_id": 282332
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291261,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950452,
+          25.1451589
+        ]
+      },
+      "properties": {
+        "oid": 291261,
+        "eid": "J587_M",
+        "name": "",
+        "section_id": 291254
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291177,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2017874,
+          25.1530241
+        ]
+      },
+      "properties": {
+        "oid": 291177,
+        "eid": "J383_C",
+        "name": "",
+        "section_id": 291168
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291160,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204493,
+          25.1561282
+        ]
+      },
+      "properties": {
+        "oid": 291160,
+        "eid": "J584_A",
+        "name": "",
+        "section_id": 291149
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291506,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2273707,
+          25.1697408
+        ]
+      },
+      "properties": {
+        "oid": 291506,
+        "eid": "J91_DET15G",
+        "name": "",
+        "section_id": 27108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291441,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2158444,
+          25.1544476
+        ]
+      },
+      "properties": {
+        "oid": 291441,
+        "eid": "J143_DET1A",
+        "name": "",
+        "section_id": 27140
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291411,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2041811,
+          25.1401988
+        ]
+      },
+      "properties": {
+        "oid": 291411,
+        "eid": "J92_DET5C",
+        "name": "",
+        "section_id": 27195
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291105,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2142782,
+          25.1675347
+        ]
+      },
+      "properties": {
+        "oid": 291105,
+        "eid": "J382_DET5C",
+        "name": "",
+        "section_id": 291094
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291416,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2046438,
+          25.1403146
+        ]
+      },
+      "properties": {
+        "oid": 291416,
+        "eid": "J92_DET12F",
+        "name": "",
+        "section_id": 36933
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293211,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950666,
+          25.1283536
+        ]
+      },
+      "properties": {
+        "oid": 293211,
+        "eid": "J93_DET6C",
+        "name": "",
+        "section_id": 282890
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291459,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2161087,
+          25.1549251
+        ]
+      },
+      "properties": {
+        "oid": 291459,
+        "eid": "J143_DET13F",
+        "name": "",
+        "section_id": 285974
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291174,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.201804,
+          25.1528175
+        ]
+      },
+      "properties": {
+        "oid": 291174,
+        "eid": "J383_A",
+        "name": "",
+        "section_id": 291165
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291367,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1946553,
+          25.1281876
+        ]
+      },
+      "properties": {
+        "oid": 291367,
+        "eid": "J93_DET5B",
+        "name": "",
+        "section_id": 282852
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291284,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1928919,
+          25.1426152
+        ]
+      },
+      "properties": {
+        "oid": 291284,
+        "eid": "J384_C",
+        "name": "",
+        "section_id": 26644
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291375,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1951752,
+          25.1278261
+        ]
+      },
+      "properties": {
+        "oid": 291375,
+        "eid": "J93_DET13F",
+        "name": "",
+        "section_id": 51660
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291316,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1886327,
+          25.1379506
+        ]
+      },
+      "properties": {
+        "oid": 291316,
+        "eid": "J203_DET6C",
+        "name": "",
+        "section_id": 291318
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293300,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2158949,
+          25.155043
+        ]
+      },
+      "properties": {
+        "oid": 293300,
+        "eid": "J143_DET20Y",
+        "name": "",
+        "section_id": 285975
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291196,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2001623,
+          25.1509368
+        ]
+      },
+      "properties": {
+        "oid": 291196,
+        "eid": "J585_B",
+        "name": "",
+        "section_id": 26693
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291211,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1981116,
+          25.1485111
+        ]
+      },
+      "properties": {
+        "oid": 291211,
+        "eid": "J586_F",
+        "name": "",
+        "section_id": 291202
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291090,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2166842,
+          25.1706289
+        ]
+      },
+      "properties": {
+        "oid": 291090,
+        "eid": "J582_B",
+        "name": "",
+        "section_id": 291078
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293199,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878326,
+          25.1328783
+        ]
+      },
+      "properties": {
+        "oid": 293199,
+        "eid": "J254_DET21Y",
+        "name": "",
+        "section_id": 282653
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291242,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1958562,
+          25.1459065
+        ]
+      },
+      "properties": {
+        "oid": 291242,
+        "eid": "J82_DET6D",
+        "name": "",
+        "section_id": 27166
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293299,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2155966,
+          25.1546769
+        ]
+      },
+      "properties": {
+        "oid": 293299,
+        "eid": "J143_DET19X",
+        "name": "",
+        "section_id": 285951
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291435,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2096488,
+          25.1467684
+        ]
+      },
+      "properties": {
+        "oid": 291435,
+        "eid": "J643_B",
+        "name": "",
+        "section_id": 26889
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291118,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2116876,
+          25.1644797
+        ]
+      },
+      "properties": {
+        "oid": 291118,
+        "eid": "J583_A",
+        "name": "",
+        "section_id": 3924
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291232,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1960221,
+          25.1462779
+        ]
+      },
+      "properties": {
+        "oid": 291232,
+        "eid": "J82_DET2A",
+        "name": "",
+        "section_id": 27155
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291408,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2043129,
+          25.1398707
+        ]
+      },
+      "properties": {
+        "oid": 291408,
+        "eid": "J92_DET4B",
+        "name": "",
+        "section_id": 27192
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291286,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1930136,
+          25.1426494
+        ]
+      },
+      "properties": {
+        "oid": 291286,
+        "eid": "J384_D",
+        "name": "",
+        "section_id": 282319
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291059,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2199384,
+          25.1749379
+        ]
+      },
+      "properties": {
+        "oid": 291059,
+        "eid": "J80_DET3B",
+        "name": "",
+        "section_id": 26779
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293298,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2159951,
+          25.1543686
+        ]
+      },
+      "properties": {
+        "oid": 293298,
+        "eid": "J143_DET18W",
+        "name": "",
+        "section_id": 285940
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291117,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2116876,
+          25.1644797
+        ]
+      },
+      "properties": {
+        "oid": 291117,
+        "eid": "J583_A",
+        "name": "",
+        "section_id": 3924
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291500,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2279536,
+          25.1695368
+        ]
+      },
+      "properties": {
+        "oid": 291500,
+        "eid": "J91_DET7C",
+        "name": "",
+        "section_id": 26761
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291504,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2274967,
+          25.1694169
+        ]
+      },
+      "properties": {
+        "oid": 291504,
+        "eid": "J91_DET13F",
+        "name": "",
+        "section_id": 286450
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291420,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2047203,
+          25.1399448
+        ]
+      },
+      "properties": {
+        "oid": 291420,
+        "eid": "J92_DET16H",
+        "name": "",
+        "section_id": 27067
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291505,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2273705,
+          25.1697409
+        ]
+      },
+      "properties": {
+        "oid": 291505,
+        "eid": "J91_DET16G",
+        "name": "",
+        "section_id": 27108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291413,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2042315,
+          25.1402634
+        ]
+      },
+      "properties": {
+        "oid": 291413,
+        "eid": "J92_DET7D",
+        "name": "",
+        "section_id": 283295
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291162,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2044648,
+          25.1559162
+        ]
+      },
+      "properties": {
+        "oid": 291162,
+        "eid": "J584_B",
+        "name": "",
+        "section_id": 291146
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291419,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2047639,
+          25.1400035
+        ]
+      },
+      "properties": {
+        "oid": 291419,
+        "eid": "J92_DET13G",
+        "name": "",
+        "section_id": 283332
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291163,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2044648,
+          25.1559162
+        ]
+      },
+      "properties": {
+        "oid": 291163,
+        "eid": "J584_B",
+        "name": "",
+        "section_id": 291146
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291108,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2142692,
+          25.1677611
+        ]
+      },
+      "properties": {
+        "oid": 291108,
+        "eid": "J382_DET2A",
+        "name": "",
+        "section_id": 291097
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293212,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1953792,
+          25.1279393
+        ]
+      },
+      "properties": {
+        "oid": 293212,
+        "eid": "J93_DET14W",
+        "name": "",
+        "section_id": 282894
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291407,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2048597,
+          25.1400535
+        ]
+      },
+      "properties": {
+        "oid": 291407,
+        "eid": "J92_DET20Z",
+        "name": "",
+        "section_id": 283387
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291277,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1927523,
+          25.1423314
+        ]
+      },
+      "properties": {
+        "oid": 291277,
+        "eid": "J384_B",
+        "name": "",
+        "section_id": 282332
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291200,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2001783,
+          25.1511401
+        ]
+      },
+      "properties": {
+        "oid": 291200,
+        "eid": "J585_A",
+        "name": "",
+        "section_id": 291184
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291197,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2001623,
+          25.1509368
+        ]
+      },
+      "properties": {
+        "oid": 291197,
+        "eid": "J585_B",
+        "name": "",
+        "section_id": 26693
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291352,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881155,
+          25.1331925
+        ]
+      },
+      "properties": {
+        "oid": 291352,
+        "eid": "J254_DET15E",
+        "name": "",
+        "section_id": 26629
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291110,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2143602,
+          25.1678505
+        ]
+      },
+      "properties": {
+        "oid": 291110,
+        "eid": "J382_DET3B",
+        "name": "",
+        "section_id": 3915
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291460,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2161086,
+          25.154925
+        ]
+      },
+      "properties": {
+        "oid": 291460,
+        "eid": "J143_DET12F",
+        "name": "",
+        "section_id": 285974
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291116,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2116876,
+          25.1644797
+        ]
+      },
+      "properties": {
+        "oid": 291116,
+        "eid": "J583_A",
+        "name": "",
+        "section_id": 3924
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291498,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2279539,
+          25.1695366
+        ]
+      },
+      "properties": {
+        "oid": 291498,
+        "eid": "J91_DET9D",
+        "name": "",
+        "section_id": 26761
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291340,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1884751,
+          25.1326719
+        ]
+      },
+      "properties": {
+        "oid": 291340,
+        "eid": "J254_DET2A",
+        "name": "",
+        "section_id": 4010
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291114,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.211671,
+          25.164272
+        ]
+      },
+      "properties": {
+        "oid": 291114,
+        "eid": "J583_B",
+        "name": "",
+        "section_id": 26795
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291371,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950742,
+          25.1282174
+        ]
+      },
+      "properties": {
+        "oid": 291371,
+        "eid": "J93_DET8D",
+        "name": "",
+        "section_id": 26101
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291276,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1929195,
+          25.1423947
+        ]
+      },
+      "properties": {
+        "oid": 291276,
+        "eid": "J384_A",
+        "name": "",
+        "section_id": 26724
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291449,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2157348,
+          25.1548469
+        ]
+      },
+      "properties": {
+        "oid": 291449,
+        "eid": "J143_DET9D",
+        "name": "",
+        "section_id": 285950
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291214,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1981094,
+          25.1487276
+        ]
+      },
+      "properties": {
+        "oid": 291214,
+        "eid": "J586_E",
+        "name": "",
+        "section_id": 291205
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291275,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1929193,
+          25.1423945
+        ]
+      },
+      "properties": {
+        "oid": 291275,
+        "eid": "J384_A",
+        "name": "",
+        "section_id": 26724
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291495,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2277723,
+          25.1699307
+        ]
+      },
+      "properties": {
+        "oid": 291495,
+        "eid": "J91_DET2A",
+        "name": "",
+        "section_id": 35975
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293216,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950742,
+          25.1282174
+        ]
+      },
+      "properties": {
+        "oid": 293216,
+        "eid": "J93_DET7D",
+        "name": "",
+        "section_id": 26101
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291285,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1928918,
+          25.142615
+        ]
+      },
+      "properties": {
+        "oid": 291285,
+        "eid": "J384_C",
+        "name": "",
+        "section_id": 26644
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291315,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1888302,
+          25.1376806
+        ]
+      },
+      "properties": {
+        "oid": 291315,
+        "eid": "J203_DET4A",
+        "name": "",
+        "section_id": 26730
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291448,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2156746,
+          25.1547799
+        ]
+      },
+      "properties": {
+        "oid": 291448,
+        "eid": "J143_DET5C",
+        "name": "",
+        "section_id": 27145
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291176,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.201804,
+          25.1528175
+        ]
+      },
+      "properties": {
+        "oid": 291176,
+        "eid": "J383_A",
+        "name": "",
+        "section_id": 291165
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293314,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2276975,
+          25.1699801
+        ]
+      },
+      "properties": {
+        "oid": 293314,
+        "eid": "J91_DET18W",
+        "name": "",
+        "section_id": 286578
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291234,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1960219,
+          25.1462778
+        ]
+      },
+      "properties": {
+        "oid": 291234,
+        "eid": "J82_DET1A",
+        "name": "",
+        "section_id": 27155
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291215,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1981094,
+          25.1487276
+        ]
+      },
+      "properties": {
+        "oid": 291215,
+        "eid": "J586_E",
+        "name": "",
+        "section_id": 291205
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291135,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2081925,
+          25.1599269
+        ]
+      },
+      "properties": {
+        "oid": 291135,
+        "eid": "J81_DET5D",
+        "name": "",
+        "section_id": 26852
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292905,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2142693,
+          25.1677612
+        ]
+      },
+      "properties": {
+        "oid": 292905,
+        "eid": "J382_DET1A",
+        "name": "",
+        "section_id": 291097
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 291458,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2160472,
+          25.1549629
+        ]
+      },
+      "properties": {
+        "oid": 291458,
+        "eid": "J143_DET10E",
+        "name": "",
+        "section_id": 27132
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292843,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2197621,
+          25.1745101
+        ]
+      },
+      "properties": {
+        "oid": 292843,
+        "eid": "J80_E",
+        "name": "Detector Station 292843",
+        "section_id": 27096
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292913,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2082673,
+          25.1599627
+        ]
+      },
+      "properties": {
+        "oid": 292913,
+        "eid": "J81_C",
+        "name": "Detector Station 292913",
+        "section_id": 281694
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293124,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1888842,
+          25.1381356
+        ]
+      },
+      "properties": {
+        "oid": 293124,
+        "eid": "J203_G",
+        "name": "Detector Station 293124",
+        "section_id": 282467
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293136,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1995274,
+          25.1337525
+        ]
+      },
+      "properties": {
+        "oid": 293136,
+        "eid": "J1531_C",
+        "name": "Detector Station 293136",
+        "section_id": 283077
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293203,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878605,
+          25.1329988
+        ]
+      },
+      "properties": {
+        "oid": 293203,
+        "eid": "J254_D1",
+        "name": "Detector Station 293203",
+        "section_id": 38130
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293219,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950666,
+          25.1283536
+        ]
+      },
+      "properties": {
+        "oid": 293219,
+        "eid": "J93_C",
+        "name": "Detector Station 293219",
+        "section_id": 282890
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292916,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2078178,
+          25.1598277
+        ]
+      },
+      "properties": {
+        "oid": 292916,
+        "eid": "J81_F",
+        "name": "Detector Station 292916",
+        "section_id": 27129
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293289,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2045835,
+          25.1403551
+        ]
+      },
+      "properties": {
+        "oid": 293289,
+        "eid": "J92_E",
+        "name": "Detector Station 293289",
+        "section_id": 283309
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292841,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2201913,
+          25.1746329
+        ]
+      },
+      "properties": {
+        "oid": 292841,
+        "eid": "J80_C",
+        "name": "Detector Station 292841",
+        "section_id": 281272
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293327,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.22763,
+          25.1693155
+        ]
+      },
+      "properties": {
+        "oid": 293327,
+        "eid": "J91_Y",
+        "name": "Detector Station 293327",
+        "section_id": 286572
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293319,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2279537,
+          25.1695367
+        ]
+      },
+      "properties": {
+        "oid": 293319,
+        "eid": "J91_C",
+        "name": "Detector Station 293319",
+        "section_id": 26761
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293200,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1884755,
+          25.1326716
+        ]
+      },
+      "properties": {
+        "oid": 293200,
+        "eid": "J254_A",
+        "name": "Detector Station 293200",
+        "section_id": 4010
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293202,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1880857,
+          25.1324774
+        ]
+      },
+      "properties": {
+        "oid": 293202,
+        "eid": "J254_C",
+        "name": "Detector Station 293202",
+        "section_id": 18668
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293290,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2046438,
+          25.1403146
+        ]
+      },
+      "properties": {
+        "oid": 293290,
+        "eid": "J92_F",
+        "name": "Detector Station 293290",
+        "section_id": 36933
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293296,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2048597,
+          25.1400535
+        ]
+      },
+      "properties": {
+        "oid": 293296,
+        "eid": "J92_Z",
+        "name": "Detector Station 293296",
+        "section_id": 283387
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293295,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2045196,
+          25.1404503
+        ]
+      },
+      "properties": {
+        "oid": 293295,
+        "eid": "J92_Y",
+        "name": "Detector Station 293295",
+        "section_id": 283391
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293288,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2042311,
+          25.1402636
+        ]
+      },
+      "properties": {
+        "oid": 293288,
+        "eid": "J92_D",
+        "name": "Detector Station 293288",
+        "section_id": 283295
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292918,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.196022,
+          25.1462778
+        ]
+      },
+      "properties": {
+        "oid": 292918,
+        "eid": "J82_B",
+        "name": "Detector Station 292918",
+        "section_id": 27155
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292915,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2078179,
+          25.1598278
+        ]
+      },
+      "properties": {
+        "oid": 292915,
+        "eid": "J81_E",
+        "name": "Detector Station 292915",
+        "section_id": 27129
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293304,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2157344,
+          25.1548471
+        ]
+      },
+      "properties": {
+        "oid": 293304,
+        "eid": "J143_D",
+        "name": "Detector Station 293304",
+        "section_id": 285950
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293321,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2275648,
+          25.1693766
+        ]
+      },
+      "properties": {
+        "oid": 293321,
+        "eid": "J91_E",
+        "name": "Detector Station 293321",
+        "section_id": 27104
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292914,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2081925,
+          25.1599269
+        ]
+      },
+      "properties": {
+        "oid": 292914,
+        "eid": "J81_D_faulty",
+        "name": "Detector Station 292914",
+        "section_id": 26852
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293325,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2276975,
+          25.1699801
+        ]
+      },
+      "properties": {
+        "oid": 293325,
+        "eid": "J91_W",
+        "name": "Detector Station 293325",
+        "section_id": 286578
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293293,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2044188,
+          25.1397235
+        ]
+      },
+      "properties": {
+        "oid": 293293,
+        "eid": "J92_W",
+        "name": "Detector Station 293293",
+        "section_id": 283383
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293306,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2161087,
+          25.1549251
+        ]
+      },
+      "properties": {
+        "oid": 293306,
+        "eid": "J143_F",
+        "name": "Detector Station 293306",
+        "section_id": 285974
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293292,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2047203,
+          25.1399448
+        ]
+      },
+      "properties": {
+        "oid": 293292,
+        "eid": "J92_H",
+        "name": "Detector Station 293292",
+        "section_id": 27067
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292910,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2141781,
+          25.1674364
+        ]
+      },
+      "properties": {
+        "oid": 292910,
+        "eid": "J382_D",
+        "name": "Detector Station 292910",
+        "section_id": 26805
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293291,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204764,
+          25.1400034
+        ]
+      },
+      "properties": {
+        "oid": 293291,
+        "eid": "J92_G",
+        "name": "Detector Station 293291",
+        "section_id": 283332
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293311,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2158949,
+          25.155043
+        ]
+      },
+      "properties": {
+        "oid": 293311,
+        "eid": "J143_Y",
+        "name": "Detector Station 293311",
+        "section_id": 285975
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293323,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2273705,
+          25.1697409
+        ]
+      },
+      "properties": {
+        "oid": 293323,
+        "eid": "J91_G",
+        "name": "Detector Station 293323",
+        "section_id": 27108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293204,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878605,
+          25.1329988
+        ]
+      },
+      "properties": {
+        "oid": 293204,
+        "eid": "J254_D2",
+        "name": "Detector Station 293204",
+        "section_id": 38130
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293201,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881845,
+          25.1324806
+        ]
+      },
+      "properties": {
+        "oid": 293201,
+        "eid": "J254_B",
+        "name": "Detector Station 293201",
+        "section_id": 26737
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293125,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1890059,
+          25.138076
+        ]
+      },
+      "properties": {
+        "oid": 293125,
+        "eid": "J203_E",
+        "name": "Detector Station 293125",
+        "section_id": 26633
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292844,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2197621,
+          25.1745101
+        ]
+      },
+      "properties": {
+        "oid": 292844,
+        "eid": "J80_F",
+        "name": "Detector Station 292844",
+        "section_id": 27096
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293130,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1886891,
+          25.1379995
+        ]
+      },
+      "properties": {
+        "oid": 293130,
+        "eid": "J203_D",
+        "name": "Detector Station 293130",
+        "section_id": 76916
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293205,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1881155,
+          25.1331928
+        ]
+      },
+      "properties": {
+        "oid": 293205,
+        "eid": "J254_E",
+        "name": "Detector Station 293205",
+        "section_id": 26629
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293307,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162492,
+          25.1546316
+        ]
+      },
+      "properties": {
+        "oid": 293307,
+        "eid": "J143_G",
+        "name": "Detector Station 293307",
+        "section_id": 285966
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293320,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2279539,
+          25.1695366
+        ]
+      },
+      "properties": {
+        "oid": 293320,
+        "eid": "J91_D",
+        "name": "Detector Station 293320",
+        "section_id": 26761
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293217,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1945962,
+          25.1281229
+        ]
+      },
+      "properties": {
+        "oid": 293217,
+        "eid": "J93_A",
+        "name": "Detector Station 293217",
+        "section_id": 26923
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293220,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1950744,
+          25.1282176
+        ]
+      },
+      "properties": {
+        "oid": 293220,
+        "eid": "J93_D",
+        "name": "Detector Station 293220",
+        "section_id": 26101
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293223,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1953792,
+          25.1279393
+        ]
+      },
+      "properties": {
+        "oid": 293223,
+        "eid": "J93_W",
+        "name": "Detector Station 293223",
+        "section_id": 282894
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293210,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1879782,
+          25.1333913
+        ]
+      },
+      "properties": {
+        "oid": 293210,
+        "eid": "J254_Z",
+        "name": "Detector Station 293210",
+        "section_id": 282686
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293133,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1996839,
+          25.1341637
+        ]
+      },
+      "properties": {
+        "oid": 293133,
+        "eid": "J1531_F",
+        "name": "Detector Station 293133",
+        "section_id": 283121
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292921,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1958557,
+          25.1459059
+        ]
+      },
+      "properties": {
+        "oid": 292921,
+        "eid": "J82_E",
+        "name": "Detector Station 292921",
+        "section_id": 27166
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293324,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2274239,
+          25.1698113
+        ]
+      },
+      "properties": {
+        "oid": 293324,
+        "eid": "J91_H",
+        "name": "Detector Station 293324",
+        "section_id": 286586
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293317,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2277724,
+          25.169931
+        ]
+      },
+      "properties": {
+        "oid": 293317,
+        "eid": "J91_A",
+        "name": "Detector Station 293317",
+        "section_id": 35975
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293309,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2159951,
+          25.1543686
+        ]
+      },
+      "properties": {
+        "oid": 293309,
+        "eid": "J143_W",
+        "name": "Detector Station 293309",
+        "section_id": 285940
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293302,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2157789,
+          25.1544851
+        ]
+      },
+      "properties": {
+        "oid": 293302,
+        "eid": "J143_B",
+        "name": "Detector Station 293302",
+        "section_id": 285939
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293127,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1888302,
+          25.1376806
+        ]
+      },
+      "properties": {
+        "oid": 293127,
+        "eid": "J203_A",
+        "name": "Detector Station 293127",
+        "section_id": 26730
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293318,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2278465,
+          25.1698838
+        ]
+      },
+      "properties": {
+        "oid": 293318,
+        "eid": "J91_B",
+        "name": "Detector Station 293318",
+        "section_id": 286554
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293287,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.204181,
+          25.1401988
+        ]
+      },
+      "properties": {
+        "oid": 293287,
+        "eid": "J92_C",
+        "name": "Detector Station 293287",
+        "section_id": 27195
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293286,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2043129,
+          25.1398707
+        ]
+      },
+      "properties": {
+        "oid": 293286,
+        "eid": "J92_B",
+        "name": "Detector Station 293286",
+        "section_id": 27192
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293303,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2156743,
+          25.1547801
+        ]
+      },
+      "properties": {
+        "oid": 293303,
+        "eid": "J143_C",
+        "name": "Detector Station 293303",
+        "section_id": 27145
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293208,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1882778,
+          25.1322234
+        ]
+      },
+      "properties": {
+        "oid": 293208,
+        "eid": "J254_X",
+        "name": "Detector Station 293208",
+        "section_id": 282699
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292911,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2080273,
+          25.1602455
+        ]
+      },
+      "properties": {
+        "oid": 292911,
+        "eid": "J81_A",
+        "name": "Detector Station 292911",
+        "section_id": 35327
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293308,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162088,
+          25.1545746
+        ]
+      },
+      "properties": {
+        "oid": 293308,
+        "eid": "J143_H",
+        "name": "Detector Station 293308",
+        "section_id": 27137
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292907,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2142693,
+          25.1677612
+        ]
+      },
+      "properties": {
+        "oid": 292907,
+        "eid": "J382_A",
+        "name": "Detector Station 292907",
+        "section_id": 291097
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292922,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1957182,
+          25.1462289
+        ]
+      },
+      "properties": {
+        "oid": 292922,
+        "eid": "J82_F",
+        "name": "Detector Station 292922",
+        "section_id": 1265
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293221,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1952252,
+          25.127884
+        ]
+      },
+      "properties": {
+        "oid": 293221,
+        "eid": "J93_E",
+        "name": "Detector Station 293221",
+        "section_id": 26108
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293128,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1888308,
+          25.1376813
+        ]
+      },
+      "properties": {
+        "oid": 293128,
+        "eid": "J203_B",
+        "name": "Detector Station 293128",
+        "section_id": 26730
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293206,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1882086,
+          25.1331873
+        ]
+      },
+      "properties": {
+        "oid": 293206,
+        "eid": "J254_F",
+        "name": "Detector Station 293206",
+        "section_id": 291334
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292909,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2142781,
+          25.1675346
+        ]
+      },
+      "properties": {
+        "oid": 292909,
+        "eid": "J382_C",
+        "name": "Detector Station 292909",
+        "section_id": 291094
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293126,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1890062,
+          25.1380764
+        ]
+      },
+      "properties": {
+        "oid": 293126,
+        "eid": "J203_F",
+        "name": "Detector Station 293126",
+        "section_id": 26633
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293137,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1994252,
+          25.1340234
+        ]
+      },
+      "properties": {
+        "oid": 293137,
+        "eid": "J1531_E",
+        "name": "Detector Station 293137",
+        "section_id": 283125
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293294,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2041027,
+          25.1401351
+        ]
+      },
+      "properties": {
+        "oid": 293294,
+        "eid": "J92_X",
+        "name": "Detector Station 293294",
+        "section_id": 283395
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293222,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1951752,
+          25.1278261
+        ]
+      },
+      "properties": {
+        "oid": 293222,
+        "eid": "J93_F",
+        "name": "Detector Station 293222",
+        "section_id": 51660
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293301,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2158444,
+          25.1544476
+        ]
+      },
+      "properties": {
+        "oid": 293301,
+        "eid": "J143_A",
+        "name": "Detector Station 293301",
+        "section_id": 27140
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292908,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2143602,
+          25.1678505
+        ]
+      },
+      "properties": {
+        "oid": 292908,
+        "eid": "J382_B",
+        "name": "Detector Station 292908",
+        "section_id": 3915
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293285,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2043769,
+          25.1398303
+        ]
+      },
+      "properties": {
+        "oid": 293285,
+        "eid": "J92_A",
+        "name": "Detector Station 293285",
+        "section_id": 283282
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292920,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1958558,
+          25.145906
+        ]
+      },
+      "properties": {
+        "oid": 292920,
+        "eid": "J82_D",
+        "name": "Detector Station 292920",
+        "section_id": 27166
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293134,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1997075,
+          25.1340993
+        ]
+      },
+      "properties": {
+        "oid": 293134,
+        "eid": "J1531_A",
+        "name": "Detector Station 293134",
+        "section_id": 135119
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292917,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1960221,
+          25.1462779
+        ]
+      },
+      "properties": {
+        "oid": 292917,
+        "eid": "J82_A",
+        "name": "Detector Station 292917",
+        "section_id": 27155
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293310,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2155966,
+          25.1546769
+        ]
+      },
+      "properties": {
+        "oid": 293310,
+        "eid": "J143_X",
+        "name": "Detector Station 293310",
+        "section_id": 285951
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292839,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2199385,
+          25.174938
+        ]
+      },
+      "properties": {
+        "oid": 292839,
+        "eid": "J80_A",
+        "name": "Detector Station 292839",
+        "section_id": 26779
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292842,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2200906,
+          25.1746127
+        ]
+      },
+      "properties": {
+        "oid": 292842,
+        "eid": "J80_D",
+        "name": "Detector Station 292842",
+        "section_id": 8490
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293207,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1886064,
+          25.132798
+        ]
+      },
+      "properties": {
+        "oid": 293207,
+        "eid": "J254_W",
+        "name": "Detector Station 293207",
+        "section_id": 4518
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293312,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2163253,
+          25.1547041
+        ]
+      },
+      "properties": {
+        "oid": 293312,
+        "eid": "J143_Z",
+        "name": "Detector Station 293312",
+        "section_id": 285968
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293209,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1878326,
+          25.1328783
+        ]
+      },
+      "properties": {
+        "oid": 293209,
+        "eid": "J254_Y",
+        "name": "Detector Station 293209",
+        "section_id": 282653
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292912,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2080274,
+          25.1602455
+        ]
+      },
+      "properties": {
+        "oid": 292912,
+        "eid": "J81_B",
+        "name": "Detector Station 292912",
+        "section_id": 35327
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293218,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1946553,
+          25.1281876
+        ]
+      },
+      "properties": {
+        "oid": 293218,
+        "eid": "J93_B",
+        "name": "Detector Station 293218",
+        "section_id": 282852
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293322,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2274967,
+          25.1694169
+        ]
+      },
+      "properties": {
+        "oid": 293322,
+        "eid": "J91_F",
+        "name": "Detector Station 293322",
+        "section_id": 286450
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293138,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.19944,
+          25.1340655
+        ]
+      },
+      "properties": {
+        "oid": 293138,
+        "eid": "J1531_D",
+        "name": "Detector Station 293138",
+        "section_id": 135115
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293305,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2160472,
+          25.1549629
+        ]
+      },
+      "properties": {
+        "oid": 293305,
+        "eid": "J143_E",
+        "name": "Detector Station 293305",
+        "section_id": 27132
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293135,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1996109,
+          25.1337577
+        ]
+      },
+      "properties": {
+        "oid": 293135,
+        "eid": "J1531_B",
+        "name": "Detector Station 293135",
+        "section_id": 38165
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293328,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2273167,
+          25.1696815
+        ]
+      },
+      "properties": {
+        "oid": 293328,
+        "eid": "J91_Z",
+        "name": "Detector Station 293328",
+        "section_id": 286602
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293466,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2162247,
+          25.1544977
+        ]
+      },
+      "properties": {
+        "oid": 293466,
+        "eid": "J143_S",
+        "name": "Detector Station 293466",
+        "section_id": 292286
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293129,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1886327,
+          25.1379506
+        ]
+      },
+      "properties": {
+        "oid": 293129,
+        "eid": "J203_C",
+        "name": "Detector Station 293129",
+        "section_id": 291318
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292840,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2199384,
+          25.1749379
+        ]
+      },
+      "properties": {
+        "oid": 292840,
+        "eid": "J80_B",
+        "name": "Detector Station 292840",
+        "section_id": 26779
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 292919,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.1961743,
+          25.1459699
+        ]
+      },
+      "properties": {
+        "oid": 292919,
+        "eid": "J82_C",
+        "name": "Detector Station 292919",
+        "section_id": 27163
+      }
+    },
+    {
+      "type": "Feature",
+      "id": 293326,
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          55.2280414,
+          25.1696207
+        ]
+      },
+      "properties": {
+        "oid": 293326,
+        "eid": "J91_X",
+        "name": "Detector Station 293326",
+        "section_id": 286575
+      }
+    }
+  ]
+}

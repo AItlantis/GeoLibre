@@ -30,6 +30,9 @@ import {
   DET_VIEWS,
   unmatchedSimSql,
   bucketOptions,
+  bucketStep,
+  wholePeriod,
+  WHOLE_PERIOD,
   detViewScript,
   obsGridMinutes,
   rawTableNames,
@@ -219,14 +222,30 @@ export class DetController {
   }
 
   /** Adapter + det views for the loaded run, with the manifest's observation metadata. */
-  private viewScript(obsSource: ObsSource, bucketMinutes: number): string {
+  private viewScript(obsSource: ObsSource, bucket: number, fromMin = this.state.fromMin, toMin = this.state.toMin): string {
+    const eff = this.effectiveBucket(bucket, fromMin, toMin);
     return detViewScript({
       prefix: this.deps.prefix,
       obsSource,
-      bucketMinutes,
+      bucketMinutes: eff.minutes,
+      bucketOriginMin: eff.originMin,
       observed: this.observed ?? undefined,
       simDurationSeconds: this.simDurationSeconds,
     });
+  }
+
+  /** Smallest valid bucket of the loaded run (multiple of the simulated interval and the observed grid). */
+  bucketStepMin = 60;
+
+  /** The selected window as one bucket (null when it holds no complete interval). */
+  whole(fromMin = this.state.fromMin, toMin = this.state.toMin): { originMin: number; minutes: number } | null {
+    return wholePeriod(fromMin, toMin, this.bucketStepMin);
+  }
+
+  /** Bucket length and grid origin the views use; WHOLE_PERIOD maps to the window (finest bucket when it has no complete interval). */
+  private effectiveBucket(bucket: number, fromMin: number, toMin: number): { minutes: number; originMin: number } {
+    if (bucket !== WHOLE_PERIOD) return { minutes: bucket, originMin: 0 };
+    return this.whole(fromMin, toMin) ?? { minutes: this.bucketStepMin, originMin: 0 };
   }
 
   /** `observed` from the manifest entry, else from the run's analysis_manifest.json / analysis.json. */
@@ -299,13 +318,15 @@ export class DetController {
       const start = Number(probe?.start_min ?? 0);
       const end = Number(probe?.end_min ?? 1440);
       const dur = this.simDurationSeconds !== null ? minDur : Number(probe?.dur_min ?? 60);
-      const opts = bucketOptions(dur, start, end, this.observed ? obsGridMinutes(this.observed) : undefined);
+      const obsGrid = this.observed ? obsGridMinutes(this.observed) : undefined;
+      const opts = bucketOptions(dur, start, end, obsGrid);
+      this.bucketStepMin = bucketStep(dur, obsGrid);
       this.dispatch({
         type: "probe-ready",
         fromMin: start,
         toMin: Math.min(1440, Math.max(end, start + 1)),
         bucket: opts.includes(60) ? 60 : opts[0],
-        bucketOptions: opts,
+        bucketOptions: [...opts, WHOLE_PERIOD],
       });
       await this.refresh();
     } catch (err) {
@@ -320,8 +341,8 @@ export class DetController {
       const db = await this.deps.getDb();
       const s = this.state;
       const out = await withLock(async () => {
-        await db.exec(this.viewScript(s.obsSource, s.bucket));
-        const rows = await db.query<ValRow>(windowQuery(s.fromMin, s.toMin));
+        await db.exec(this.viewScript(s.obsSource, s.bucket, s.fromMin, s.toMin));
+        const rows = await db.query<ValRow>(windowQuery(s.fromMin, s.toMin, this.effectiveBucket(s.bucket, s.fromMin, s.toMin).minutes));
         const ns = (await db.query<{ n_sim: number }>(PROBE_SIM_SQL))[0];
         const no = (await db.query<{ n_obs: number }>(PROBE_OBS_SQL))[0];
         return { rows, nSim: Number(ns?.n_sim ?? 0), nObs: Number(no?.n_obs ?? 0) };
@@ -383,7 +404,7 @@ export class DetController {
     try {
       const db = await this.deps.getDb();
       const profiles = await withLock(async () => {
-        await db.exec(this.viewScript(profileState.obsSource, profileState.bucket));
+        await db.exec(this.viewScript(profileState.obsSource, profileState.bucket, profileState.fromMin, profileState.toMin));
         const out = { ...this.dayProfiles };
         if (refreshBase) {
           for (const scope of ["mean", "sum"] as const) {

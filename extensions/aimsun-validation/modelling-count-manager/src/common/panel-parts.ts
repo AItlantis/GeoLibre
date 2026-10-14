@@ -4,7 +4,7 @@ import type { DetController } from "./controller.ts";
 import type { AppLike } from "./host.ts";
 import { locateOid } from "./geo.ts";
 import { filesFromInput } from "./package-source.ts";
-import { OBS_SOURCES, type ObsSource } from "./sql.ts";
+import { durationLabel, OBS_SOURCES, WHOLE_PERIOD, type ObsSource } from "./sql.ts";
 import { minToLabel, TIME_STEPS } from "./state.ts";
 import { el, field, selectEl, STATUS_COLORS, type Translate, makeFormat } from "./ui.ts";
 
@@ -100,8 +100,15 @@ export function controlsSection(ctx: Ctx): HTMLElement {
   };
   const from = selectEl(steps(0, 1425, s.fromMin), s.fromMin, (v) => ctl.setWindow(Number(v), s.toMin));
   const to = selectEl(steps(s.fromMin + 1, 1440, s.toMin), s.toMin, (v) => ctl.setWindow(s.fromMin, Number(v)));
+  const bucketLabel = (b: number): string => {
+    if (b === WHOLE_PERIOD) {
+      const w = ctl.whole();
+      return w ? t("ctl.bucket.whole", "Whole period ({{d}})", { d: durationLabel(w.minutes) }) : t("ctl.bucket.wholeNone", "Whole period (span too short)");
+    }
+    return b % 60 === 0 ? t("ctl.bucket.h", "{{n}} h", { n: b / 60 }) : t("ctl.bucket.min", "{{n}} min", { n: b });
+  };
   const bucket = selectEl(
-    s.bucketOptions.map((b) => ({ value: b, label: b % 60 === 0 ? t("ctl.bucket.h", "{{n}} h", { n: b / 60 }) : t("ctl.bucket.min", "{{n}} min", { n: b }) })),
+    s.bucketOptions.map((b) => ({ value: b, label: bucketLabel(b) })),
     s.bucket,
     (v) => ctl.setBucket(Number(v)),
   );
@@ -115,8 +122,8 @@ export function controlsSection(ctx: Ctx): HTMLElement {
     field(t("ctl.bucket", "Bucket"), bucket),
     el("p", {
       class: "av-hint av-span",
-      text: t("ctl.bucketNote", "Buckets must be whole multiples of the {{n}}-minute simulated interval, so the simulated and observed hourly flows cover the same period.", {
-        n: s.bucketOptions[0] ?? 60,
+      text: t("ctl.bucketNote", "Buckets are whole multiples of the {{n}}-minute interval shared by the simulation and the observations; Whole period is the From-To span rounded to complete intervals.", {
+        n: ctl.bucketStepMin,
       }),
     }),
   ]);

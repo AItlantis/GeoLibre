@@ -92,6 +92,9 @@ export function classifyPath(path: string): { run: string; kind: FileKind } | nu
   return { run: segs.length >= 2 ? segs[segs.length - 2] : "", kind };
 }
 
+/** Manifest `table` names that identify a detector file whose path does not (e.g. a content-addressed or renamed file). */
+const TABLE_KINDS: Record<string, FileKind> = { detectors_sim: "sim", detectors_obs: "obs", detectors_geo: "geo" };
+
 export function sortRuns(runs: string[]): string[] {
   const rank = (r: string): number => {
     const i = RUN_ORDER.indexOf(r);
@@ -105,6 +108,8 @@ export interface RawItem {
   run?: string;
   read: () => Promise<Uint8Array>;
   sha256?: string;
+  /** Manifest `table` name: classifies the file when its path is not a recognised detector file name. */
+  table?: string;
 }
 
 /** Group items into runs. Files with no run directory ("") are shared defaults for runs lacking that kind. */
@@ -117,12 +122,13 @@ export function buildIndex(
   const byRun = new Map<string, Partial<Record<FileKind, PkgFile>>>();
   for (const it of items) {
     const c = classifyPath(it.path);
-    if (!c) continue;
-    const run = it.run ?? c.run;
+    const kind = c?.kind ?? (it.table ? TABLE_KINDS[it.table] : undefined);
+    if (!kind) continue;
+    const run = it.run ?? c?.run ?? "";
     if (excludeRuns.has(run)) continue;
     const slot = byRun.get(run) ?? {};
     // First file wins, so a shallower duplicate does not silently replace a deeper one.
-    slot[c.kind] ??= { path: it.path, run, kind: c.kind, read: it.read, sha256: it.sha256 };
+    slot[kind] ??= { path: it.path, run, kind, read: it.read, sha256: it.sha256 };
     byRun.set(run, slot);
   }
   const shared = byRun.get("") ?? {};
@@ -181,10 +187,10 @@ export function itemsFromManifest(
   if (!manifest || typeof manifest !== "object") throw new Error("manifest: not an object");
   const m = manifest as ManifestShape;
   if (m.schema_version !== 1) throw new Error(`manifest: unsupported schema_version ${String(m.schema_version)} (expected 1)`);
-  const entries: Array<{ path: string; run?: string; sha256?: string }> = [];
+  const entries: Array<{ path: string; run?: string; sha256?: string; table?: string }> = [];
   for (const [i, f] of (m.files ?? []).entries()) {
     if (!isSafeRelativePath(f?.path)) throw new Error(`manifest.files[${i}]: path must be relative, no '..'`);
-    entries.push({ path: f.path, run: f.run, sha256: checkSha(f.sha256, `manifest.files[${i}]`) });
+    entries.push({ path: f.path, run: f.run, table: typeof f.table === "string" ? f.table : undefined, sha256: checkSha(f.sha256, `manifest.files[${i}]`) });
   }
   for (const [path, sha] of Object.entries(m.outputs_sha256 ?? {})) {
     if (!isSafeRelativePath(path)) throw new Error(`manifest.outputs_sha256: unsafe path '${path}'`);
@@ -204,6 +210,7 @@ export function itemsFromManifest(
       path: e.path,
       run: e.run ?? (c && c.run ? c.run : single),
       sha256: e.sha256,
+      table: e.table,
       read: () => fetchBytes(url, e.path, e.sha256),
     };
   });

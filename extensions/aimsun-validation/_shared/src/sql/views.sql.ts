@@ -29,6 +29,8 @@
 export interface ViewOptions {
   /** Bucket the detector intervals are aggregated to, in minutes. Default 60. */
   bucketMinutes?: number;
+  /** Minute-of-day the bucket grid starts at (default 0 = midnight). A whole-period bucket starts at the window start. */
+  bucketOriginMin?: number;
   /**
    * Keep only buckets whose simulated AND observed coverage (sum of dur_min) reaches the
    * bucket length. Default true: a partial bucket would understate the hourly flow.
@@ -89,6 +91,9 @@ export function buildViewsSql(options: ViewOptions = {}): string {
 function buildAllSql(options: ViewOptions): Array<{ group: "od" | "trip" | "det"; sql: string }> {
   const bucket = num(options.bucketMinutes ?? 60, "bucketMinutes");
   if (!Number.isInteger(bucket) || bucket <= 0) throw new Error("bucketMinutes must be a positive integer");
+  const origin = num(options.bucketOriginMin ?? 0, "bucketOriginMin");
+  if (!Number.isInteger(origin) || origin < 0) throw new Error("bucketOriginMin must be a non-negative integer");
+  const bstart = origin === 0 ? `CAST(floor(t_start_min / ${bucket}) AS INTEGER) * ${bucket}` : `CAST(floor((t_start_min - ${origin}) / ${bucket}) AS INTEGER) * ${bucket} + ${origin}`;
   const full = options.requireFullBuckets ?? true;
   const gehPass = num(options.gehPass ?? 5, "gehPass");
   const gehWarn = num(options.gehWarn ?? 10, "gehWarn");
@@ -193,14 +198,14 @@ GROUP BY scenario;
 CREATE OR REPLACE VIEW v_det_validation AS
 WITH sim AS (
   SELECT CAST(eid AS VARCHAR) AS eid, MIN(oid) AS oid,
-         CAST(floor(t_start_min / ${bucket}) AS INTEGER) * ${bucket} AS bucket_start_min,
+         ${bstart} AS bucket_start_min,
          ${simH} AS m, SUM(dur_min) AS cover_min
   FROM ${simRel}
   WHERE flow IS NOT NULL AND dur_min > 0 AND eid IS NOT NULL AND TRIM(CAST(eid AS VARCHAR)) <> ''
   GROUP BY 1, 3
 ), obs AS (
   SELECT CAST(detector_id AS VARCHAR) AS eid,
-         CAST(floor(t_start_min / ${bucket}) AS INTEGER) * ${bucket} AS bucket_start_min,
+         ${bstart} AS bucket_start_min,
          ${obsH} AS c, SUM(dur_min) AS cover_min
   FROM ${obsRel}
   WHERE flow IS NOT NULL AND dur_min > 0 AND detector_id IS NOT NULL AND TRIM(CAST(detector_id AS VARCHAR)) <> ''

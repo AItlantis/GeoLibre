@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DetController, withLock } from "../src/common/controller.ts";
 import { computeKpis } from "../src/common/aggregate.ts";
+import { WHOLE_PERIOD } from "../src/common/sql.ts";
 import { openNodeDb } from "./node-db.ts";
 
 const ROOT = process.env.AIMSUN_DATA_DIR ?? "";
@@ -42,7 +43,7 @@ test("folder load: AMPK_3 validation summary matches the shared view (n=509, r2~
     assert.deepEqual(c.state.runs, ["AMPK_3", "AMPK_3b", "PMPK_3"]);
     assert.equal(c.state.run, "AMPK_3");
     assert.deepEqual([c.state.fromMin, c.state.toMin, c.state.bucket], [420, 480, 60]);
-    assert.deepEqual(c.state.bucketOptions, [60]);
+    assert.deepEqual(c.state.bucketOptions, [60, WHOLE_PERIOD]);
     assert.equal(c.hasGeo, existsSync(join(ROOT, "AMPK_3", "detectors.geojson")));
     assert.equal(c.rows.length, 509);
     assert.equal(c.unmatched.length, 51, "AMPK_3: 51 simulated detectors with flow have no eid");
