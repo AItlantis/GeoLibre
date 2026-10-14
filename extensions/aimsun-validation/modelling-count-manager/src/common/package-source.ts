@@ -16,9 +16,9 @@
  * directory name, else the manifest `run`.
  */
 import { isSafePackagePath, resolveInsidePackage, sha256Hex } from "../../../_shared/src/package.ts";
-import type { ObservedMeta } from "./sql.ts";
+import type { ObservedMeta, ObservedSource, ReportRef } from "./sql.ts";
 
-export type { ObservedMeta };
+export type { ObservedMeta, ObservedSource, ReportRef };
 export type FileKind = "sim" | "obs" | "geo" | "meta";
 
 /**
@@ -47,6 +47,61 @@ export function parseObserved(v: unknown, where = "observed"): ObservedMeta | un
   return { referenceDay: day, gridSeconds: grid, units: "veh/h", timestampConvention: conv, source: typeof o.source === "string" ? o.source : undefined };
 }
 
+const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T => (typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback);
+const posIntOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.round(v) : null);
+const countOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
+
+/**
+ * Validate `observed_sources` (contract C7, source-specific observation metadata). Returns undefined when
+ * absent (legacy package: the C3 `observed` handling applies unchanged). A present value must be an array of
+ * objects with a non-empty `source_id` (unique); unknown/missing optional fields degrade to 'unknown'/null
+ * (never to a comparable assumption), so an incomplete source ends up profile-only.
+ */
+export function parseObservedSources(v: unknown, where = "observed_sources"): ObservedSource[] | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (!Array.isArray(v)) throw new Error(`${where}: must be an array`);
+  const seen = new Set<string>();
+  return v.map((raw, i) => {
+    if (!raw || typeof raw !== "object") throw new Error(`${where}[${i}]: must be an object`);
+    const o = raw as Record<string, unknown>;
+    const id = o.source_id ?? o.sourceId;
+    if (typeof id !== "string" || !id.trim()) throw new Error(`${where}[${i}].source_id must be a non-empty string`);
+    if (seen.has(id)) throw new Error(`${where}[${i}].source_id '${id}' is duplicated`);
+    seen.add(id);
+    const day = o.referenceDay;
+    const referenceDay = typeof day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day) && !Number.isNaN(Date.parse(`${day}T00:00:00Z`)) ? day : null;
+    if (day !== undefined && day !== null && referenceDay === null) throw new Error(`${where}[${i}].referenceDay must be YYYY-MM-DD or null`);
+    return {
+      sourceId: id,
+      file: typeof o.file === "string" ? o.file : null,
+      adapter: typeof o.adapter === "string" ? o.adapter : null,
+      role: oneOf(o.role, ["counts", "journey_time"] as const, "counts" as const) as ObservedSource["role"],
+      referenceDay,
+      dateKind: oneOf(o.dateKind, ["actual", "typical"] as const, "unknown" as const) as ObservedSource["dateKind"],
+      gridSeconds: posIntOrNull(o.gridSeconds),
+      durationSeconds: posIntOrNull(o.durationSeconds),
+      timestampConvention: oneOf(o.timestampConvention, ["interval-end", "interval-start"] as const, "unknown" as const) as ObservedSource["timestampConvention"],
+      units: oneOf(o.units, ["veh/h", "veh"] as const, "unknown" as const) as ObservedSource["units"],
+      unitConfidence: oneOf(o.unitConfidence, ["declared", "inferred"] as const, "unknown" as const) as ObservedSource["unitConfidence"],
+      eligibility: o.eligibility === "comparable" || o.eligibility === "profile-only" ? o.eligibility : null,
+      rows: countOrNull(o.rows),
+      detectors: countOrNull(o.detectors),
+    };
+  });
+}
+
+/** Validate the top-level `reports` list (observed_report.json, rds_inventory.json, ...). Reports are not tables. */
+export function parseReports(v: unknown, where = "reports"): ReportRef[] | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (!Array.isArray(v)) throw new Error(`${where}: must be an array`);
+  return v.map((raw, i) => {
+    if (!raw || typeof raw !== "object") throw new Error(`${where}[${i}]: must be an object`);
+    const o = raw as Record<string, unknown>;
+    if (typeof o.name !== "string" || typeof o.path !== "string") throw new Error(`${where}[${i}]: name and path are required strings`);
+    return { name: o.name, path: o.path, format: typeof o.format === "string" ? o.format : "json", sha256: typeof o.sha256 === "string" ? o.sha256 : null, bytes: countOrNull(o.bytes) };
+  });
+}
+
 export interface PkgFile {
   path: string;
   run: string;
@@ -64,6 +119,20 @@ export interface RunEntry {
   observed?: ObservedMeta;
   /** analysis_manifest.json (run folder) / analysis.json (shared) carrying `observed`. */
   meta?: PkgFile | null;
+  /** From the manifest (`observed_sources`, top level or per run; C7); wins over `meta`. */
+  observedSources?: ObservedSource[];
+  /** From the manifest (`reports`, top level or per run); wins over `meta`. Exposed, never loaded as tables. */
+  reports?: ReportRef[];
+}
+
+/** Observation metadata a manifest declares, shared and per run. */
+export interface ManifestObservation {
+  shared?: ObservedMeta;
+  byRun?: ReadonlyMap<string, ObservedMeta>;
+  sharedSources?: ObservedSource[];
+  sourcesByRun?: ReadonlyMap<string, ObservedSource[]>;
+  sharedReports?: ReportRef[];
+  reportsByRun?: ReadonlyMap<string, ReportRef[]>;
 }
 
 export interface PackageIndex {
@@ -117,7 +186,7 @@ export function buildIndex(
   label: string,
   items: readonly RawItem[],
   excludeRuns: ReadonlySet<string> = new Set(),
-  observed?: { shared?: ObservedMeta; byRun?: ReadonlyMap<string, ObservedMeta> },
+  observed?: ManifestObservation,
 ): PackageIndex {
   const byRun = new Map<string, Partial<Record<FileKind, PkgFile>>>();
   for (const it of items) {
@@ -143,7 +212,9 @@ export function buildIndex(
     const geo = s.geo ?? shared.geo ?? null;
     const meta = s.meta ?? shared.meta ?? null;
     const declared = observed?.byRun?.get(name) ?? observed?.shared;
-    if (sim) runs.push({ run: name || label, sim, obs, geo, ...(declared ? { observed: declared } : {}), ...(meta ? { meta } : {}) });
+    const sources = observed?.sourcesByRun?.get(name) ?? observed?.sharedSources;
+    const reports = observed?.reportsByRun?.get(name) ?? observed?.sharedReports;
+    if (sim) runs.push({ run: name || label, sim, obs, geo, ...(declared ? { observed: declared } : {}), ...(sources ? { observedSources: sources } : {}), ...(reports ? { reports } : {}), ...(meta ? { meta } : {}) });
     else incomplete.push(name || label);
   }
   return { label, runs, incomplete };
@@ -174,8 +245,10 @@ interface ManifestShape {
   run?: unknown;
   files?: Array<{ table?: string; path?: string; run?: string; sha256?: string }>;
   outputs_sha256?: Record<string, string>;
-  runs?: Array<{ run?: string; available?: boolean; observed?: unknown }>;
+  runs?: Array<{ run?: string; available?: boolean; observed?: unknown; observed_sources?: unknown; reports?: unknown }>;
   observed?: unknown;
+  observed_sources?: unknown;
+  reports?: unknown;
 }
 
 /** Turn a parsed manifest into raw items (pure; `fetchBytes` is injected). */
@@ -183,7 +256,7 @@ export function itemsFromManifest(
   manifestUrl: string,
   manifest: unknown,
   fetchBytes: (url: string, path: string, sha256: string | undefined) => Promise<Uint8Array>,
-): { items: RawItem[]; exclude: Set<string>; observed: { shared?: ObservedMeta; byRun: Map<string, ObservedMeta> } } {
+): { items: RawItem[]; exclude: Set<string>; observed: ManifestObservation & { byRun: Map<string, ObservedMeta> } } {
   if (!manifest || typeof manifest !== "object") throw new Error("manifest: not an object");
   const m = manifest as ManifestShape;
   if (m.schema_version !== 1) throw new Error(`manifest: unsupported schema_version ${String(m.schema_version)} (expected 1)`);
@@ -215,12 +288,29 @@ export function itemsFromManifest(
     };
   });
   const byRun = new Map<string, ObservedMeta>();
+  const sourcesByRun = new Map<string, ObservedSource[]>();
+  const reportsByRun = new Map<string, ReportRef[]>();
   for (const [i, r] of (m.runs ?? []).entries()) {
     if (typeof r?.run !== "string") continue;
     const ob = parseObserved(r.observed, `manifest.runs[${i}].observed`);
     if (ob) byRun.set(r.run, ob);
+    const src = parseObservedSources(r.observed_sources, `manifest.runs[${i}].observed_sources`);
+    if (src) sourcesByRun.set(r.run, src);
+    const rep = parseReports(r.reports, `manifest.runs[${i}].reports`);
+    if (rep) reportsByRun.set(r.run, rep);
   }
-  return { items, exclude, observed: { shared: parseObserved(m.observed, "manifest.observed"), byRun } };
+  return {
+    items,
+    exclude,
+    observed: {
+      shared: parseObserved(m.observed, "manifest.observed"),
+      byRun,
+      sharedSources: parseObservedSources(m.observed_sources, "manifest.observed_sources"),
+      sourcesByRun,
+      sharedReports: parseReports(m.reports, "manifest.reports"),
+      reportsByRun,
+    },
+  };
 }
 
 export async function fetchChecked(url: string, path: string, sha256: string | undefined, f: typeof fetch = fetch): Promise<Uint8Array> {

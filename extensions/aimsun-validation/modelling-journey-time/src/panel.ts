@@ -10,12 +10,13 @@ import { geometryPositions, RunFitter } from "../../_shared/src/fit-extent";
 import type { GeoJSONFC, HostApp } from "./host";
 import type { Translator } from "./i18n";
 import { lineSvg } from "./lineSvg";
-import { buildMatching, PREFERRED_GROUP, pairKey, type MatchResult, type ObsPair } from "./match";
+import { buildMatching, PREFERRED_GROUP, pairKey, type MatchReason, type MatchResult, type ObsPair } from "./match";
 import { MapOverlay } from "./overlay";
 import { loadFromFiles, loadFromManifestUrl, subpathRefs, type PackageSummary } from "./pkg";
 import {
   bucketLabel,
   colourScale,
+  comparisonMode,
   featuresBounds,
   overlayFeatures,
   profileOf,
@@ -58,6 +59,8 @@ const SOURCE_LABELS: Record<string, [string, string]> = {
 
 interface SourceInfo {
   source: string;
+  /** Time-only typical-day observations (dateKind 'typical'): no real date range to show. */
+  typical?: boolean;
   days: number;
   first: string;
   last: string;
@@ -246,13 +249,16 @@ export class JourneyTimeController {
       const s = opened;
       const pkg = await fn(s);
       if (!pkg.hasObs) throw new Error(t("err.noObs", "This package is missing the required observed journey-time table subpath_obs_jt."));
-      await s.exec(buildSubpathSql({ bucketMinutes: BUCKET }));
+      await s.exec(buildSubpathSql({ bucketMinutes: BUCKET, columns: pkg.obsColumns }));
       this.rows = toObsRows(await s.query("SELECT * FROM v_sp_obs ORDER BY source, route, direction_norm, bucket_start_min"));
       this.sources = (
         await s.query<{ source: string; nd: number; d0: string; d1: string }>(
           "SELECT source, COUNT(DISTINCT day) AS nd, CAST(MIN(day) AS VARCHAR) AS d0, CAST(MAX(day) AS VARCHAR) AS d1 FROM v_sp_obs_day GROUP BY source ORDER BY source",
         )
-      ).map((r) => ({ source: String(r.source), days: Number(r.nd), first: String(r.d0), last: String(r.d1) }));
+      ).map((r) => ({
+        source: String(r.source), days: Number(r.nd), first: String(r.d0), last: String(r.d1),
+        typical: this.rows.some((o) => o.source === String(r.source)) && this.rows.filter((o) => o.source === String(r.source)).every((o) => o.date_kind === "typical"),
+      }));
       this.simRows = [];
       this.tsKind = null;
       if (pkg.hasSim) {
@@ -300,10 +306,10 @@ export class JourneyTimeController {
     const out: ObsPair[] = [];
     for (const r of this.rows) {
       if (r.source !== source) continue;
-      const k = `${r.route}\u0000${r.direction_norm}`;
+      const k = `${r.route}\u0000${r.direction_norm}\u0000${r.subpath_oid ?? ""}\u0000${r.source_id ?? ""}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ route: r.route, direction: r.direction_norm, source });
+      out.push({ route: r.route, direction: r.direction_norm, source, subpath_oid: r.subpath_oid ?? null, match_method: r.match_method ?? null, source_id: r.source_id ?? null });
     }
     return out;
   }
@@ -337,13 +343,20 @@ export class JourneyTimeController {
     const jtOption = el("option", { value: VIEW_JT, text: t("view.jt", "Journey Time") });
     jtOption.selected = this.viewMode === VIEW_JT;
     mode.append(jtOption);
-    const hasSim = this.simRows.length > 0;
+    const hasSimRows = this.simRows.length > 0;
+    const cmp = this.compareInfo();
+    const hasSim = hasSimRows && cmp.mode === "compare";
     const runs = [...new Set(this.simRows.map((r) => r.run).filter((r): r is string => !!r))];
     const validationOption = el("option", { value: VIEW_VALIDATION, text: t("view.validation", "Validation"), disabled: !hasSim });
     validationOption.selected = this.viewMode === VIEW_VALIDATION; mode.append(validationOption);
     const comparisonOption = el("option", { value: VIEW_COMPARISON, text: t("view.comparison", "Comparison"), disabled: runs.length < 2 });
     comparisonOption.selected = this.viewMode === VIEW_COMPARISON; mode.append(comparisonOption);
-    if (!hasSim) body.append(el("p", { class: "avp-hint", "data-avp": "mode-unavailable", text: t("nosim.short", "Validation and Comparison are disabled: this package has observed journey time only (subpath_sim_jt is absent or empty).") }));
+    if (!hasSim) {
+      const why = !hasSimRows
+        ? (this.pkg?.simReason ?? t("nosim.reason", "no simulated subpath journey-time table (subpath_sim_jt) in this package"))
+        : (cmp.reason ?? "");
+      body.append(el("p", { class: "avp-hint", "data-avp": "mode-unavailable", "data-reason": why, text: t("nosim.short", "Validation and Comparison are disabled: observed profile only ({{why}}).", { why }) }));
+    }
     else if (runs.length < 2) body.append(el("p", { class: "avp-hint", "data-avp": "comparison-unavailable", text: t("comparison.disabled", "Comparison is disabled: at least two runs with simulated journey time are required.") }));
     mode.addEventListener("change", () => {
       this.viewMode = mode.value;
@@ -352,12 +365,12 @@ export class JourneyTimeController {
       this.updateMap();
     });
     body.append(el("section", { class: "avp-section avp-mode", "data-avp": "mode-selector" }, el("label", { class: "avp-lbl" }, t("view.title", "View mode"), mode)));
-    if (this.viewMode === VIEW_VALIDATION && this.simRows.length) {
+    if (this.viewMode === VIEW_VALIDATION && hasSim) {
       this.overlay.remove();
       this.renderValidation(body);
       return;
     }
-    if (this.viewMode === VIEW_COMPARISON && new Set(this.simRows.map((r) => r.run).filter(Boolean)).size > 1) {
+    if (this.viewMode === VIEW_COMPARISON && hasSim && new Set(this.simRows.map((r) => r.run).filter(Boolean)).size > 1) {
       this.overlay.remove(); this.renderComparison(body); return;
     }
     const info = this.sources.find((s) => s.source === this.source);
@@ -374,17 +387,23 @@ export class JourneyTimeController {
         this.renderBody();
         this.updateMap();
       });
-      toggle.append(el("label", { class: "avp-inline" }, radio, `${t(k, def)} (${t("source.days", "{{n}} days", { n: s.days })}, ${s.first} - ${s.last})`));
+      toggle.append(el("label", { class: "avp-inline" }, radio, s.typical
+        ? `${t(k, def)} (${t("source.typical", "typical day, time-only observations (no real date)")})`
+        : `${t(k, def)} (${t("source.days", "{{n}} days", { n: s.days })}, ${s.first} - ${s.last})`));
     }
     toggle.append(el("p", { class: "avp-hint", text: t("source.never", "Sources are never mixed: every number below comes from the selected source only.") }));
     body.append(toggle, this.unitBanner());
+    if (cmp.mode === "profile-only") body.append(banner("info", t("profile.only", "Profile-only: {{why}}.", { why: cmp.reason ?? "" }), { "data-avp": "profile-only", "data-reason": cmp.reason ?? "" }));
 
     // Route picker
     const pairs = this.pairsOf(this.source);
     const matchedKeys = new Set(this.match?.matchedObs.map((m) => `${m.route}\u0000${m.direction}`));
     const sel = el("select", { class: "avp-select", "aria-label": t("route.title", "Route and direction"), "data-avp": "route" });
+    const listed = new Set<string>();
     for (const p of pairs) {
       const k = `${p.route}\u0000${p.direction}`;
+      if (listed.has(k)) continue;
+      listed.add(k);
       const tag = this.match ? (matchedKeys.has(k) ? "" : ` (${t("route.nomodel", "no model subpath")})`) : "";
       const o = el("option", { value: k, text: `${p.route} - ${p.direction}${tag}` });
       o.selected = k === this.routeKey;
@@ -499,6 +518,7 @@ export class JourneyTimeController {
           om: c.obsMatched, ot: c.obsTotal, sm: c.subpathsMatched, st: c.subpathsTotal, sn: c.subpathsNotInScenario, sd: c.subpathsDroppedDuplicate,
         }),
       }),
+      el("p", { class: "avp-hint", text: t("match.rules0", "Order: a verified subpath_oid wins; then an exact full-name match; then the name + direction rules below. NB and SB are their own directions and are never equated with IB/OB.") }),
       el("p", { class: "avp-hint", text: t("match.rules", "Rules: trim/collapse spaces and lower-case; In -> IB, Out -> OB; strip a _IB/_OB/_In/_Out/_EW/_WE suffix from the subpath name; match on base name + direction. If one key matches subpaths in several groups, only the group '{{g}}' is used and the others are listed as dropped duplicates. Nothing else is guessed.", { g: PREFERRED_GROUP }) }),
     );
     const mk = (headers: string[], rows: string[][], attr: string) => {
@@ -514,15 +534,19 @@ export class JourneyTimeController {
         [t("col.route", "Route"), t("col.dir", "Dir"), t("col.subpaths", "Model subpaths"), t("col.via", "Rule"), t("col.dropped", "Duplicates dropped (other groups)")],
         m.matchedObs.map((r) => [
           r.route,
-          r.direction,
+          r.direction || "-",
           r.matches.map((x) => `${x.subpath.name} [${x.subpath.group ?? "-"}]`).join("; "),
           r.matches[0].via + (r.dropped.length ? `; ${t("match.pref", "only group '{{g}}' used", { g: PREFERRED_GROUP })}` : ""),
           r.dropped.map((x) => `${x.subpath.name} [${x.subpath.group ?? "-"}]`).join("; "),
         ]),
         "matched-table",
       ),
-      el("h4", { class: "avp-h", "data-avp": "unmatched-obs-title", text: t("match.unmatchedObs", "Unmatched observed routes ({{n}})", { n: c.obsUnmatched }) }),
-      mk([t("col.route", "Route"), t("col.dir", "Dir")], m.unmatchedObs.map((r) => [r.route, r.direction]), "unmatched-obs"),
+      el("h4", { class: "avp-h", "data-avp": "unmatched-obs-title", text: t("match.unmatchedObs", "Unmatched observed routes ({{n}}, {{a}} ambiguous)", { n: c.obsUnmatched, a: m.ambiguousObs.length }) }),
+      mk(
+        [t("col.route", "Route"), t("col.dir", "Dir"), t("col.oid", "Subpath oid"), t("col.reason", "Reason")],
+        m.unmatchedObs.map((r) => [r.route, r.direction || "-", r.subpath_oid === null ? "-" : String(r.subpath_oid), this.reasonText(r.reason, r.candidates.map((c) => `${c.subpath.name} [${String(c.subpath.oid ?? c.subpath.id)}]`))]),
+        "unmatched-obs",
+      ),
       el("h4", { class: "avp-h", "data-avp": "unmatched-sp-title", text: t("match.unmatchedSp", "Unmatched model subpaths ({{n}})", { n: c.subpathsUnmatched }) }),
       mk(
         [t("col.subpath", "Subpath"), t("col.group", "Group"), t("col.reason", "Reason")],
@@ -531,6 +555,8 @@ export class JourneyTimeController {
           u.subpath.group ?? "-",
           u.reason === "not-in-scenario"
             ? t("reason.scenario", "not in this run's scenario")
+            : u.reason === "ambiguous-observed"
+              ? t("reason.ambiguousSp", "shares an exact name with another subpath: observed route is ambiguous")
             : u.reason === "no-direction-suffix"
               ? t("reason.nosuffix", "no direction suffix")
               : t("reason.noobs", "no observed route with this name+direction"),
@@ -539,6 +565,24 @@ export class JourneyTimeController {
       ),
     );
     return det;
+  }
+
+  /** Validation/Comparison need a simulated table AND (for time-only typical-day data) a window declared in the data. */
+  private compareInfo(): { mode: "compare" | "profile-only"; reason: string | null } {
+    const rows = this.rows.filter((r) => r.source === this.source);
+    const c = comparisonMode(rows);
+    return { mode: c.mode, reason: c.reason };
+  }
+
+  private reasonText(reason: MatchReason, candidates: readonly string[] = []): string {
+    const { t } = this.d;
+    switch (reason) {
+      case "ambiguous": return t("reason.ambiguous", "ambiguous: several model subpaths share this exact name ({{c}})", { c: candidates.join("; ") });
+      case "oid-not-in-model": return t("reason.oidMissing", "subpath_oid is not a subpath of this model/scenario and no name matched");
+      case "no-direction": return t("reason.noDirection", "no exact name match and no recognisable direction");
+      case "no-subpath": return t("reason.noSubpath", "no model subpath with this name + direction");
+      default: return t("reason.matched", "matched");
+    }
   }
 
   // ---- incremental updates ---------------------------------------------------------------------
@@ -569,10 +613,18 @@ export class JourneyTimeController {
       lineSvg({
         label: t("chart.aria", "Typical-day observed and simulated journey time for {{r}} {{d}}", { r: route ?? "", d: dir ?? "" }),
         series: [
-          { label: t("stat.medianShort", "Observed median across days"), points: p.median, color: "hsl(var(--primary))" },
+          { label: p.dateKind === "typical" ? t("stat.typical", "Observed typical day") : t("stat.medianShort", "Observed median across days"), points: p.median, color: "hsl(var(--primary))" },
+          ...(p.hasSupplied && p.nDaysMax > 1
+            ? [
+                { label: t("chart.dayMin", "Across-day minimum of daily means"), points: p.band.map((b) => ({ x: b.x, y: b.lo })), color: "hsl(var(--muted-foreground))", width: 1 },
+                { label: t("chart.dayMax", "Across-day maximum of daily means"), points: p.band.map((b) => ({ x: b.x, y: b.hi })), color: "hsl(var(--muted-foreground))", width: 1 },
+              ]
+            : []),
           ...simSeries,
         ],
-        band: { label: t("chart.band", "Observed min-max across days"), points: p.band },
+        band: p.hasSupplied
+          ? { label: t("chart.bandSupplied", "Observed min-max supplied by the source"), points: p.suppliedBand }
+          : { label: t("chart.band", "Observed min-max across days"), points: p.band },
         simWindow,
         vline: this.geo ? this.bucket : null,
         xMin: 0,
@@ -583,11 +635,18 @@ export class JourneyTimeController {
     );
     chart.dataset.testid = "day-profile";
     chart.dataset.points = String(p.mean.filter((x) => x.y !== null).length);
+    chart.dataset.supplied = String(p.hasSupplied);
+    chart.dataset.dateKind = p.dateKind;
     const at = this.rows.find((r) => r.source === this.source && r.route === route && r.direction_norm === dir && r.bucket_start_min === this.bucket);
+    const dayRange = at ? t("readout.dayRange", "across-day range {{lo}}-{{hi}} s over {{n}} days", { lo: fmt(at.min_s), hi: fmt(at.max_s), n: at.n_days }) : "";
     readout.textContent = at
-      ? t("readout", "{{time}}: observed median {{median}} s (mean {{mean}} s), range {{lo}}-{{hi}} s over {{n}} days", {
-          time: bucketLabel(this.bucket), mean: fmt(at.mean_s), median: fmt(at.median_s), lo: fmt(at.min_s), hi: fmt(at.max_s), n: at.n_days,
-        })
+      ? at.sup_min_s !== null && at.sup_min_s !== undefined && at.sup_max_s !== null && at.sup_max_s !== undefined
+        ? t("readout.supplied", "{{time}}: observed {{mean}} s, supplied min-max {{smin}}-{{smax}} s; {{day}}", {
+            time: bucketLabel(this.bucket), mean: fmt(at.mean_s), smin: fmt(at.sup_min_s), smax: fmt(at.sup_max_s), day: dayRange,
+          })
+        : t("readout", "{{time}}: observed median {{median}} s (mean {{mean}} s), range {{lo}}-{{hi}} s over {{n}} days", {
+            time: bucketLabel(this.bucket), mean: fmt(at.mean_s), median: fmt(at.median_s), lo: fmt(at.min_s), hi: fmt(at.max_s), n: at.n_days,
+          })
       : t("readout.none", "{{time}}: no observation for this bucket", { time: bucketLabel(this.bucket) });
     void info;
   }

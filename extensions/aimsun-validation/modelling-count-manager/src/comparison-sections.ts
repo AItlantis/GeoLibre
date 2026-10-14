@@ -1,5 +1,5 @@
 import { comparisonKpis, joinComparison, type ComparisonRun } from "./common/comparison.ts";
-import { locate } from "./common/geo.ts";
+import { coverageFeatures, locate, partsForAgg, type CoverageFeature } from "./common/geo.ts";
 import type { DetAgg } from "./common/aggregate.ts";
 import type { Env, Sections } from "./common/plugin-host.ts";
 import { el, field, selectEl, STATUS_COLORS } from "./common/ui.ts";
@@ -49,14 +49,18 @@ export function buildComparisonSections(env: Env): Sections {
       const common = rows.filter((r) => r.change !== null);
       const maxAbs = Math.max(1, ...common.map((r) => Math.abs(r.change!)));
       const fc = { type: "FeatureCollection" as const, features: [] as Array<{ type: "Feature"; geometry: { type: "Point"; coordinates: [number, number] }; properties: Record<string, unknown> }> };
+      const coverage: CoverageFeature[] = [];
       for (const row of rows) {
         const agg = { id: row.id, oid: null } as Pick<DetAgg, "id" | "oid">;
         const pt = locate(b.geo, agg) ?? locate(a.geo, agg) ?? locate(ctx.ctl.geo, agg);
         if (!pt) continue;
-        fc.features.push({ type: "Feature", geometry: { type: "Point", coordinates: [pt.lon, pt.lat] }, properties: { eid: row.id,
-          gehChange: row.change ?? 0, comparisonStatus: row.change === null ? "only" : row.status } });
+        const props = { eid: row.id, gehChange: row.change ?? 0, comparisonStatus: row.change === null ? "only" : row.status };
+        const parts = [b.geo, a.geo, ctx.ctl.geo].map((g) => partsForAgg(g, agg)).find((ps) => ps.some((p) => p.coverage)) ?? [];
+        const area = coverageFeatures(parts, { ...props, cov: true });
+        coverage.push(...area);
+        fc.features.push({ type: "Feature", geometry: { type: "Point", coordinates: [pt.lon, pt.lat] }, properties: area.length ? { ...props, cov: true } : props });
       }
-      return { fc, style: { radius: 7, color: comparisonStatusColor(maxAbs) } };
+      return { fc, style: { radius: 7, color: comparisonStatusColor(maxAbs) }, coverage: { type: "FeatureCollection" as const, features: coverage } };
     },
     render(host) {
       ensure();

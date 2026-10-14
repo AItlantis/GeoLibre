@@ -1,0 +1,540 @@
+{
+ "type": "FeatureCollection",
+ "name": "detectors",
+ "features": [
+  {
+   "type": "Feature",
+   "id": 5001,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22768107,
+       25.16991222
+      ],
+      [
+       55.22770987,
+       25.16991906
+      ],
+      [
+       55.22771893,
+       25.16988778
+      ],
+      [
+       55.22769013,
+       25.16988094
+      ],
+      [
+       55.22768107,
+       25.16991222
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5001,
+    "eid": "C6_FWD",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     0
+    ],
+    "from_lane": 0,
+    "to_lane": 0,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     0
+    ],
+    "bearing_deg": 75.3,
+    "direction": "forward",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.2277,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5002,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22811893,
+       25.16988778
+      ],
+      [
+       55.22809013,
+       25.16988094
+      ],
+      [
+       55.22808107,
+       25.16991222
+      ],
+      [
+       55.22810987,
+       25.16991906
+      ],
+      [
+       55.22811893,
+       25.16988778
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5002,
+    "eid": "C6_REV",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     1
+    ],
+    "from_lane": 1,
+    "to_lane": 1,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     1
+    ],
+    "bearing_deg": 255.3,
+    "direction": "reverse",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.2281,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5003,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22847943,
+       25.16989018
+      ],
+      [
+       55.22848562,
+       25.16991654
+      ],
+      [
+       55.22852057,
+       25.16990982
+      ],
+      [
+       55.22851438,
+       25.16988346
+      ],
+      [
+       55.22847943,
+       25.16989018
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5003,
+    "eid": "J383_A",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     0
+    ],
+    "from_lane": 0,
+    "to_lane": 0,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     0
+    ],
+    "bearing_deg": 12,
+    "direction": "forward",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.2285,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5004,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22857943,
+       25.16989018
+      ],
+      [
+       55.22858562,
+       25.16991654
+      ],
+      [
+       55.22862057,
+       25.16990982
+      ],
+      [
+       55.22861438,
+       25.16988346
+      ],
+      [
+       55.22857943,
+       25.16989018
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5004,
+    "eid": "J383_A",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     2
+    ],
+    "from_lane": 2,
+    "to_lane": 2,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     0
+    ],
+    "bearing_deg": 12,
+    "direction": "forward",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.2286,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5005,
+   "geometry": {
+    "type": "MultiPolygon",
+    "coordinates": [
+     [
+      [
+       [
+        55.22864448,
+        25.16989691
+       ],
+       [
+        55.22865067,
+        25.16992327
+       ],
+       [
+        55.22868562,
+        25.16991654
+       ],
+       [
+        55.22867943,
+        25.16989018
+       ],
+       [
+        55.22864448,
+        25.16989691
+       ]
+      ]
+     ],
+     [
+      [
+       [
+        55.22871438,
+        25.16988346
+       ],
+       [
+        55.22872057,
+        25.16990982
+       ],
+       [
+        55.22875552,
+        25.16990309
+       ],
+       [
+        55.22874933,
+        25.16987673
+       ],
+       [
+        55.22871438,
+        25.16988346
+       ]
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5005,
+    "eid": "J383_A",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     0,
+     2
+    ],
+    "from_lane": 0,
+    "to_lane": 2,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6,
+     3.6
+    ],
+    "lane_directions": [
+     0,
+     0
+    ],
+    "bearing_deg": 12,
+    "direction": "forward",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.228699999999996,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5006,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22908511,
+       25.16991617
+      ],
+      [
+       55.22911489,
+       25.16991617
+      ],
+      [
+       55.22911489,
+       25.16988383
+      ],
+      [
+       55.22908511,
+       25.16988383
+      ],
+      [
+       55.22908511,
+       25.16991617
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5006,
+    "eid": "C6_BIDI",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     1
+    ],
+    "from_lane": 1,
+    "to_lane": 1,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     2
+    ],
+    "bearing_deg": 90,
+    "direction": "bidirectional",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.229099999999995,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5007,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22947684,
+       25.16990191
+      ],
+      [
+       55.22949789,
+       25.16992096
+      ],
+      [
+       55.22952316,
+       25.16989809
+      ],
+      [
+       55.22950211,
+       25.16987904
+      ],
+      [
+       55.22947684,
+       25.16990191
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5007,
+    "eid": "C6_MIX",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     0,
+     1
+    ],
+    "from_lane": 0,
+    "to_lane": 1,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6,
+     3.6
+    ],
+    "lane_directions": [
+     0,
+     0
+    ],
+    "bearing_deg": 45,
+    "direction": "mixed",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.2295,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5008,
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       55.22988213,
+       25.16988653
+      ],
+      [
+       55.22988213,
+       25.16991347
+      ],
+      [
+       55.22991787,
+       25.16991347
+      ],
+      [
+       55.22991787,
+       25.16988653
+      ],
+      [
+       55.22988213,
+       25.16988653
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "oid": 5008,
+    "eid": "C6_NOBRG",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     0
+    ],
+    "from_lane": 0,
+    "to_lane": 0,
+    "position_m": 152.0886,
+    "length_m": 3,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     0
+    ],
+    "bearing_deg": null,
+    "direction": "unknown",
+    "geometry_method": "lane-polyline",
+    "geometry_quality": "good",
+    "x": 55.2299,
+    "y": 25.1699
+   }
+  },
+  {
+   "type": "Feature",
+   "id": 5009,
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     55.2303,
+     25.1699
+    ]
+   },
+   "properties": {
+    "oid": 5009,
+    "eid": "C6_POINT",
+    "name": "",
+    "section_id": 35975,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "lanes": [
+     0
+    ],
+    "from_lane": 0,
+    "to_lane": 0,
+    "position_m": 152.0886,
+    "length_m": null,
+    "lane_widths_m": [
+     3.6
+    ],
+    "lane_directions": [
+     0
+    ],
+    "bearing_deg": null,
+    "direction": "unknown",
+    "geometry_method": "point",
+    "geometry_quality": "approximate",
+    "x": 55.2303,
+    "y": 25.1699
+   }
+  }
+ ]
+}

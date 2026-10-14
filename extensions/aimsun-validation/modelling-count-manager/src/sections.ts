@@ -1,6 +1,6 @@
 /** Detector counts: sections, map style and tooltip. Pure DOM; no DuckDB import (see index.ts). */
 import { sortAggs } from "./common/aggregate.ts";
-import { buildFeatures, buildUnmatchedFeatures } from "./common/geo.ts";
+import { buildCoverage, buildFeatures, buildUnmatchedCoverage, buildUnmatchedFeatures } from "./common/geo.ts";
 import { divergingColor, sequentialColor, sizeExpression, withUnmatchedColor } from "./common/map-layer.ts";
 import { detectorTable, kpiGrid } from "./common/panel-parts.ts";
 import { dayProfileBlock } from "./common/day-profile.ts";
@@ -53,7 +53,9 @@ export function buildCountsSections(env: Env): Sections {
       const vals = (k: "sim" | "obs" | "diff") => ctl.aggs.map((a) => Math.abs(a[k]));
       const maxSize = Math.max(1, ...vals(sizeBy));
       const maxColor = Math.max(1, ...vals(ctx.ctl.state.colorMode));
-      return { fc, style: styleFor(maxSize, maxColor) };
+      const coverage = buildCoverage(ctl.aggs, ctl.geo);
+      coverage.features.push(...buildUnmatchedCoverage(ctl.unmatched, ctl.geo));
+      return { fc, style: styleFor(maxSize, maxColor), coverage };
     },
 
     render(host) {

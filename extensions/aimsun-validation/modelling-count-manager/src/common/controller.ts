@@ -17,8 +17,12 @@ import {
   indexFromFiles,
   indexFromManifestUrl,
   parseObserved,
+  parseObservedSources,
+  parseReports,
   type FileLikeItem,
   type ObservedMeta,
+  type ObservedSource,
+  type ReportRef,
   type PackageIndex,
   type RunEntry,
 } from "./package-source.ts";
@@ -41,6 +45,15 @@ import {
   dayProfileObsQuery,
   dayProfileSimQuery,
   type ProfileScope,
+  SHARED_EID_SQL,
+  SIM_ONLY_SQL,
+  defaultSourceChoice,
+  isObsSource,
+  resolveSources,
+  selectedSources,
+  sourceChoices,
+  type ResolvedSource,
+  type SourceChoice,
 } from "./sql.ts";
 
 export type DbLike = Pick<DuckDbHandle, "query" | "exec" | "registerBuffer" | "dropFile">;
@@ -76,9 +89,23 @@ export class DetController {
   counts: Counts = { nSim: 0, nObs: 0 };
   /** Simulated detectors with flow and no eid, for the loaded run (excluded from validation). */
   unmatched: UnmatchedDet[] = [];
+  /** True when the run has observed data AND the selected observed source(s) can be validated against. */
   hasObs = false;
+  /** True when the run has an observed table at all (day profiles can use it even when validation is disabled). */
+  hasObsData = false;
+  /** Why Validation / Comparison are disabled for the selected observed source (profile-only, unknown interval or units); null = enabled. */
+  validationReason: string | null = null;
   /** Observation metadata of the loaded run (manifest `observed`); null = legacy defaults (2025-01-01, 5 min, interval-end). */
   observed: ObservedMeta | null = null;
+  /** Observation contract v2 (`observed_sources`, counts only, after the eligibility rules); null = legacy package (C3 behaviour). */
+  sources: ResolvedSource[] | null = null;
+  /** Reports listed by the run's manifest (`reports`): exposed read-only, never loaded as tables. */
+  reports: ReportRef[] = [];
+  /** Simulated eids shared by several simulated oids -> how many (C8); the others are absent. */
+  sharedEids: Map<string, number> = new Map();
+  /** Columns of the loaded raw observed table (extended mode). */
+  private obsColumns: string[] = [];
+  private probeInfo: { dur: number; start: number; end: number } | null = null;
   /** Set when a detectors_sim table mixes interval lengths: only rows of this length (s) are validated. */
   private simDurationSeconds: number | null = null;
   dayProfiles: Record<ProfileScope, { observed: Array<{ minute: number; value: number }>; simulated: Array<{ value: number; startMin: number; endMin: number }> }> = { mean: { observed: [], simulated: [] }, sum: { observed: [], simulated: [] }, detector: { observed: [], simulated: [] } };
@@ -221,7 +248,7 @@ export class DetController {
     return e;
   }
 
-  /** Adapter + det views for the loaded run, with the manifest's observation metadata. */
+  /** Adapter + det views for the loaded run, with the manifest's observation metadata (per selected source in v2 packages). */
   private viewScript(obsSource: ObsSource, bucket: number, fromMin = this.state.fromMin, toMin = this.state.toMin): string {
     const eff = this.effectiveBucket(bucket, fromMin, toMin);
     return detViewScript({
@@ -229,9 +256,59 @@ export class DetController {
       obsSource,
       bucketMinutes: eff.minutes,
       bucketOriginMin: eff.originMin,
-      observed: this.observed ?? undefined,
+      ...(this.sources ? { sources: this.selection(obsSource), obsColumns: this.obsColumns } : { observed: this.observed ?? undefined }),
       simDurationSeconds: this.simDurationSeconds,
     });
+  }
+
+  /** Observed source choices of a v2 package (source_id based; 'both' only for homogeneous comparable sources); null for legacy packages. */
+  obsSourceChoices(): SourceChoice[] | null {
+    return this.sources ? sourceChoices(this.sources) : null;
+  }
+
+  /** The sources the observed-source value selects (v2 packages). */
+  private selection(value: ObsSource = this.state.obsSource): ResolvedSource[] {
+    return this.sources ? selectedSources(this.sources, value) : [];
+  }
+
+  /** Observed interval (minutes) validation uses: the selected comparable source's (v2) or the manifest grid (legacy); undefined = sim interval only. */
+  private obsGridMin(): number | undefined {
+    if (this.sources) return this.selection().find((s) => s.effective === "comparable")?.durationMin ?? undefined;
+    return this.observed ? obsGridMinutes(this.observed) : undefined;
+  }
+
+  /** Recompute hasObs / validationReason for the current observed-source selection. */
+  private applySelection(): void {
+    let reason: string | null = null;
+    if (this.hasObsData && this.sources) {
+      const sel = this.selection();
+      if (!sel.length) reason = this.sources.length ? "no observed source is selected" : "this run lists no counts observation source";
+      else {
+        const bad = sel.filter((s) => s.effective !== "comparable");
+        if (bad.length === sel.length) reason = bad.map((s) => `${s.sourceId}: ${s.reason ?? "profile-only"}`).join("; ");
+      }
+    }
+    this.validationReason = reason;
+    this.hasObs = this.hasObsData && reason === null;
+  }
+
+  /** Bucket options follow the SELECTED source's interval (multiple of the simulated interval and of the observed duration). */
+  private updateBucketOptions(): void {
+    const info = this.probeInfo;
+    if (!info) return;
+    const grid = this.obsGridMin();
+    const opts = bucketOptions(info.dur, info.start, info.end, grid);
+    this.bucketStepMin = bucketStep(info.dur, grid);
+    const all = [...opts, WHOLE_PERIOD];
+    const same = all.length === this.state.bucketOptions.length && all.every((b, i) => b === this.state.bucketOptions[i]);
+    if (same) return;
+    const bucket = all.includes(this.state.bucket) ? this.state.bucket : opts.includes(60) ? 60 : opts[0];
+    this.state = { ...this.state, bucketOptions: all, bucket };
+  }
+
+  /** How many simulated detectors (oids) share this id (C8); 1 when it is unique. */
+  sharedOidCount(id: string): number {
+    return this.sharedEids.get(id) ?? 1;
   }
 
   /** Smallest valid bucket of the loaded run (multiple of the simulated interval and the observed grid). */
@@ -248,19 +325,27 @@ export class DetController {
     return this.whole(fromMin, toMin) ?? { minutes: this.bucketStepMin, originMin: 0 };
   }
 
-  /** `observed` from the manifest entry, else from the run's analysis_manifest.json / analysis.json. */
-  private async resolveObserved(e: RunEntry): Promise<ObservedMeta | null> {
-    if (e.observed) return e.observed;
-    if (!e.meta) return null;
+  /** `observed`, `observed_sources` and `reports` from the manifest entry, else from the run's analysis_manifest.json / analysis.json. */
+  private async resolveObservation(e: RunEntry): Promise<{ observed: ObservedMeta | null; sources: ObservedSource[] | null; reports: ReportRef[] }> {
+    const wantsMeta = e.observed === undefined || e.observedSources === undefined || e.reports === undefined;
     let json: unknown;
-    try {
-      json = JSON.parse(new TextDecoder().decode(await e.meta.read()));
-    } catch (err) {
-      throw new Error(`${e.meta.path}: unreadable (${err instanceof Error ? err.message : String(err)})`);
+    if (e.meta && wantsMeta) {
+      try {
+        json = JSON.parse(new TextDecoder().decode(await e.meta.read()));
+      } catch (err) {
+        // `observed` already supplied by the manifest: the optional v2 blocks are simply not read
+        if (e.observed === undefined) throw new Error(`${e.meta.path}: unreadable (${err instanceof Error ? err.message : String(err)})`);
+      }
     }
-    const o = json && typeof json === "object" ? (json as { observed?: unknown; runs?: Array<{ run?: unknown; observed?: unknown }> }) : {};
-    const perRun = Array.isArray(o.runs) ? o.runs.find((r) => r?.run === e.run && r.observed !== undefined) : undefined;
-    return parseObserved(perRun?.observed ?? o.observed, `${e.meta.path}: observed`) ?? null;
+    const o = json && typeof json === "object" ? (json as Record<string, unknown> & { runs?: Array<Record<string, unknown>> }) : {};
+    const where = e.meta?.path ?? "analysis.json";
+    const perRun = (key: string): unknown => (Array.isArray(o.runs) ? o.runs.find((r) => r?.run === e.run && r[key] !== undefined)?.[key] : undefined);
+    const pick = (key: string): unknown => perRun(key) ?? o[key];
+    return {
+      observed: e.observed ?? parseObserved(pick("observed"), `${where}: observed`) ?? null,
+      sources: e.observedSources ?? parseObservedSources(pick("observed_sources"), `${where}: observed_sources`) ?? null,
+      reports: e.reports ?? parseReports(pick("reports"), `${where}: reports`) ?? [],
+    };
   }
 
   private async loadRun(run: string): Promise<void> {
@@ -270,10 +355,16 @@ export class DetController {
       const e = this.entry(run);
       const t = rawTableNames(this.deps.prefix);
       const [sim, obs] = await Promise.all([e.sim.read(), e.obs?.read()]);
-      const observed = await this.resolveObserved(e);
+      const meta = await this.resolveObservation(e);
+      const observed = meta.observed;
       if (observed) obsGridMinutes(observed); // reject an unusable grid before touching the database
-      this.hasObs = Boolean(e.obs);
+      this.hasObsData = Boolean(e.obs);
       this.observed = observed;
+      this.sources = meta.sources ? resolveSources(meta.sources, observed) : null;
+      this.reports = meta.reports;
+      this.obsColumns = [];
+      this.probeInfo = null;
+      this.sharedEids = new Map();
       this.simDurationSeconds = null;
       this.dayProfileBaseKey = null;
       this.dayProfileSelectedId = null;
@@ -292,6 +383,17 @@ export class DetController {
         }
       });
       if (this.disposed || my !== this.req) return;
+      if (this.sources && e.obs) {
+        this.obsColumns = await withLock(async () =>
+          (await db.query<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_name = '${t.obs}'`)).map((r) => String(r.column_name)),
+        );
+      }
+      // keep the user's observed source across runs when the run offers it, else its default
+      if (this.sources) {
+        const keep = sourceChoices(this.sources).some((c) => c.value === this.state.obsSource);
+        this.state = { ...this.state, obsSource: keep ? this.state.obsSource : defaultSourceChoice(this.sources) };
+      } else if (!isObsSource(this.state.obsSource)) this.state = { ...this.state, obsSource: "both" };
+      this.applySelection();
       this.unmatched = await withLock(async () =>
         (await db.query<{ oid: string; flow: number }>(unmatchedSimSql(this.deps.prefix))).map((r) => ({ oid: String(r.oid), flow: Number(r.flow) })),
       );
@@ -307,18 +409,22 @@ export class DetController {
         }
       }
       // probe the simulated grid with the default bucket to derive window + bucket options
-      const probe = await withLock(async () => {
+      const { probe, shared } = await withLock(async () => {
         await db.exec(this.viewScript(this.state.obsSource, 60));
-        return (await db.query<{ start_min: number | null; end_min: number | null; dur_min: number | null; min_dur_min: number | null; n_durations: number | null }>(PROBE_SIM_SQL))[0];
+        const p = (await db.query<{ start_min: number | null; end_min: number | null; dur_min: number | null; min_dur_min: number | null; n_durations: number | null }>(PROBE_SIM_SQL))[0];
+        const sh = await db.query<{ eid: string; n_oids: number }>(SHARED_EID_SQL);
+        return { probe: p, shared: sh };
       });
       if (my !== this.req) return;
+      this.sharedEids = new Map(shared.map((r) => [String(r.eid), Number(r.n_oids)]));
       // micro (300 s) and macro (3600 s) rows in one table would double count in a bucket: keep the finest
       const minDur = Number(probe?.min_dur_min ?? probe?.dur_min ?? 60);
       this.simDurationSeconds = Number(probe?.n_durations ?? 1) > 1 && minDur > 0 ? Math.round(minDur * 60) : null;
       const start = Number(probe?.start_min ?? 0);
       const end = Number(probe?.end_min ?? 1440);
       const dur = this.simDurationSeconds !== null ? minDur : Number(probe?.dur_min ?? 60);
-      const obsGrid = this.observed ? obsGridMinutes(this.observed) : undefined;
+      this.probeInfo = { dur, start, end };
+      const obsGrid = this.obsGridMin();
       const opts = bucketOptions(dur, start, end, obsGrid);
       this.bucketStepMin = bucketStep(dur, obsGrid);
       this.dispatch({
@@ -356,9 +462,8 @@ export class DetController {
         geh: Number(r.geh),
       }));
       this.aggs = this.hasObs ? aggregateDetectors(this.rows, this.state.criteria) : await withLock(async () => {
-        const rows = await db.query<{ detector_id: string; oid: string | number | null; sim_flow_h: number }>(
-          `SELECT CAST(eid AS VARCHAR) detector_id, any_value(oid) oid, avg(flow) sim_flow_h FROM v_sim_norm WHERE eid IS NOT NULL AND trim(CAST(eid AS VARCHAR)) <> '' GROUP BY eid ORDER BY eid`,
-        );
+        // C8: oids sharing an eid are pooled per (eid, interval) with the mean; each eid is one row
+        const rows = await db.query<{ detector_id: string; oid: string | number | null; sim_flow_h: number }>(SIM_ONLY_SQL);
         return rows.map((r) => ({ id: String(r.detector_id), oid: r.oid == null ? null : String(r.oid), buckets: 1, sim: Number(r.sim_flow_h), obs: 0, diff: 0, relErr: null, geh: 0, status: "pass" as const }));
       });
       this.counts = { nSim: out.nSim, nObs: out.nObs };
@@ -373,6 +478,11 @@ export class DetController {
   }
 
   setObsSource(value: ObsSource): void {
+    // v2 packages select by source_id; legacy packages by validation | calibration | both
+    if (this.sources ? !sourceChoices(this.sources).some((c) => c.value === value) : !isObsSource(value)) return;
+    this.state = { ...this.state, obsSource: value };
+    this.applySelection();
+    this.updateBucketOptions();
     this.dispatch({ type: "set-obs-source", value });
     void this.refresh();
   }
@@ -395,8 +505,11 @@ export class DetController {
   private async loadDayProfiles(selectedId: string | null): Promise<void> {
     const profileReq = ++this.dayProfileReq;
     const profileState = this.state;
-    const profileHasObs = this.hasObs;
-    const obsGrid = this.observed ? obsGridMinutes(this.observed) : 5;
+    const profileHasObs = this.hasObsData;
+    const ext = this.sources !== null;
+    // v2 packages: every row of the selected source(s) (profile-only ones included) on its own interval
+    const obsGrid = ext ? null : this.observed ? obsGridMinutes(this.observed) : 5;
+    const rel = ext ? "v_obs_profile" : "v_obs_norm";
     const profileKey = [profileState.sourceLabel ?? "", this.packageUrl ?? "", profileState.run ?? "", profileState.obsSource, String(profileHasObs)].join("|");
     const refreshBase = profileKey !== this.dayProfileBaseKey;
     const refreshSelected = refreshBase || selectedId !== this.dayProfileSelectedId;
@@ -408,13 +521,13 @@ export class DetController {
         const out = { ...this.dayProfiles };
         if (refreshBase) {
           for (const scope of ["mean", "sum"] as const) {
-            const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery(scope, undefined, obsGrid)) : [];
-            const sim = await db.query<{ interval_start_s: number; duration_s: number; profile_value: number }>(dayProfileSimQuery(scope, undefined, profileHasObs));
+            const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery(scope, undefined, obsGrid, rel)) : [];
+            const sim = await db.query<{ interval_start_s: number; duration_s: number; profile_value: number }>(dayProfileSimQuery(scope, undefined, profileHasObs, rel));
             out[scope] = { observed: obs.map((r) => ({ minute: Number(r.profile_minute), value: Number(r.profile_value) })), simulated: sim.map((r) => ({ value: Number(r.profile_value), startMin: Number(r.interval_start_s) / 60, endMin: (Number(r.interval_start_s) + Number(r.duration_s)) / 60 })) };
           }
         }
         if (refreshSelected && selectedId) {
-          const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery("detector", selectedId, obsGrid)) : [];
+          const obs = profileHasObs ? await db.query<{ profile_minute: number; profile_value: number }>(dayProfileObsQuery("detector", selectedId, obsGrid, rel)) : [];
           const sim = await db.query<{ interval_start_s: number; duration_s: number; profile_value: number }>(dayProfileSimQuery("detector", selectedId));
           out.detector = { observed: obs.map((r) => ({ minute: Number(r.profile_minute), value: Number(r.profile_value) })), simulated: sim.map((r) => ({ value: Number(r.profile_value), startMin: Number(r.interval_start_s) / 60, endMin: (Number(r.interval_start_s) + Number(r.duration_s)) / 60 })) };
         } else if (refreshSelected) out.detector = { observed: [], simulated: [] };

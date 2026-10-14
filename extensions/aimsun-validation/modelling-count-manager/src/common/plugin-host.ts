@@ -5,10 +5,10 @@
  */
 import { DetController, type DbLike } from "./controller.ts";
 import type { AppLike, PluginLike } from "./host.ts";
-import { RunFitter } from "../../../_shared/src/fit-extent.ts";
+import { geometryPositions, RunFitter } from "../../../_shared/src/fit-extent.ts";
 import { DetectorMapLayer, type CircleStyle } from "./map-layer.ts";
 import { controlsSection, packageSection, statusBanner, type Ctx } from "./panel-parts.ts";
-import { locate, locateOid, type DetFeatureCollection } from "./geo.ts";
+import { coverageGeometries, detectorExtentPoints, locate, locateOid, type CoverageCollection, type DetFeatureCollection } from "./geo.ts";
 import { clear, el, field, makeFormat, makeTranslate } from "./ui.ts";
 import type { ObsSource } from "./sql.ts";
 import { assertStillOpen, isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
@@ -31,7 +31,7 @@ export interface Sections {
   /** Fill `host` with the plugin-specific sections (called on every state change). */
   render: (host: HTMLElement) => void;
   /** Map data + style for the current state, or null when there is nothing to draw. */
-  map: () => { fc: DetFeatureCollection; style: CircleStyle } | null;
+  map: () => { fc: DetFeatureCollection; style: CircleStyle; coverage?: CoverageCollection } | null;
   /** Tooltip lines for a hovered feature. */
   describe: (props: Record<string, unknown>) => string[];
 }
@@ -112,8 +112,10 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
   const fitRun = (): void => {
     if (!ctl || !app || ctl.state.phase !== "ready" || !ctl.geo) return;
     fitter ??= new RunFitter(app);
-    const pts = ctl.aggs.map((a) => locate(ctl!.geo, a)).filter((p): p is { lon: number; lat: number } => !!p);
-    const all = pts.length ? pts : [...ctl.geo.byOid.values(), ...ctl.geo.byEid.values()];
+    const geo = ctl.geo;
+    // polygon extents: each located detector contributes its anchor and the coverage of all its oids
+    const located = detectorExtentPoints(geo, ctl.aggs);
+    const all = located.length ? located : [...geo.byOid.values(), ...geo.byEid.values(), ...geometryPositions(coverageGeometries(geo.parts.values()))];
     fitter.fit(`${ctl.packageUrl ?? ctl.state.sourceLabel ?? ""}|${ctl.state.run ?? ""}`, all);
   };
 
@@ -121,10 +123,10 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     if (!ctl || !layer || !sections) return;
     const m = ctl.hasGeo || activeMode === "comparison" ? sections.map() : null;
     if (m) {
-      layer.update(m.fc, m.style);
+      layer.update(m.fc, m.style, m.coverage);
       const sel = ctl.state.selectedId ? ctl.aggs.find((a) => a.id === ctl!.state.selectedId) : undefined;
       const p = sel ? locate(ctl.geo, sel) : null;
-      layer.setSelected(p ? [p.lon, p.lat] : null);
+      layer.setSelected(p ? [p.lon, p.lat] : null, sel?.id);
       fitRun();
     } else {
       layer.clear();
@@ -139,7 +141,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     if (!s.packageUrl) return;
     await c.loadUrl(s.packageUrl, s.run);
     if (ctl !== c || c.state.phase !== "ready") return;
-    activeMode = s.viewMode === "comparison" || (s.viewMode === "validation" && c.hasObs) ? s.viewMode : "counts";
+    activeMode = (s.viewMode === "comparison" && !c.validationReason) || (s.viewMode === "validation" && c.hasObs) ? s.viewMode : "counts";
     if (ctx) sections = cfg.build({ ctx, layer: layer!, selectAndZoom: (id) => { c.select(id); const a = c.aggs.find((x) => x.id === id); const p = a ? locate(c.geo, a) : null; if (p) layer?.zoomTo(p.lon, p.lat); }, zoomToOid: (oid) => { const p = locateOid(c.geo, oid); if (p) layer?.zoomTo(p.lon, p.lat); }, rerender: () => { pushMap(); renderers.forEach((r) => r()); }, loadComparisonRuns: () => c.loadComparisonRuns(), selectComparisonDetector: (run, id) => c.selectComparisonDetector(run, id) }, activeMode);
     if (s.obsSource && s.obsSource !== c.state.obsSource) c.setObsSource(s.obsSource);
     if (typeof s.bucket === "number" && c.state.bucketOptions.includes(s.bucket) && s.bucket !== c.state.bucket) c.setBucket(s.bucket);
@@ -169,7 +171,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       dyn.append(statusBanner(c, hostManaged), controlsSection(c, hostManaged));
       const chooseMode = (v: ViewMode): void => {
         if (v === "validation" && !c.ctl.hasObs) return;
-        if (v === "comparison" && c.ctl.state.runs.length < 2) return;
+        if (v === "comparison" && (c.ctl.state.runs.length < 2 || c.ctl.validationReason)) return;
         activeMode = v;
         const currentLayer = layer;
         if (ctx && currentLayer) sections = cfg.build({ ctx, layer: currentLayer, selectAndZoom: (id) => { c.ctl.select(id); const a = c.ctl.aggs.find((x) => x.id === id); const p = a ? locate(c.ctl.geo, a) : null; if (p) currentLayer.zoomTo(p.lon, p.lat); }, zoomToOid: (oid) => { const p = locateOid(c.ctl.geo, oid); if (p) currentLayer.zoomTo(p.lon, p.lat); }, rerender: () => { pushMap(); renderers.forEach((r) => r()); }, loadComparisonRuns: () => c.ctl.loadComparisonRuns(), selectComparisonDetector: (run, id) => c.ctl.selectComparisonDetector(run, id) }, activeMode);
@@ -179,9 +181,13 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       const mode = el("div", { class: "av-tabs", attrs: { role: "tablist", "aria-label": t("mode.label", "View mode"), "data-testid": "view-mode" } }, [
         el("button", { class: `av-tab${activeMode === "counts" ? " av-tab-active" : ""}`, text: t("mode.counts", "Counts"), attrs: { type: "button", role: "tab", "aria-selected": String(activeMode === "counts") }, on: { click: () => chooseMode("counts") } }),
         el("button", { class: `av-tab${activeMode === "validation" ? " av-tab-active" : ""}`, text: t("mode.validation", "Validation"), attrs: { type: "button", role: "tab", "aria-selected": String(activeMode === "validation"), ...(c.ctl.hasObs ? {} : { disabled: "" }) }, on: { click: () => chooseMode("validation") } }),
-        el("button", { class: `av-tab${activeMode === "comparison" ? " av-tab-active" : ""}`, text: t("mode.comparison", "Comparison"), attrs: { type: "button", role: "tab", "aria-selected": String(activeMode === "comparison"), ...(c.ctl.state.runs.length > 1 ? {} : { disabled: "" }) }, on: { click: () => chooseMode("comparison") } }),
+        el("button", { class: `av-tab${activeMode === "comparison" ? " av-tab-active" : ""}`, text: t("mode.comparison", "Comparison"), attrs: { type: "button", role: "tab", "aria-selected": String(activeMode === "comparison"), ...(c.ctl.state.runs.length > 1 && !c.ctl.validationReason ? {} : { disabled: "" }) }, on: { click: () => chooseMode("comparison") } }),
       ]);
-      const unavailable = c.ctl.state.phase === "ready" && !c.ctl.hasObs ? el("p", { class: "av-hint", text: t("mode.validationUnavailable", "Validation requires detectors_sim.parquet and detectors_obs.parquet; this run has no detectors_obs.parquet.") }) : null;
+      const unavailable = c.ctl.state.phase === "ready" && !c.ctl.hasObs
+        ? el("p", { class: "av-hint", attrs: { "data-testid": "validation-unavailable" }, text: c.ctl.validationReason
+          ? t("mode.validationDisabled", "Validation and Comparison are disabled: {{reason}}.", { reason: c.ctl.validationReason })
+          : t("mode.validationUnavailable", "Validation requires detectors_sim.parquet and detectors_obs.parquet; this run has no detectors_obs.parquet.") })
+        : null;
       dyn.append(field(t("mode.label", "View mode"), mode));
       if (unavailable) dyn.append(unavailable);
       clear(results);
@@ -244,7 +250,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       sections = cfg.build(env, activeMode);
       unsubscribers = [
         controller.subscribe(() => {
-          if (!controller.hasObs && activeMode === "validation") {
+          if ((!controller.hasObs && activeMode === "validation") || (controller.validationReason && activeMode === "comparison")) {
             activeMode = "counts";
             if (ctx && layer) sections = cfg.build({ ctx, layer, selectAndZoom: (id) => { controller.select(id); const a = controller.aggs.find((x) => x.id === id); const p = a ? locate(controller.geo, a) : null; if (p) layer?.zoomTo(p.lon, p.lat); }, zoomToOid: (oid) => { const p = locateOid(controller.geo, oid); if (p) layer?.zoomTo(p.lon, p.lat); }, rerender: () => { pushMap(); renderers.forEach((r) => r()); }, loadComparisonRuns: () => controller.loadComparisonRuns(), selectComparisonDetector: (run, id) => controller.selectComparisonDetector(run, id) }, activeMode);
           }

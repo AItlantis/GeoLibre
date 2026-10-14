@@ -35,6 +35,25 @@ export interface PackageSummary {
   hasSim: boolean;
   /** Non-fatal observations, shown in the panel. */
   notes: string[];
+  /** Why simulated journey time is unavailable, from the manifest capability (analysis-journey-time) when it states one. */
+  simReason: string | null;
+  /** Columns of subpath_obs_jt (extended contract detection). */
+  obsColumns: string[];
+}
+
+/** Reason text a manifest gives for the journey-time capability; tolerant of the shapes the producer may use. */
+export function manifestSimReason(manifest: PackageManifest | undefined): string | null {
+  if (!manifest) return null;
+  const caps = manifest.capabilities as Record<string, unknown> | undefined;
+  const cap = caps?.["analysis-journey-time"];
+  const pick = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+  if (cap && typeof cap === "object") {
+    const c = cap as Record<string, unknown>;
+    if (c.available === false || c.enabled === false) return pick(c.reason) ?? pick(c.message);
+    return null;
+  }
+  if (cap === false) return pick((manifest.capability_reasons as Record<string, unknown> | undefined)?.["analysis-journey-time"]) ?? pick(manifest.journey_time_reason) ?? pick(manifest.reason);
+  return null;
 }
 
 export interface LoadOptions {
@@ -57,8 +76,10 @@ export function subpathRefs(fc: GeoJSONFC | null): SubpathRef[] {
   return fc.features.map((f, i) => {
     const p = f.properties ?? {};
     const exists = typeof p.exists_in_run_scenario === "boolean" ? (p.exists_in_run_scenario as boolean) : null;
+    const oid = p.oid ?? p.subpath_oid;
     return {
       id: (p.id as string | number | undefined) ?? f.id ?? i,
+      ...(oid !== undefined && oid !== null ? { oid: oid as string | number } : {}),
       name: String(p.name ?? ""),
       group: p.group_label === undefined || p.group_label === null ? null : String(p.group_label),
       exists,
@@ -84,8 +105,8 @@ interface Pending {
   rows?: number;
 }
 
-async function ingest(s: Session, pending: Pending[], origin: string, run: string | null, opts: LoadOptions): Promise<PackageSummary> {
-  const out: PackageSummary = { run, origin, tables: [], geo: null, hasObs: false, hasSim: false, notes: [] };
+async function ingest(s: Session, pending: Pending[], origin: string, run: string | null, opts: LoadOptions, simReason: string | null = null): Promise<PackageSummary> {
+  const out: PackageSummary = { run, origin, tables: [], geo: null, hasObs: false, hasSim: false, notes: [], simReason, obsColumns: [] };
   const simParts: string[] = [];
   let simIndex = 0;
   for (const p of pending) {
@@ -121,6 +142,7 @@ async function ingest(s: Session, pending: Pending[], origin: string, run: strin
   }
   out.hasObs = out.tables.some((t) => t.table === "subpath_obs_jt" && t.rows > 0);
   out.hasSim = out.tables.some((t) => t.table === "subpath_sim_jt" && t.rows > 0);
+  if (out.hasObs) out.obsColumns = (await s.query<{ column_name: string }>("DESCRIBE subpath_obs_jt")).map((c) => String(c.column_name));
   return out;
 }
 
@@ -141,7 +163,7 @@ export async function loadFromManifestUrl(s: Session, manifestUrl: string, opts:
     pending.push({ table, name: e.path, bytes: new Uint8Array(await r.arrayBuffer()), sha256: e.sha256, rows: e.rows,
       run: runName ?? (parent && parent !== "data" ? parent : typeof manifest.run === "string" ? manifest.run : undefined) });
   }
-  return withDuckDbLock(() => ingest(s, pending, manifestUrl, typeof manifest.run === "string" ? manifest.run : null, opts));
+  return withDuckDbLock(() => ingest(s, pending, manifestUrl, typeof manifest.run === "string" ? manifest.run : null, opts, manifestSimReason(manifest)));
 }
 
 const baseName = (p: string): string => p.replace(/\\/g, "/").split("/").pop() ?? p;
@@ -207,5 +229,5 @@ export async function loadFromFiles(s: Session, files: readonly File[], opts: Lo
     pending.push({ table: p.table, name: p.name, bytes: new Uint8Array(await file.arrayBuffer()), sha256: p.sha256, rows: p.rows, run: p.run ?? (p.table === "subpath_sim_jt" ? run ?? undefined : undefined) });
   }
   const dir = files[0] ? rel(files[0]).split("/")[0] : "";
-  return withDuckDbLock(() => ingest(s, pending, `picked files${dir && rel(files[0]).includes("/") ? ` (${dir})` : ""}`, run, opts));
+  return withDuckDbLock(() => ingest(s, pending, `picked files${dir && rel(files[0]).includes("/") ? ` (${dir})` : ""}`, run, opts, manifestSimReason(manifest)));
 }

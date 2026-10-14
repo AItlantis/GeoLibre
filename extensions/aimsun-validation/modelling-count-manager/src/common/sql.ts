@@ -2,14 +2,144 @@
  * SQL parameter building for the detector plugins. All dynamic values are validated here
  * (integers / known identifiers); nothing user-typed is ever interpolated as text.
  */
-import { buildAdapterSql, ADAPTED_RELATIONS } from "../../../_shared/src/sql/adapter.sql.ts";
+import { buildAdapterSql, ADAPTED_RELATIONS, type ObsSourceSpec } from "../../../_shared/src/sql/adapter.sql.ts";
 import { buildViewsSql } from "../../../_shared/src/sql/views.sql.ts";
 
-export type ObsSource = "validation" | "calibration" | "both";
-export const OBS_SOURCES: readonly ObsSource[] = ["validation", "calibration", "both"];
+/**
+ * Observed source selection. Legacy packages (no `observed_sources`): 'validation' | 'calibration' | 'both'
+ * (the source_file of the 2025 yearly pattern). Observation contract v2 packages: a `source_id` from the
+ * manifest's `observed_sources`, or 'both' = every comparable source (offered only when they are homogeneous).
+ */
+export type ObsSource = string;
+export type LegacyObsSource = "validation" | "calibration" | "both";
+export const OBS_SOURCES: readonly LegacyObsSource[] = ["validation", "calibration", "both"];
 
-export function isObsSource(v: unknown): v is ObsSource {
+export function isObsSource(v: unknown): v is LegacyObsSource {
   return v === "validation" || v === "calibration" || v === "both";
+}
+
+/** One entry of `observed_sources` (contract C7), as parsed from analysis_manifest.json / analysis.json. */
+export interface ObservedSource {
+  sourceId: string;
+  file: string | null;
+  adapter: string | null;
+  role: "counts" | "journey_time" | "unknown";
+  referenceDay: string | null;
+  dateKind: "actual" | "typical" | "unknown";
+  gridSeconds: number | null;
+  durationSeconds: number | null;
+  timestampConvention: "interval-end" | "interval-start" | "unknown";
+  units: "veh/h" | "veh" | "unknown";
+  unitConfidence: "declared" | "inferred" | "unknown";
+  /** As declared by the producer ('comparable' | 'profile-only'); null when absent (the consumer rules decide). */
+  eligibility: "comparable" | "profile-only" | null;
+  rows: number | null;
+  detectors: number | null;
+}
+
+/** An observed source after the consumer's own eligibility rules (declared eligibility AND known interval/units). */
+export interface ResolvedSource extends ObservedSource {
+  effective: "comparable" | "profile-only";
+  /** Why the source is profile-only (null when comparable). */
+  reason: string | null;
+  /** Interval length in whole minutes, null when unknown. */
+  durationMin: number | null;
+  /** Day the timestamps are placed on; null = time of day only. */
+  refDay: string | null;
+  tsLabel: "end" | "start";
+}
+
+/** A report listed in analysis_manifest.json / analysis.json `reports` (never a table). */
+export interface ReportRef {
+  name: string;
+  path: string;
+  format: string;
+  sha256: string | null;
+  bytes: number | null;
+}
+
+/**
+ * Apply the consumer eligibility rules to the counts sources of a run (journey_time sources are not counts).
+ * A source is comparable only when (a) it is not declared 'profile-only', (b) its interval is known and a
+ * whole number of minutes (durationSeconds, else gridSeconds) and (c) its units are known: 'veh/h', or 'veh'
+ * with 'declared' / 'inferred' confidence (converted to veh/h with the interval length). Otherwise it is
+ * profile-only: shown in day profiles, never part of validation/comparison statistics.
+ * Reference day: the source's own, else the run-level `observed.referenceDay`, else (typical days)
+ * time of day only, else the legacy 2025-01-01. A timestamp convention that is 'unknown' is read as
+ * interval-end (the documented default).
+ */
+export function resolveSources(sources: readonly ObservedSource[], observed?: Pick<ObservedMeta, "referenceDay"> | null): ResolvedSource[] {
+  return sources
+    .filter((s) => s.role !== "journey_time")
+    .map((s) => {
+      const dur = s.durationSeconds ?? s.gridSeconds;
+      let reason: string | null = null;
+      if (s.eligibility === "profile-only") reason = "declared profile-only (sparse points or interval unknown)";
+      else if (dur === null || !(dur > 0)) reason = "its interval length is unknown";
+      else if (dur % 60 !== 0) reason = "its interval is not a whole number of minutes";
+      else if (s.units === "unknown") reason = "its units are unknown";
+      else if (s.units === "veh" && s.unitConfidence === "unknown") reason = "its units (veh) are neither declared nor inferred";
+      const refDay = s.referenceDay ?? observed?.referenceDay ?? (s.dateKind === "typical" ? null : "2025-01-01");
+      return {
+        ...s,
+        effective: reason === null ? ("comparable" as const) : ("profile-only" as const),
+        reason,
+        durationMin: dur !== null && dur > 0 && dur % 60 === 0 ? dur / 60 : null,
+        refDay,
+        tsLabel: s.timestampConvention === "interval-start" ? ("start" as const) : ("end" as const),
+      };
+    });
+}
+
+/** True when every source shares interval, day, convention and units (so their rows can be pooled as one source). */
+export function sourcesHomogeneous(list: readonly ResolvedSource[]): boolean {
+  if (list.length < 2) return true;
+  const key = (s: ResolvedSource): string => [s.durationMin, s.refDay, s.tsLabel, s.units, s.unitConfidence === "unknown" ? "u" : "k"].join("|");
+  return list.every((s) => key(s) === key(list[0]));
+}
+
+export interface SourceChoice {
+  value: string;
+  /** 'all' = every comparable source ('both'). */
+  kind: "all" | "source";
+  source?: ResolvedSource;
+}
+
+/**
+ * The 'Observed source' choices of a v2 package: one per source_id (counts sources only), plus 'both'
+ * only when there are at least two comparable sources and they are homogeneous.
+ */
+export function sourceChoices(list: readonly ResolvedSource[]): SourceChoice[] {
+  const comparable = list.filter((s) => s.effective === "comparable");
+  const out: SourceChoice[] = [];
+  if (comparable.length >= 2 && sourcesHomogeneous(comparable)) out.push({ value: "both", kind: "all" });
+  for (const s of list) out.push({ value: s.sourceId, kind: "source", source: s });
+  return out;
+}
+
+/** Default selection: 'both' when offered, else the first comparable source, else the first source. */
+export function defaultSourceChoice(list: readonly ResolvedSource[]): string {
+  const ch = sourceChoices(list);
+  return ch.find((c) => c.kind === "all")?.value ?? list.find((s) => s.effective === "comparable")?.sourceId ?? list[0]?.sourceId ?? "both";
+}
+
+/** Sources selected by a choice value (unknown value = none). */
+export function selectedSources(list: readonly ResolvedSource[], value: string): ResolvedSource[] {
+  if (value === "both" && sourceChoices(list).some((c) => c.kind === "all")) return list.filter((s) => s.effective === "comparable");
+  return list.filter((s) => s.sourceId === value);
+}
+
+/** Adapter spec of a resolved source. */
+export function toSpec(s: ResolvedSource): ObsSourceSpec {
+  return {
+    sourceId: s.sourceId,
+    durationSeconds: s.durationMin === null ? null : s.durationMin * 60,
+    units: s.units,
+    unitConfidence: s.unitConfidence,
+    eligibility: s.effective,
+    referenceDay: s.refDay,
+    tsLabel: s.tsLabel,
+  };
 }
 
 /** Throws unless v is a finite integer. */
@@ -40,6 +170,13 @@ export interface DetViewConfig {
   observed?: ObservedMeta;
   /** Keep only simulated rows of this length (seconds) when the table mixes micro and macro rows. */
   simDurationSeconds?: number | null;
+  /**
+   * Observation contract v2: the selected sources (already resolved, in preference order). Switches the
+   * adapter to extended mode (per-source interval, units, day); `obsSource` is then only informative.
+   */
+  sources?: ResolvedSource[];
+  /** Columns of the raw obs table (extended mode only). */
+  obsColumns?: readonly string[];
 }
 
 export function rawTableNames(prefix: string): { sim: string; obs: string } {
@@ -50,11 +187,15 @@ export function rawTableNames(prefix: string): { sim: string; obs: string } {
 /** Adapter + det views for the given config (re-created before every query, see det-data.ts). */
 export function detViewScript(cfg: DetViewConfig): string {
   const t = rawTableNames(cfg.prefix);
-  if (!isObsSource(cfg.obsSource)) throw new Error("invalid obsSource");
+  const extended = cfg.sources !== undefined;
+  if (!extended && !isObsSource(cfg.obsSource)) throw new Error("invalid obsSource");
   const bucket = intArg(cfg.bucketMinutes, "bucketMinutes");
   if (bucket <= 0) throw new Error("bucketMinutes must be > 0");
-  const adapter: Parameters<typeof buildAdapterSql>[0] = { rawSimTable: t.sim, rawObsTable: t.obs, obsSource: cfg.obsSource };
-  if (cfg.observed) {
+  const adapter: Parameters<typeof buildAdapterSql>[0] = { rawSimTable: t.sim, rawObsTable: t.obs, obsSource: extended ? "both" : (cfg.obsSource as LegacyObsSource) };
+  if (cfg.sources) {
+    adapter.obsSources = cfg.sources.map(toSpec);
+    if (cfg.obsColumns) adapter.obsColumns = cfg.obsColumns;
+  } else if (cfg.observed) {
     adapter.obsRefDay = cfg.observed.referenceDay;
     adapter.obsGridMin = obsGridMinutes(cfg.observed);
     adapter.obsTsLabel = cfg.observed.timestampConvention === "interval-start" ? "start" : "end";
@@ -108,7 +249,7 @@ export function unmatchedSimSql(prefix: string): string {
 }
 
 /** Names of the shared det views, dropped on dispose (every consumer re-creates them per query). */
-export const DET_VIEWS = ["v_det_summary", "v_det_validation", "v_obs_norm", "v_sim_norm"] as const;
+export const DET_VIEWS = ["v_det_summary", "v_det_validation", "v_obs_norm", "v_obs_profile", "v_obs_ext", "v_obs_src", "v_sim_norm"] as const;
 
 const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
 
@@ -163,24 +304,43 @@ export function durationLabel(minutes: number): string {
 
 export type ProfileScope = "mean" | "sum" | "detector";
 /** Bounded full-day observed profile (maximum 1440/grid points; 288 for the legacy 5-minute grid). */
-export function dayProfileObsQuery(scope: ProfileScope, detectorId?: string, gridMin = 5): string {
-  const grid = intArg(gridMin, "gridMin");
-  if (grid <= 0) throw new Error("gridMin must be > 0");
+export function dayProfileObsQuery(scope: ProfileScope, detectorId?: string, gridMin: number | null = 5, relation: "v_obs_norm" | "v_obs_profile" = "v_obs_norm"): string {
+  // gridMin null (v2 packages): every selected source row of the relation, whatever its interval
+  const grid = gridMin === null ? null : intArg(gridMin, "gridMin");
+  if (grid !== null && grid <= 0) throw new Error("gridMin must be > 0");
+  if (relation !== "v_obs_norm" && relation !== "v_obs_profile") throw new Error("invalid observed relation");
   const id = detectorId === undefined ? "" : detectorId.replace(/'/g, "''");
   const match = scope === "detector" ? `AND CAST(o.detector_id AS VARCHAR) = '${id}'` : "";
   const aggregate = scope === "sum" ? "SUM(o.flow)" : "AVG(o.flow)";
   return `WITH matched AS (SELECT DISTINCT CAST(eid AS VARCHAR) detector_id FROM v_sim_norm WHERE eid IS NOT NULL AND trim(CAST(eid AS VARCHAR)) <> '')\n` +
-    `SELECT CAST(o.t_start_min AS INTEGER) AS profile_minute, ${aggregate} AS profile_value FROM v_obs_norm o JOIN matched m ON m.detector_id = CAST(o.detector_id AS VARCHAR) ` +
-    `WHERE o.dur_min = ${grid} ${match} GROUP BY o.t_start_min ORDER BY o.t_start_min LIMIT ${Math.ceil(1440 / grid)}`;
+    `SELECT CAST(o.t_start_min AS INTEGER) AS profile_minute, ${aggregate} AS profile_value FROM ${relation} o JOIN matched m ON m.detector_id = CAST(o.detector_id AS VARCHAR) ` +
+    `WHERE ${grid === null ? "TRUE" : `o.dur_min = ${grid}`} ${match} GROUP BY o.t_start_min ORDER BY o.t_start_min LIMIT ${grid === null ? 1440 : Math.ceil(1440 / grid)}`;
 }
 
 /** Simulated profile as one row per (interval start, duration), preserving mixed durations. */
-export function dayProfileSimQuery(scope: ProfileScope, detectorId?: string, matchedOnly = false): string {
-  const id = detectorId === undefined ? "" : detectorId.replace(/\x27/g, "\x27\x27");
-  const filter = scope === "detector" ? "AND CAST(s.eid AS VARCHAR) = \x27" + id + "\x27" : "";
+export function dayProfileSimQuery(scope: ProfileScope, detectorId?: string, matchedOnly = false, obsRelation: "v_obs_norm" | "v_obs_profile" = "v_obs_norm"): string {
+  if (obsRelation !== "v_obs_norm" && obsRelation !== "v_obs_profile") throw new Error("invalid observed relation");
+  const id = detectorId === undefined ? "" : detectorId.replace(/'/g, "''");
+  const filter = scope === "detector" ? "AND s.eid = '" + id + "'" : "";
   const aggregate = scope === "sum" ? "SUM(s.flow)" : "AVG(s.flow)";
-  const matched = matchedOnly && scope !== "detector" ? "WITH matched AS (SELECT DISTINCT CAST(s.eid AS VARCHAR) detector_id FROM v_sim_norm s JOIN v_obs_norm o ON CAST(o.detector_id AS VARCHAR) = CAST(s.eid AS VARCHAR)) " : "";
-  const join = matched ? "JOIN matched m ON m.detector_id = CAST(s.eid AS VARCHAR) " : "";
-  return matched + "SELECT CAST(s.t_start_min * 60 AS INTEGER) interval_start_s, CAST(s.dur_min * 60 AS INTEGER) duration_s, " + aggregate + " AS profile_value FROM v_sim_norm s " + join +
-    "WHERE s.eid IS NOT NULL AND trim(CAST(s.eid AS VARCHAR)) <> \x27\x27 " + filter + " GROUP BY s.t_start_min, s.dur_min ORDER BY s.t_start_min, s.dur_min";
+  // C8: oids sharing an eid are pooled per (eid, interval) with the mean first, so a network total counts each eid once.
+  const pooled = "pooled AS (SELECT CAST(eid AS VARCHAR) eid, t_start_min, dur_min, AVG(flow) flow FROM v_sim_norm WHERE eid IS NOT NULL AND trim(CAST(eid AS VARCHAR)) <> '' GROUP BY 1, 2, 3)";
+  const matched = matchedOnly && scope !== "detector" ? ", matched AS (SELECT DISTINCT s.eid detector_id FROM pooled s JOIN " + obsRelation + " o ON CAST(o.detector_id AS VARCHAR) = s.eid)" : "";
+  const join = matched ? "JOIN matched m ON m.detector_id = s.eid " : "";
+  return "WITH " + pooled + matched + " SELECT CAST(s.t_start_min * 60 AS INTEGER) interval_start_s, CAST(s.dur_min * 60 AS INTEGER) duration_s, " + aggregate + " AS profile_value FROM pooled s " + join +
+    "WHERE TRUE " + filter + " GROUP BY s.t_start_min, s.dur_min ORDER BY s.t_start_min, s.dur_min";
 }
+
+/** Simulated eids that several simulated oids share (C8): eid and how many oids. */
+export const SHARED_EID_SQL =
+  "SELECT CAST(eid AS VARCHAR) AS eid, count(DISTINCT oid) AS n_oids FROM v_sim_norm " +
+  "WHERE eid IS NOT NULL AND trim(CAST(eid AS VARCHAR)) <> '' GROUP BY 1 HAVING count(DISTINCT oid) > 1";
+
+/**
+ * Simulation-only aggregation (no observed table, or validation disabled): one row per eid, pooled per
+ * (eid, interval) with the MEAN across its oids (C8), then the duration-weighted mean over the intervals.
+ */
+export const SIM_ONLY_SQL =
+  "WITH p AS (SELECT CAST(eid AS VARCHAR) detector_id, t_start_min, dur_min, min(oid) oid, avg(flow) flow FROM v_sim_norm " +
+  "WHERE eid IS NOT NULL AND trim(CAST(eid AS VARCHAR)) <> '' AND flow IS NOT NULL AND dur_min > 0 GROUP BY 1, 2, 3) " +
+  "SELECT detector_id, min(oid) oid, sum(flow * dur_min) / sum(dur_min) sim_flow_h FROM p GROUP BY detector_id ORDER BY detector_id";

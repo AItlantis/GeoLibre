@@ -18,8 +18,10 @@
  *   Join key: detectors_sim.eid = detectors_obs.detector_id (compared as VARCHAR; the
  *   simulated oid is carried through for map joins). Simulated rows whose eid is NULL / empty
  *   cannot be matched to an observed detector: they are EXCLUDED from v_det_validation and listed
- *   in v_det_unmatched_sim (oid, flow) / v_det_unmatched_sim_summary so panels can warn. On the
- *   real AMPK_3/PMPK_3 data no eid is shared by two oids (verified), so eid identifies one detector.
+ *   in v_det_unmatched_sim (oid, flow) / v_det_unmatched_sim_summary so panels can warn.
+ *   C8: several oids may share one eid (Jumeira: 292 oids, 255 eids). They are pooled per (eid,
+ *   interval) with the MEAN of their flow rates and the coverage is the UNION of covered intervals;
+ *   v_det_validation.n_sim_oids says how many oids were pooled (MIN(oid) is the render id).
  *
  * The SQL is plain DuckDB (no spatial extension). Views cannot take parameters, so the
  * aggregation parameters are baked in by {@link buildViewsSql}; call it again with new
@@ -193,16 +195,32 @@ GROUP BY scenario;
 -- Hourly flow (veh/h): rate -> SUM(flow*dur)/SUM(dur) (duration-weighted mean); count ->
 -- SUM(flow)*60/SUM(dur). m = simulated, c = observed. Rows are per eid (one detector); sim rows
 -- with NULL/empty eid are excluded here (see v_det_unmatched_sim), never pooled into one row.
+-- Oids sharing an eid are pooled per interval by the MEAN of their flows first (see simp), so each
+-- eid counts once in every statistic and its coverage is the union of the covered intervals.
 -- GEH = sqrt(2 (m-c)^2 / (m+c)); m = c = 0 => GEH 0 (perfect agreement; the Python
 -- reference returns None there). rel_error = (m-c)/c, NULL when c = 0.
 CREATE OR REPLACE VIEW v_det_validation AS
-WITH sim AS (
-  SELECT CAST(eid AS VARCHAR) AS eid, MIN(oid) AS oid,
-         ${bstart} AS bucket_start_min,
-         ${simH} AS m, SUM(dur_min) AS cover_min
+WITH simp AS (
+  -- C8 pooling: several simulated oids can share one eid (they observe the same physical detector).
+  -- Pool them per (eid, interval) with the documented rule MEAN of the oids' flows; each interval is
+  -- then counted ONCE, so temporal coverage is the UNION of the covered intervals (never summed
+  -- across oids). oid = MIN(oid) is the representative render id; n_sim_oids (CTE shared) = oids that share the eid.
+  SELECT CAST(eid AS VARCHAR) AS eid, MIN(oid) AS oid, t_start_min, dur_min,
+         AVG(flow) AS flow
   FROM ${simRel}
   WHERE flow IS NOT NULL AND dur_min > 0 AND eid IS NOT NULL AND TRIM(CAST(eid AS VARCHAR)) <> ''
+  GROUP BY 1, 3, 4
+), sim AS (
+  SELECT eid, MIN(oid) AS oid,
+         ${bstart} AS bucket_start_min,
+         ${simH} AS m, SUM(dur_min) AS cover_min
+  FROM simp
   GROUP BY 1, 3
+), shared AS (
+  SELECT CAST(eid AS VARCHAR) AS eid, COUNT(DISTINCT oid) AS n_sim_oids
+  FROM ${simRel}
+  WHERE eid IS NOT NULL AND TRIM(CAST(eid AS VARCHAR)) <> ''
+  GROUP BY 1
 ), obs AS (
   SELECT CAST(detector_id AS VARCHAR) AS eid,
          ${bstart} AS bucket_start_min,
@@ -212,11 +230,12 @@ WITH sim AS (
   GROUP BY 1, 2
 ), j AS (
   SELECT s.eid AS detector_id, s.oid, s.bucket_start_min,
-         s.m AS sim_flow_h, o.c AS obs_flow_h
+         s.m AS sim_flow_h, o.c AS obs_flow_h, h.n_sim_oids
   FROM sim s JOIN obs o ON o.eid = s.eid AND o.bucket_start_min = s.bucket_start_min
+  JOIN shared h ON h.eid = s.eid
   ${full ? `WHERE s.cover_min >= ${bucket} AND o.cover_min >= ${bucket}` : ""}
 )
-SELECT detector_id, oid, bucket_start_min, sim_flow_h, obs_flow_h,
+SELECT detector_id, oid, bucket_start_min, sim_flow_h, obs_flow_h, n_sim_oids,
        sim_flow_h - obs_flow_h AS diff,
        CASE WHEN obs_flow_h <> 0 THEN (sim_flow_h - obs_flow_h) / obs_flow_h ELSE NULL END AS rel_error,
        geh,

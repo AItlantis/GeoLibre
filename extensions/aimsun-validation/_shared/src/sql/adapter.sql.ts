@@ -13,16 +13,51 @@
  *     'validation' | 'calibration'; the two files overlap on most detectors (same
  *     detector_id + ts + flow), so rows are de-duplicated by (detector_id, ts).
  *
+ * Observation contract v2 (C7, extended mode, enabled by AdapterOptions.obsSources): the raw obs
+ * table may also carry duration_s, source_id, units ('veh/h'|'veh'|'unknown'), unit_confidence
+ * ('declared'|'inferred'|'unknown'), eligibility ('comparable'|'profile-only'), flow_min, flow_max,
+ * oid (every column nullable / optional, see obsColumns). Each row then uses ITS source's interval
+ * length (row duration_s, else the source's), units and reference day instead of one global grid;
+ * rows are de-duplicated by (detector_id, ts, source_id) and, across several selected sources, by
+ * (detector_id, t_start_min) in the source preference order. Units: 'veh' counts are converted to
+ * veh/h with the row duration ONLY when unit_confidence is 'declared' or 'inferred'; 'unknown'
+ * units (or an unknown duration) make the row profile-only: it is excluded from v_obs_norm
+ * (validation / comparison statistics) and kept in v_obs_profile (day profiles only).
+ *
  * Outputs:
  *   v_sim_norm(oid, eid, t_start_min, dur_min, flow)
  *   v_obs_norm(detector_id, t_start_min, dur_min, flow)
+ *   extended mode only: v_obs_src (selected sources), v_obs_ext (resolved rows),
+ *     v_obs_profile(detector_id, t_start_min, dur_min, flow, source_id, comparable)
  * t_start_min = minutes since midnight of the reference day. Simulated rows are
  * interval_start_s / 60. Observed rows are placed relative to `obsRefDay` (default
  * 2025-01-01, the yearly reference pattern); rows outside that day are dropped.
  */
 import { ident } from "./views.sql.ts";
 
+/** One observed source as resolved by the consumer (see modelling-count-manager/src/common/sql.ts). */
+export interface ObsSourceSpec {
+  sourceId: string;
+  /** Interval length of the source in seconds; null = unknown (row duration_s may still supply it). */
+  durationSeconds: number | null;
+  units: "veh/h" | "veh" | "unknown";
+  unitConfidence: "declared" | "inferred" | "unknown";
+  /** 'profile-only' sources appear in v_obs_profile only. */
+  eligibility: "comparable" | "profile-only";
+  /** Day the timestamps are placed on (YYYY-MM-DD); null = time of day only (typical day without a declared date). */
+  referenceDay: string | null;
+  tsLabel: "end" | "start";
+}
+
 export interface AdapterOptions {
+  /**
+   * Extended (C7) mode: the selected sources. Omit for the legacy single-grid behaviour (today's
+   * adapter, unchanged). With it, obsSource/obsPreference/obsRefDay/obsGridMin/obsTsLabel are ignored;
+   * the array order is the preference order on overlapping rows.
+   */
+  obsSources?: ObsSourceSpec[];
+  /** Columns present in the raw obs table (extended mode); absent columns read as NULL. Default: the legacy four. */
+  obsColumns?: readonly string[];
   rawSimTable?: string; // default detectors_sim_raw
   rawObsTable?: string; // default detectors_obs_raw
   /** Vehicle class kept from the simulated table. Default 0 (all vehicles). null keeps every class. */
@@ -45,6 +80,90 @@ export interface AdapterOptions {
   simDurationSeconds?: number | null;
 }
 
+const lit = (v: string): string => `'${v.replace(/'/g, "''")}'`;
+const numOrNull = (v: number | null, type: string): string => (v === null ? `CAST(NULL AS ${type})` : `CAST(${v} AS ${type})`);
+
+/** Extended-mode observed views (C7). */
+function buildExtendedObsSql(rawObs: string, specs: ObsSourceSpec[], columns: readonly string[]): string {
+  const has = (c: string): boolean => columns.includes(c);
+  const col = (c: string, type: string): string => (has(c) ? c : `CAST(NULL AS ${type})`);
+  const meta = specs.length
+    ? "VALUES " +
+      specs
+        .map((s, i) => {
+          if (s.referenceDay !== null && !/^\d{4}-\d{2}-\d{2}$/.test(s.referenceDay)) throw new Error("obsSources.referenceDay must be YYYY-MM-DD or null");
+          if (s.durationSeconds !== null && !(Number.isInteger(s.durationSeconds) && s.durationSeconds > 0)) throw new Error("obsSources.durationSeconds must be a positive integer or null");
+          if (!["veh/h", "veh", "unknown"].includes(s.units)) throw new Error("obsSources.units must be veh/h|veh|unknown");
+          if (!["declared", "inferred", "unknown"].includes(s.unitConfidence)) throw new Error("obsSources.unitConfidence must be declared|inferred|unknown");
+          if (s.eligibility !== "comparable" && s.eligibility !== "profile-only") throw new Error("obsSources.eligibility must be comparable|profile-only");
+          if (s.tsLabel !== "end" && s.tsLabel !== "start") throw new Error("obsSources.tsLabel must be end|start");
+          return `(CAST(${lit(s.sourceId)} AS VARCHAR), ${numOrNull(s.durationSeconds, "INTEGER")}, ${lit(s.units)}, ${lit(s.unitConfidence)}, ${lit(s.eligibility)}, ${
+            s.referenceDay === null ? "CAST(NULL AS VARCHAR)" : lit(s.referenceDay)
+          }, ${lit(s.tsLabel)}, ${i})`;
+        })
+        .join(", ")
+    : "SELECT CAST(NULL AS VARCHAR), CAST(NULL AS INTEGER), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS INTEGER) WHERE false";
+  const dayMin = `CAST(date_diff('minute', CAST(ref_day AS TIMESTAMP), ts) AS INTEGER)`;
+  const tod = `(CAST(date_part('hour', ts) AS INTEGER) * 60 + CAST(date_part('minute', ts) AS INTEGER))`;
+  const shift = `(CASE WHEN ts_label = 'end' THEN COALESCE(dur_min, 0) ELSE 0 END)`;
+  return `
+-- ===== Adapter (C7): selected observed sources =====
+CREATE OR REPLACE VIEW v_obs_src AS
+SELECT * FROM (${meta}) m(source_id, dur_s, units, unit_conf, elig, ref_day, ts_label, pref);
+
+-- ===== Adapter (C7): observed rows resolved per source (interval, units, day), de-duplicated =====
+-- Row duration_s wins over the source's; 'veh' -> veh/h only for declared/inferred units; the
+-- timestamp labels the interval END (default) or START per source. Duplicates (detector_id, ts,
+-- source_id) collapse to one row; overlapping sources then keep the preferred one per (detector_id, t_start_min).
+CREATE OR REPLACE VIEW v_obs_ext AS
+WITH j AS (
+  SELECT CAST(r.detector_id AS VARCHAR) AS detector_id, r.ts, r.flow, m.source_id,
+         COALESCE(r.row_dur_s, m.dur_s) AS dur_s,
+         COALESCE(r.row_units, m.units) AS units_eff,
+         COALESCE(r.row_conf, m.unit_conf) AS conf_eff,
+         (m.elig = 'comparable' AND COALESCE(r.row_elig, 'comparable') <> 'profile-only') AS ok_elig,
+         m.ref_day, m.ts_label, m.pref, r.row_dur_s
+  FROM (
+    SELECT detector_id, ts, flow, COALESCE(${col("source_id", "VARCHAR")}, ${col("source_file", "VARCHAR")}) AS source_id,
+           ${col("duration_s", "INTEGER")} AS row_dur_s, ${col("units", "VARCHAR")} AS row_units,
+           ${col("unit_confidence", "VARCHAR")} AS row_conf, ${col("eligibility", "VARCHAR")} AS row_elig
+    FROM ${rawObs} WHERE flow IS NOT NULL AND ts IS NOT NULL
+  ) r JOIN v_obs_src m ON m.source_id = r.source_id
+), c AS (
+  SELECT *,
+         CASE WHEN dur_s > 0 AND dur_s % 60 = 0 THEN CAST(dur_s / 60 AS INTEGER) END AS dur_min,
+         CASE WHEN units_eff IS NULL OR units_eff = 'veh/h' THEN flow
+              WHEN units_eff = 'veh' AND conf_eff IN ('declared', 'inferred') AND dur_s > 0 THEN flow * 3600.0 / dur_s
+              ELSE NULL END AS flow_h
+  FROM j
+), p AS (
+  SELECT *,
+         CASE WHEN ref_day IS NULL THEN CAST((${tod} - ${shift} + 1440) % 1440 AS INTEGER)
+              ELSE ${dayMin} - ${shift} END AS t_start_min,
+         ROW_NUMBER() OVER (PARTITION BY detector_id, ts, source_id ORDER BY row_dur_s NULLS LAST, flow) AS rn1,
+         (ok_elig AND dur_min IS NOT NULL AND flow_h IS NOT NULL) AS cmp
+  FROM c
+), q AS (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY detector_id, t_start_min, cmp ORDER BY pref, source_id) AS rn2
+  FROM p WHERE rn1 = 1 AND t_start_min >= 0 AND t_start_min < 1440
+)
+SELECT detector_id, t_start_min, dur_min, flow, flow_h, source_id, ok_elig
+FROM q WHERE rn2 = 1;
+
+-- Day profiles: every selected source, profile-only ones included (veh/h when the units allow it, else as given).
+CREATE OR REPLACE VIEW v_obs_profile AS
+SELECT detector_id, t_start_min, COALESCE(dur_min, 0) AS dur_min, COALESCE(flow_h, flow) AS flow, source_id,
+       (ok_elig AND dur_min IS NOT NULL AND flow_h IS NOT NULL) AS comparable
+FROM v_obs_ext;
+
+-- Validation / comparison: comparable rows only (known interval, known units).
+CREATE OR REPLACE VIEW v_obs_norm AS
+SELECT detector_id, t_start_min, dur_min, flow_h AS flow
+FROM v_obs_ext
+WHERE ok_elig AND dur_min IS NOT NULL AND flow_h IS NOT NULL;
+`;
+}
+
 export function buildAdapterSql(o: AdapterOptions = {}): string {
   const rawSim = ident(o.rawSimTable ?? "detectors_sim_raw", "rawSimTable");
   const rawObs = ident(o.rawObsTable ?? "detectors_obs_raw", "rawObsTable");
@@ -60,6 +179,19 @@ export function buildAdapterSql(o: AdapterOptions = {}): string {
   if (!Number.isInteger(grid) || grid <= 0) throw new Error("obsGridMin must be a positive integer");
   const simDur = o.simDurationSeconds ?? null;
   if (simDur !== null && (!Number.isInteger(simDur) || simDur <= 0)) throw new Error("simDurationSeconds must be a positive integer or null");
+  if (o.obsSources) {
+    const simSql = `
+-- ===== Adapter: simulated detectors (sid filter, seconds -> minutes) =====
+CREATE OR REPLACE VIEW v_sim_norm AS
+SELECT oid, eid,
+       CAST(interval_start_s / 60 AS INTEGER) AS t_start_min,
+       CAST(duration_s / 60 AS INTEGER)       AS dur_min,
+       flow
+FROM ${rawSim}
+WHERE duration_s > 0 ${cls === null ? "" : `AND sid = ${cls}`} ${simDur === null ? "" : `AND duration_s = ${simDur}`};
+`;
+    return simSql + buildExtendedObsSql(rawObs, o.obsSources, o.obsColumns ?? ["detector_id", "ts", "flow", "source_file"]);
+  }
   const label = o.obsTsLabel ?? "end";
   const srcFilter = src === "both" ? "" : `AND source_file = '${src}'`;
   const order = pref.map((p, i) => `WHEN '${p}' THEN ${i}`).join(" ");

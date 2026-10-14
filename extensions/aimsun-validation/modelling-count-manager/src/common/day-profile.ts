@@ -31,8 +31,13 @@ export function dayProfileBlock(ctx: Ctx, scope: ProfileScope, onScopeChange?: (
       id: selectedId, sim: fmt.int(series.simulated.length ? series.simulated.reduce((sum, segment) => sum + segment.value, 0) / series.simulated.length : null), obs: fmt.int(series.observedWindowMean),
     }) }));
   }
-  if (!ctl.hasObs) children.push(el("p", { class: "av-hint", text: t("day.noObs", "No observed day profile is available; showing the simulated interval only.") }));
-  else if (!series.observed.length) children.push(el("p", { class: "av-hint", text: t("day.empty", "No observed flow is available for this selection.") }));
+  const shared = selectedId ? ctl.sharedOidCount(selectedId) : 1;
+  if (shared > 1) {
+    children.push(el("p", { class: "av-hint", attrs: { "data-testid": "shared-id-note" }, text: t("day.sharedId", "{{n}} simulated detectors share this id (mean)", { n: shared }) }));
+  }
+  if (!ctl.hasObsData) children.push(el("p", { class: "av-hint", text: t("day.noObs", "No observed day profile is available; showing the simulated interval only.") }));
+  else if (ctl.validationReason) children.push(el("p", { class: "av-hint", attrs: { "data-testid": "profile-only-note" }, text: t("day.profileOnly", "Observed source shown as a profile only ({{reason}}); it is not used for validation.", { reason: ctl.validationReason }) }));
+  if (ctl.hasObsData && !series.observed.length) children.push(el("p", { class: "av-hint", text: t("day.empty", "No observed flow is available for this selection.") }));
   if (!series.simulated.length) children.push(el("p", { class: "av-hint", text: t("day.noSim", "No simulated interval is available for this selection.") }));
   children.push(chart);
   return el("section", { class: "av-section", attrs: { "data-testid": "day-profile", "aria-label": t("day.label", "Observed day profile and simulated interval") } }, [

@@ -1,6 +1,6 @@
 ﻿/** Detector validation: KPIs, scatter + OLS, GEH histogram, status map colouring, worst-N table. */
 import { complianceShares, computeKpis, DEFAULT_CRITERIA, flowBandStats, gehBins, sortAggs, validateCriteria, worstN, type Criteria, type Kpis, type DetAgg, type ValRow } from "./common/aggregate.ts";
-import { buildFeatures, buildUnmatchedFeatures } from "./common/geo.ts";
+import { buildCoverage, buildFeatures, buildUnmatchedCoverage, buildUnmatchedFeatures } from "./common/geo.ts";
 import { statusColor } from "./common/map-layer.ts";
 import { detectorTable, kpiGrid, unmatchedTable, unmatchedWarning } from "./common/panel-parts.ts";
 import type { Env, Sections } from "./common/plugin-host.ts";
@@ -113,7 +113,9 @@ export function buildValidationSections(env: Env): Sections {
       const { ctl } = ctx;
       const { fc } = buildFeatures(ctl.aggs, ctl.geo);
       fc.features.push(...buildUnmatchedFeatures(ctl.unmatched, ctl.geo));
-      return { fc, style: { radius: 6, color: statusColor(ctl.state.criteria.gehPass, ctl.state.criteria.gehFail) } };
+      const coverage = buildCoverage(ctl.aggs, ctl.geo);
+      coverage.features.push(...buildUnmatchedCoverage(ctl.unmatched, ctl.geo));
+      return { fc, style: { radius: 6, color: statusColor(ctl.state.criteria.gehPass, ctl.state.criteria.gehFail) }, coverage };
     },
 
     render(host) {

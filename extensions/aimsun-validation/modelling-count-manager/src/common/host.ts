@@ -14,6 +14,10 @@ export interface MapLike {
   removeLayer(id: string): void;
   setPaintProperty(layer: string, prop: string, value: unknown): void;
   setLayoutProperty(layer: string, prop: string, value: unknown): void;
+  setFilter?(layer: string, filter: unknown): void;
+  addImage?(id: string, image: { width: number; height: number; data: Uint8Array | Uint8ClampedArray }, options?: { sdf?: boolean; pixelRatio?: number }): void;
+  hasImage?(id: string): boolean;
+  removeImage?(id: string): void;
   on(type: string, layerOrFn: string | ((e: any) => void), fn?: (e: any) => void): void;
   off(type: string, layerOrFn: string | ((e: any) => void), fn?: (e: any) => void): void;
   getContainer(): HTMLElement;

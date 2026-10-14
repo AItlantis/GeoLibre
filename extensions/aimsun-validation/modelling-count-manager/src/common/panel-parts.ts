@@ -4,7 +4,7 @@ import type { DetController } from "./controller.ts";
 import type { AppLike } from "./host.ts";
 import { locateOid } from "./geo.ts";
 import { filesFromInput } from "./package-source.ts";
-import { durationLabel, OBS_SOURCES, WHOLE_PERIOD, type ObsSource } from "./sql.ts";
+import { durationLabel, OBS_SOURCES, WHOLE_PERIOD, type LegacyObsSource, type ResolvedSource } from "./sql.ts";
 import { minToLabel, TIME_STEPS } from "./state.ts";
 import { hostLabel, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 import { el, field, selectEl, STATUS_COLORS, type Translate, makeFormat } from "./ui.ts";
@@ -92,12 +92,19 @@ export function controlsSection(ctx: Ctx, hostManaged = false): HTMLElement {
   if (s.phase === "empty" || s.phase === "error" || !s.runs.length) return el("div");
   const disabled = s.phase === "loading";
   const run = selectEl(s.runs.map((r) => ({ value: r, label: r })), s.run ?? "", (v) => void ctl.selectRun(v), { "aria-label": t("ctl.run", "Run") });
-  const srcLabels: Record<ObsSource, string> = {
+  const srcLabels: Record<LegacyObsSource, string> = {
     validation: t("ctl.obs.validation", "Validation"),
     calibration: t("ctl.obs.calibration", "Calibration"),
     both: t("ctl.obs.both", "Both"),
   };
-  const obs = selectEl(OBS_SOURCES.map((v) => ({ value: v, label: srcLabels[v] })), s.obsSource, (v) => ctl.setObsSource(v as ObsSource));
+  // v2 packages: one option per source_id (+ 'all comparable' when homogeneous); legacy packages: the three fixed files
+  const sourceLabel = (src: ResolvedSource): string =>
+    src.sourceId + (src.file && src.file !== src.sourceId ? ` (${src.file})` : "") + (src.effective === "profile-only" ? ` - ${t("ctl.obs.profileOnly", "profile only")}` : "");
+  const choices = ctl.obsSourceChoices();
+  const obsOptions = choices
+    ? choices.map((c) => ({ value: c.value, label: c.kind === "all" ? t("ctl.obs.all", "All comparable sources") : sourceLabel(c.source as ResolvedSource) }))
+    : OBS_SOURCES.map((v) => ({ value: v, label: srcLabels[v] }));
+  const obs = selectEl(obsOptions, s.obsSource, (v) => ctl.setObsSource(String(v)));
   const steps = (lo: number, hi: number, cur: number): Array<{ value: number; label: string }> => {
     const set = new Set(TIME_STEPS.filter((m) => m >= lo && m <= hi));
     set.add(cur);
@@ -118,7 +125,7 @@ export function controlsSection(ctx: Ctx, hostManaged = false): HTMLElement {
     (v) => ctl.setBucket(Number(v)),
   );
   for (const c of [run, from, to, bucket]) c.disabled = disabled;
-  obs.disabled = disabled || !ctl.hasObs;
+  obs.disabled = disabled || !ctl.hasObsData;
   return el("section", { class: "av-section av-grid" }, [
     ...(ui.showRunSelector ? [field(t("ctl.run", "Run"), run)] : []),
     field(t("ctl.obsSource", "Observed source"), obs),
@@ -131,6 +138,12 @@ export function controlsSection(ctx: Ctx, hostManaged = false): HTMLElement {
         n: ctl.bucketStepMin,
       }),
     }),
+    ...(ctl.validationReason
+      ? [el("p", { class: "av-alert av-warn av-span", attrs: { role: "status", "data-testid": "validation-reason" }, text: t("ctl.obs.disabledReason", "Validation and Comparison are disabled for this observed source ({{reason}}). It is shown in the day profile only.", { reason: ctl.validationReason }) })]
+      : []),
+    ...(ctl.reports.length
+      ? [el("p", { class: "av-hint av-span", attrs: { "data-testid": "reports" }, text: t("ctl.reports", "Reports: {{names}}", { names: ctl.reports.map((r) => r.name).join(", ") }) })]
+      : []),
   ]);
 }
 
