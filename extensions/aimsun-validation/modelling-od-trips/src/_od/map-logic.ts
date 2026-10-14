@@ -1,6 +1,11 @@
 import type { Pt, FC, Feature } from "./calc.ts";
 import { jenksBreaks, volumeOpacity } from "../analytics.ts";
 
+/** One colour language across dots, ends, bars, labels and the legend. */
+export const OD_COLORS = { origin: "#e66100", destination: "#1c71d8", both: "#7e3fa8", line: "#26547c", dot: "#8a8f98", group: "#596a7b" } as const;
+/** Centre offset (m) of each of the two bars: they touch with a small gap, never overlap (offset > size/2). */
+export function barOffset(size: number): number { return Math.max(1, size) * 0.6; }
+
 export interface Zone { id: string; name: string; group: string; lon: number; lat: number }
 export interface Flow { origin: string; destination: string; trips: number }
 export interface GroupNode { id: string; name: string; lon: number; lat: number; trips: number; members: number }
@@ -86,9 +91,10 @@ export function tabsEnabled(available: readonly string[]): { trips: true; before
   return { trips: true, beforeAfter: both, difference: both };
 }
 
-export function barsGeoJson(rows: readonly { id:string; name:string; lon:number; lat:number; origins:number; destinations:number }[], scale:number, cap:number, logarithmic=false, size=24): FC {
+export function barsGeoJson(rows: readonly { id:string; name:string; lon:number; lat:number; origins:number; destinations:number }[], scale:number, cap:number, logarithmic=false, size=50): FC {
+  const off = barOffset(size);
   const features: Feature<{type:"Polygon";coordinates:Pt[][]}>[] = [];
-  for (const r of rows) for (const [kind,value,offset,color] of [["origin",r.origins,-30,"#2878c8"],["destination",r.destinations,30,"#29934a"]] as const) {
+  for (const r of rows) for (const [kind,value,offset,color] of [["origin",r.origins,-off,OD_COLORS.origin],["destination",r.destinations,off,OD_COLORS.destination]] as const) {
     features.push({type:"Feature",geometry:{type:"Polygon",coordinates:[barSquare(r.lon,r.lat,offset,size)]},properties:{id:r.id,kind,height:barHeight(value,scale,cap,logarithmic),trips:value,c:color,tip:`${r.name} (${r.id})\nOrigins: ${r.origins}\nDestinations: ${r.destinations}\nNet: ${r.origins-r.destinations}`}});
   }
   return {type:"FeatureCollection",features};
@@ -96,7 +102,7 @@ export function barsGeoJson(rows: readonly { id:string; name:string; lon:number;
 
 export function beforeAfterBarsGeoJson(rows: readonly {id:string;name:string;lon:number;lat:number;prodBefore:number;prodAfter:number;attrBefore:number;attrAfter:number}[], scale:number, cap:number, size=18, logarithmic=false): FC {
   const features: Feature<{type:"Polygon";coordinates:Pt[][]}>[]=[];
-  for(const r of rows) for(const [kind,value,offset,color] of [["origins before",r.prodBefore,-45,"#8ab6e3"],["origins after",r.prodAfter,-15,"#2878c8"],["destinations before",r.attrBefore,15,"#8dc99c"],["destinations after",r.attrAfter,45,"#29934a"]] as const){
+  for(const r of rows) for(const [kind,value,offset,color] of [["origins before",r.prodBefore,-45,"#f2b987"],["origins after",r.prodAfter,-15,OD_COLORS.origin],["destinations before",r.attrBefore,15,"#8db8ec"],["destinations after",r.attrAfter,45,OD_COLORS.destination]] as const){
     features.push({type:"Feature",geometry:{type:"Polygon",coordinates:[barSquare(r.lon,r.lat,offset,size)]},properties:{id:r.id,kind,height:barHeight(value,scale,cap,logarithmic),trips:value,c:color,tip:`${r.name} (${r.id})\nOrigins: ${r.prodBefore} → ${r.prodAfter} (Δ ${r.prodAfter-r.prodBefore})\nDestinations: ${r.attrBefore} → ${r.attrAfter} (Δ ${r.attrAfter-r.attrBefore})`}});
   }
   return {type:"FeatureCollection",features};

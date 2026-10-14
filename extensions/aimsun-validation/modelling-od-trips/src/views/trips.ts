@@ -5,15 +5,17 @@ import { boundsOf, describeSelection, linesToFc, radiusPx, widthPx, type FC, typ
 import type { OdView, ViewEnv } from "../_od/plugin.ts";
 import { allSel, selectorControl, toSelection, validSel, type SelState } from "../_od/selector.ts";
 import { chartBox, clear, el, field, kpi, section, select, table } from "../_od/ui.ts";
-import { aggregateGroups, animationPhase, archRibbon, barsGeoJson, type Zone } from "../_od/map-logic.ts";
+import { aggregateGroups, animationPhase, archRibbon, barHeight, barsGeoJson, OD_COLORS, type Zone } from "../_od/map-logic.ts";
+import { autoBarScale, BAR_DEFAULTS, barLegendInfo, centroidTotalsSql, labelFeatures, legendEntries, mapHintText, nodesFromTotals, topNNotice, tripsLayerIds, type BarLegendInfo, type NodeTotals } from "../_od/trips-map.ts";
 
 export const TRIPS_OVERLAY = [
-  { id: "centroids", source: "centroids", type: "circle" as const, paint: { "circle-opacity": 0.5, "circle-stroke-width": 0 } },
+  { id: "centroids", source: "centroids", type: "circle" as const, paint: { "circle-stroke-width": 0 } },
   { id: "lines", source: "lines", type: "line" as const },
   { id: "ends", source: "ends", type: "circle" as const },
   { id: "groups", source: "groups", type: "circle" as const },
   { id: "bars", source: "bars", type: "fill-extrusion" as const },
   { id: "3d-lines", source: "ribbons", type: "fill-extrusion" as const },
+  { id: "labels", source: "labels", type: "symbol" as const },
 ];
 
 export interface TripsState {
@@ -26,6 +28,7 @@ export interface TripsState {
   binKm: number;
   detail: "centroids" | "groups";
   bars: boolean;
+  labels: boolean;
   lineStyle: "2d" | "3d";
   paused: boolean;
   barScale: number;
@@ -37,13 +40,15 @@ export interface TripsState {
   animationSpeed: number;
 }
 
-const DEFAULTS = (): TripsState => ({ side: "before", origin: allSel(), destination: allSel(), topN: 200, minTrips: 1, intrazonal: false, binKm: 2, detail: "groups", bars: false, lineStyle: "2d", paused: typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)").matches : false, barScale: 3, barCap: 250, barSize: 24, barLog: false, barAuto: true, lineHeightScale:4, animationSpeed:0.25 });
+const DEFAULTS = (): TripsState => ({ side: "before", origin: allSel(), destination: allSel(), topN: 200, minTrips: 1, intrazonal: false, binKm: 2, detail: "groups", bars: false, labels: true, lineStyle: "2d", paused: typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)").matches : false, barScale: 3, barCap: BAR_DEFAULTS.cap, barSize: BAR_DEFAULTS.size, barLog: false, barAuto: true, lineHeightScale:4, animationSpeed:0.25 });
 export const MAX_LINES = 2000;
 
-const ORIGIN_COLOR = "#e66100";
-const DEST_COLOR = "#1c71d8";
-const BOTH_COLOR = "#7e3fa8";
-const LINE_COLOR = "#26547c";
+const ORIGIN_COLOR = OD_COLORS.origin;
+const DEST_COLOR = OD_COLORS.destination;
+const BOTH_COLOR = OD_COLORS.both;
+const LINE_COLOR = OD_COLORS.line;
+
+type GroupFlow = { origin: string; destination: string; trips: number };
 
 interface PairRow extends LineRow {
   origin_group?: string | null;
@@ -57,8 +62,9 @@ export function createTripsView(env: ViewEnv): OdView {
   let host: HTMLElement | null = null;
   let out: HTMLElement | null = null;
   let tok = 0;
-  let last: { pairs: PairRow[]; groupFlows: Array<{origin:string;destination:string;trips:number}>; memberFlows: Array<{origin:string;destination:string;trips:number}>; stats: Record<string, unknown> | null; hist: Array<Record<string, unknown>> | null; side: string; sel: string } | null = null;
+  let last: { pairs: PairRow[]; groupFlows: Array<{origin:string;destination:string;trips:number}>; memberFlows: Array<{origin:string;destination:string;trips:number}>; totals: NodeTotals[]; stats: Record<string, unknown> | null; hist: Array<Record<string, unknown>> | null; side: string; sel: string } | null = null;
   let centroidsDrawn = "";
+  let barLegend: BarLegendInfo | null = null;
   let raf: number | null = null;
   const stopAnimation=():void=>{if(raf!==null&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(raf);raf=null;overlay.setLayerOpacity("3d-lines",0.85);};
   const animate=():void=>{
@@ -76,23 +82,24 @@ export function createTripsView(env: ViewEnv): OdView {
     minTrips: st.minTrips,
   });
 
+  /** Grey centroid dots, r=3 at ~0.7 opacity (0.85 layer opacity x 0.82) so they stay visible when zoomed out. */
+  const centroidDots = (): FC => ({
+    type: "FeatureCollection",
+    features: ctl.state.centroids
+      .filter((c) => c.lon !== null && c.lat !== null)
+      .map((c) => ({ type: "Feature" as const, geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { c: OD_COLORS.dot, r: 3, o: 0.82, tip: `${c.name} (${c.id})\n${c.grp}` } })),
+  });
   const drawCentroids = (): void => {
     const key = `${ctl.state.run}`;
     if (key === centroidsDrawn) return;
     centroidsDrawn = key;
-    const fc: FC = {
-      type: "FeatureCollection",
-      features: ctl.state.centroids
-        .filter((c) => c.lon !== null && c.lat !== null)
-        .map((c) => ({ type: "Feature" as const, geometry: { type: "Point", coordinates: [c.lon, c.lat] }, properties: { c: "#8a8f98", r: 2, tip: `${c.name} (${c.id})\n${c.grp}` } })),
-    };
-    overlay.set("centroids", fc);
+    overlay.set("centroids", centroidDots());
   };
 
-  const pushMap = (pairs: PairRow[], groupFlows: Array<{origin:string;destination:string;trips:number}> = [], memberFlows: Array<{origin:string;destination:string;trips:number}> = []): void => {
+  const pushMap = (pairs: PairRow[], groupFlows: GroupFlow[] = [], memberFlows: GroupFlow[] = [], totals: NodeTotals[] = []): void => {
     overlay.setTiltForBars(st.bars);
     const grouped = st.detail === "groups" && !!ctl.state.grouping;
-    overlay.setLayers([...(grouped ? ["groups"] : ["centroids"]), ...(st.lineStyle === "3d" ? ["3d-lines"] : ["lines"]), "ends", ...(st.bars ? ["bars"] : [])]);
+    overlay.setLayers(tripsLayerIds({ bars: st.bars, grouped, lineStyle: st.lineStyle, labels: st.labels }));
     const max = Math.max(0,...(grouped?groupFlows.map(p=>p.trips):pairs.map(p=>p.trips)));
     const side = st.side === "before" ? env.t("side.before", "before") : env.t("side.after", "after");
     const zoneList: Zone[] = ctl.state.centroids.filter(c=>c.lon!==null&&c.lat!==null).map(c=>({id:c.id,name:c.name,group:c.grp,lon:c.lon!,lat:c.lat!}));
@@ -135,13 +142,27 @@ export function createTripsView(env: ViewEnv): OdView {
     };
     overlay.set("lines", lines);
     overlay.set("ends", ends);
-    const nodes=grouped ? groupNodes.map(g=>({id:g.id,name:g.name,lon:g.lon,lat:g.lat,trips:g.trips})) : [...agg.entries()].map(([id,a])=>({id,name:a.name,lon:a.lon,lat:a.lat,trips:a.o+a.d}));
-    overlay.set("groups",{type:"FeatureCollection",features:grouped?nodes.map(n=>({type:"Feature" as const,geometry:{type:"Point",coordinates:[n.lon,n.lat]},properties:{c:"#596a7b",r:radiusPx(n.trips,Math.max(1,...nodes.map(x=>x.trips)),6,22),tip:`${n.name}\n${env.fmt.int(n.trips)} trips`} })):[]});
-    overlay.set("centroids",{type:"FeatureCollection",features:grouped?[]:nodes.map(n=>({type:"Feature" as const,geometry:{type:"Point",coordinates:[n.lon,n.lat]},properties:{c:"#8a8f98",r:2,tip:`${n.name} (${n.id})`} }))});
-    const barRows=nodes.slice(0,1500).map(n=>({id:n.id,name:n.name,lon:n.lon,lat:n.lat,origins:grouped?groupFlows.filter(f=>f.origin===n.id).reduce((s,f)=>s+f.trips,0):(agg.get(n.id)?.o??0),destinations:grouped?groupFlows.filter(f=>f.destination===n.id).reduce((s,f)=>s+f.trips,0):(agg.get(n.id)?.d??0)}));
-    const maxTrips=Math.max(1,...barRows.flatMap(r=>[r.origins,r.destinations]));
-    const effectiveScale=st.barAuto?Math.max(0.1,80/(maxTrips/1000)):st.barScale;
-    overlay.set("bars",st.bars?barsGeoJson(barRows,effectiveScale,st.barCap,st.barLog,st.barSize):{type:"FeatureCollection",features:[]});
+    // Per-node out/in over the FULL selection (group flows / centroid totals query), not the top-N pairs.
+    const groupTot = new Map<string, { o: number; d: number }>();
+    if (grouped) for (const f of groupFlows) {
+      const o = groupTot.get(f.origin) ?? { o: 0, d: 0 }; o.o += f.trips; groupTot.set(f.origin, o);
+      const d = groupTot.get(f.destination) ?? { o: 0, d: 0 }; d.d += f.trips; groupTot.set(f.destination, d);
+    }
+    const nodes: NodeTotals[] = grouped
+      ? groupNodes.map((g) => ({ id: g.id, name: g.name, lon: g.lon, lat: g.lat, out: groupTot.get(g.id)?.o ?? 0, in: groupTot.get(g.id)?.d ?? 0 }))
+      : totals.length || st.bars || st.labels ? totals : [...agg.entries()].map(([id, a]) => ({ id, name: a.name, lon: a.lon, lat: a.lat, out: a.o, in: a.d }));
+    const fi = (n: number): string => env.fmt.int(n);
+    const maxNode = Math.max(1, ...groupNodes.map((x) => x.trips));
+    overlay.set("groups", { type: "FeatureCollection", features: grouped ? groupNodes.map((n) => ({ type: "Feature" as const, geometry: { type: "Point", coordinates: [n.lon, n.lat] }, properties: { c: OD_COLORS.group, r: radiusPx(n.trips, maxNode, 6, 22), tip: `${n.name}\n${env.t("tip.out", "origin of {{n}} trips", { n: fi(groupTot.get(n.id)?.o ?? 0) })}\n${env.t("tip.in", "destination of {{n}} trips", { n: fi(groupTot.get(n.id)?.d ?? 0) })}` } })) : [] });
+    overlay.set("centroids", grouped ? { type: "FeatureCollection", features: [] } : centroidDots());
+    const barNodes = [...nodes].sort((x, y) => y.out + y.in - (x.out + x.in)).slice(0, 1500);
+    const barRows = barNodes.map((n) => ({ id: n.id, name: n.name, lon: n.lon, lat: n.lat, origins: n.out, destinations: n.in }));
+    const maxTrips = Math.max(1, ...barRows.flatMap((r) => [r.origins, r.destinations]));
+    const effectiveScale = st.barAuto ? autoBarScale(maxTrips, BAR_DEFAULTS.targetHeight, st.barLog) : st.barScale;
+    barLegend = st.bars ? barLegendInfo(maxTrips, effectiveScale, st.barCap, st.barLog) : null;
+    overlay.set("bars", st.bars ? barsGeoJson(barRows, effectiveScale, st.barCap, st.barLog, st.barSize) : { type: "FeatureCollection", features: [] });
+    const hm = (n: NodeTotals): number => (st.bars ? Math.max(barHeight(n.out, effectiveScale, st.barCap, st.barLog), barHeight(n.in, effectiveScale, st.barCap, st.barLog)) : 0);
+    overlay.set("labels", { type: "FeatureCollection", features: st.labels ? labelFeatures(nodes, { fmtInt: fi, outWord: env.t("label.out", "out"), inWord: env.t("label.in", "in"), barHeightM: hm }) : [] });
     const ribbons = displayedPairs.slice(0,500).flatMap(p=>p.o_lon===null||p.o_lat===null||p.d_lon===null||p.d_lat===null?[]:archRibbon([p.o_lon,p.o_lat],[p.d_lon,p.d_lat],Math.min(120,Math.hypot((p.o_lon-p.d_lon)*Math.cos(((p.o_lat+p.d_lat)/2)*Math.PI/180),p.o_lat-p.d_lat)*111*st.lineHeightScale),50,12).features.map(f=>({...f,properties:{...f.properties,c:LINE_COLOR,w:widthPx(p.trips,max),tip:`${p.origin} → ${p.destination}: ${env.fmt.num(p.trips,1)} trips`}})));
     overlay.set("ribbons",{type:"FeatureCollection",features:st.lineStyle==="3d"?ribbons:[]});
     animate();
@@ -160,13 +181,13 @@ export function createTripsView(env: ViewEnv): OdView {
       kpi(t("kpi.mean", "Mean distance"), `${fmt.num(stats?.mean_km === null || stats?.mean_km === undefined ? null : Number(stats.mean_km), 1)} km`, t("kpi.meanSub", "trip-weighted, straight-line")),
       kpi(t("kpi.shown", "Lines drawn"), fmt.int(pairs.length), t("kpi.shownSub", "{{p}} of selection trips", { p: fmt.pct(Number(stats?.trips) > 0 ? pairs.reduce((s, p) => s + p.trips, 0) / Number(stats?.trips) : null, 0) })),
     ]);
-    const legend = el("div", { class: "ao-legend" }, [
-      el("span", { text: t("legend.origin", "origin") }),
-      el("span", { text: "●", attrs: { style: `color:${ORIGIN_COLOR}` } }),
-      el("span", { text: t("legend.dest", "destination") }),
-      el("span", { text: "●", attrs: { style: `color:${DEST_COLOR}` } }),
-      el("span", { text: t("legend.width", "line width ~ trips") }),
-    ]);
+    const grouped = st.detail === "groups" && !!ctl.state.grouping;
+    const legend = el("div", { class: "ao-legend ao-legend-wrap" }, legendEntries({ bars: st.bars, labels: st.labels, grouped, lineStyle: st.lineStyle, barInfo: barLegend, fmtInt: (n) => fmt.int(n), t }).map((e) => {
+      const sw = el("span", { class: `ao-sw ao-sw-${e.kind}`, attrs: { "aria-hidden": "true", ...(e.color ? { style: `--ao-sw:${e.color}` } : {}) } });
+      return el("span", { class: "ao-legend-item", attrs: { "data-legend": e.key } }, e.kind === "text" ? [el("span", { text: e.text })] : [sw, el("span", { text: e.text })]);
+    }));
+    const shownShare = Number(stats?.trips) > 0 ? pairs.reduce((x, p) => x + p.trips, 0) / Number(stats?.trips) : null;
+    const notice = topNNotice({ grouped, shown: pairs.length, sharePct: shownShare === null ? "?" : fmt.pct(shownShare, 0), t, fmtInt: (n) => fmt.int(n) });
     const tbl = table<PairRow>(
       [
         { label: t("col.origin", "Origin"), value: (r) => `${r.origin}${r.origin_name ? ` ${r.origin_name}` : ""}` },
@@ -183,7 +204,7 @@ export function createTripsView(env: ViewEnv): OdView {
     const bins = (hist ?? []).map((h) => ({ start: Number(h.bin_start_km), end: Number(h.bin_end_km), value: Number(h.trips) }));
     out.append(
       kp,
-      section(t("map.title", "Desire lines on the map"), [legend], t("map.hint", "Straight lines between centroids, not routes. Grey dots: all centroids.")),
+      section(t("map.title", "Desire lines on the map"), [legend, ...(notice ? [el("p", { class: "ao-hint ao-topn", text: notice })] : [])], mapHintText({ grouped, bars: st.bars, t })),
       section(t("top.title", "Top OD pairs"), [tbl]),
       section(
         t("hist.title", "Trip-length distribution"),
@@ -234,15 +255,22 @@ export function createTripsView(env: ViewEnv): OdView {
         const volumes=await ctl.q<Record<string,unknown>>(`SELECT CAST(id AS VARCHAR) AS id,SUM(trips) AS trips FROM (SELECT t.origin AS id,t.trips FROM ${table} t ${volWhere?`WHERE ${volWhere}`:""} UNION ALL SELECT t.destination AS id,t.trips FROM ${table} t ${volWhere?`WHERE ${volWhere}`:""}) f GROUP BY id`,"groupCentroidVolumes");
         memberFlows=volumes.map(r=>({origin:String(r.id),destination:String(r.id),trips:Number(r.trips)/2}));
       }
+      let totals: NodeTotals[] = [];
+      if (!(st.detail === "groups" && ctl.state.grouping) && (st.bars || st.labels)) {
+        const table = st.side === "before" ? "v_od_before_norm" : "v_od_after_norm";
+        const minTrips = q.minTrips ?? 0;
+        const where = [selectionPredicate(q.origin!, "t.origin"), selectionPredicate(q.destination!, "t.destination"), q.excludeIntrazonal ? "t.origin <> t.destination" : "", minTrips > 0 ? `t.trips >= ${minTrips}` : ""].filter(Boolean).join(" AND ");
+        totals = nodesFromTotals(await ctl.q<Record<string, unknown>>(centroidTotalsSql(table, where), "centroidTotals"), ctl.state.centroids);
+      }
       if (my !== tok) return;
-      last = { pairs, groupFlows, memberFlows, stats: null, hist: null, side: st.side, sel: "" };
-      pushMap(pairs,groupFlows,memberFlows);
+      last = { pairs, groupFlows, memberFlows, totals, stats: null, hist: null, side: st.side, sel: "" };
+      pushMap(pairs,groupFlows,memberFlows,totals);
       renderResults();
       const stats = (await ctl.q(selectionStatsSql(q), "stats"))[0] ?? null;
       if (my !== tok) return;
       const hist = await ctl.q(tripLengthSql({ ...q, minTrips: 0, binKm: st.binKm }), "hist");
       if (my !== tok) return;
-      last = { pairs, groupFlows, memberFlows, stats, hist, side: st.side, sel: "" };
+      last = { pairs, groupFlows, memberFlows, totals, stats, hist, side: st.side, sel: "" };
       renderResults();
     } catch (e) {
       if (my === tok && out) {
@@ -308,13 +336,14 @@ export function createTripsView(env: ViewEnv): OdView {
       schedule();
     });
     const bars=el("input",{attrs:{type:"checkbox"}});bars.checked=st.bars;bars.addEventListener("change",()=>{st.bars=bars.checked;schedule();});
+    const labelsChk=el("input",{attrs:{type:"checkbox"}});labelsChk.checked=st.labels;labelsChk.addEventListener("change",()=>{st.labels=labelsChk.checked;schedule();});
     const lineStyle=el("div",{class:"ao-tabs",attrs:{role:"group","aria-label":t("lines.style","Desire line style")}},["2d","3d"].map(v=>{const b=el("button",{class:"ao-tab",text:v.toUpperCase(),attrs:{type:"button","aria-pressed":String(st.lineStyle===v)}});b.addEventListener("click",()=>{st.lineStyle=v as TripsState["lineStyle"];schedule();});return b;}));
     const pause=el("input",{attrs:{type:"checkbox"}});pause.checked=st.paused;pause.addEventListener("change",()=>{st.paused=pause.checked;animate();});
     const barScaleControl=num(t("bars.scale","Height scale (m per 1000 trips)"),st.barScale,0.1,100,0.1,n=>st.barScale=n);barScaleControl.querySelector("input")!.disabled=st.barAuto;
     const barAuto=select([{value:"auto",label:t("bars.auto","Auto")},{value:"manual",label:t("bars.manual","Manual")}],st.barAuto?"auto":"manual",v=>{st.barAuto=v==="auto";schedule();});
-    const barControls=el("div",{class:"ao-grid"},[field(t("bars.scaleMode","Height scale"),barAuto),barScaleControl,num(t("bars.cap","Max height (m)"),st.barCap,1,5000,1,n=>st.barCap=n),num(t("bars.size","Bar size (m)"),st.barSize,5,500,5,n=>st.barSize=n)]);
+    const barControls=el("div",{class:"ao-grid"},[field(t("bars.scaleMode","Height scale"),barAuto),barScaleControl,num(t("bars.cap","Max height (m)"),st.barCap,1,5000,10,n=>st.barCap=n),num(t("bars.size","Bar size (m)"),st.barSize,5,2000,5,n=>st.barSize=n)]);
     const log=el("input",{attrs:{type:"checkbox"}});log.checked=st.barLog;log.addEventListener("change",()=>{st.barLog=log.checked;schedule();});
-    return el("div", { class: "ao-section" }, [grid,el("div",{class:"ao-map-mini"},[detailField,lineStyle,el("label",{class:"ao-check"},[pause,el("span",{text:t("lines.pause","Pause flow animation")})]),el("label",{class:"ao-check"},[bars,el("span",{text:t("map.bars","Bars")})])]),st.lineStyle==="3d"?el("div",{class:"ao-grid"},[num(t("lines.height","Arch height (m per km)"),st.lineHeightScale,0.1,100,0.1,n=>st.lineHeightScale=n),num(t("lines.speed","Animation speed"),st.animationSpeed,0.01,5,0.01,n=>st.animationSpeed=n)]):null,st.bars?barControls:null,st.bars?el("label",{class:"ao-check"},[log,el("span",{text:t("bars.log","Logarithmic height")})]):null, el("label", { class: "ao-check" }, [chk, el("span", { text: t("intra", "Include intrazonal trips (origin = destination)") })])]);
+    return el("div", { class: "ao-section" }, [grid,el("div",{class:"ao-map-mini"},[detailField,lineStyle,el("label",{class:"ao-check"},[pause,el("span",{text:t("lines.pause","Pause flow animation")})]),el("label",{class:"ao-check"},[bars,el("span",{text:t("map.bars","Bars")})]),el("label",{class:"ao-check"},[labelsChk,el("span",{text:t("map.labels","Labels")})])]),st.lineStyle==="3d"?el("div",{class:"ao-grid"},[num(t("lines.height","Arch height (m per km)"),st.lineHeightScale,0.1,100,0.1,n=>st.lineHeightScale=n),num(t("lines.speed","Animation speed"),st.animationSpeed,0.01,5,0.01,n=>st.animationSpeed=n)]):null,st.bars?barControls:null,st.bars?el("label",{class:"ao-check"},[log,el("span",{text:t("bars.log","Logarithmic height")})]):null, el("label", { class: "ao-check" }, [chk, el("span", { text: t("intra", "Include intrazonal trips (origin = destination)") })])]);
   };
 
   return {

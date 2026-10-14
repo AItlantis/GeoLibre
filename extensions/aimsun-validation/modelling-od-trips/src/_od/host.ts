@@ -19,6 +19,10 @@ export interface MapLike {
   getCanvas(): HTMLCanvasElement;
   getZoom(): number;
   getPitch?(): number;
+  /** Style JSON (glyphs URL, layers); used to detect whether text layers can render. */
+  getStyle?(): { glyphs?: string; layers?: Array<{ type: string; layout?: Record<string, unknown> }> } | undefined;
+  /** lng/lat to container pixels (DOM label fallback). */
+  project?(lngLat: [number, number]): { x: number; y: number };
   easeTo?(opts: Record<string, unknown>): void;
   flyTo(opts: Record<string, unknown>): void;
   fitBounds?(bounds: [[number, number], [number, number]], opts?: Record<string, unknown>): void;

@@ -48,7 +48,7 @@ export class MapOverlay {
           type: "line",
           source: SRC,
           layout: { "line-cap": "round", "line-join": "round" },
-          paint: { "line-color": ["get", "stroke"], "line-width": 4, "line-opacity": 0.9 },
+          paint: { "line-color": ["get", "stroke"], "line-width": ["coalesce", ["get", "stroke-width"], 4], "line-opacity": ["coalesce", ["get", "stroke-opacity"], 0.9] },
         });
       }
     } catch {

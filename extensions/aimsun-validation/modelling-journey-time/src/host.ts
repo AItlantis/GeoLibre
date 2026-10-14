@@ -19,8 +19,10 @@ export interface HostMapLike {
   getLayer(id: string): unknown;
   removeLayer(id: string): unknown;
   removeSource(id: string): unknown;
-  on?(event: string, listener: (e?: any) => void): unknown;
-  off?(event: string, listener: (e?: any) => void): unknown;
+  on?(event: string, layerOrListener: string | ((e?: any) => void), listener?: (e?: any) => void): unknown;
+  off?(event: string, layerOrListener: string | ((e?: any) => void), listener?: (e?: any) => void): unknown;
+  getContainer?(): HTMLElement;
+  getCanvas?(): HTMLCanvasElement;
   flyTo?(opts: Record<string, unknown>): void;
   fitBounds?(bounds: [[number, number], [number, number]], opts?: Record<string, unknown>): void;
 }

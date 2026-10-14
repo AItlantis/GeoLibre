@@ -2,6 +2,7 @@
 import { sortAggs } from "./common/aggregate.ts";
 import { buildCoverage, buildFeatures, buildUnmatchedCoverage, buildUnmatchedFeatures } from "./common/geo.ts";
 import { divergingColor, sequentialColor, sizeExpression, withUnmatchedColor } from "./common/map-layer.ts";
+import { countLegend, directionTip } from "./common/count-legend.ts";
 import { detectorTable, kpiGrid } from "./common/panel-parts.ts";
 import { dayProfileBlock } from "./common/day-profile.ts";
 import type { ProfileScope } from "./common/sql.ts";
@@ -24,6 +25,12 @@ export function buildCountsSections(env: Env): Sections {
     color: withUnmatchedColor(ctx.ctl.state.colorMode === "diff" ? divergingColor("diff", maxColor) : sequentialColor(ctx.ctl.state.colorMode, maxColor)),
   });
 
+  const maxima = () => {
+    const vals = (k: "sim" | "obs" | "diff") => ctx.ctl.aggs.map((a) => Math.abs(a[k]));
+    return { maxSize: Math.max(1, ...vals(sizeBy)), maxColor: Math.max(1, ...vals(ctx.ctl.state.colorMode)) };
+  };
+  const legend = (): HTMLElement => countLegend(ctx, { colorBy: ctx.ctl.state.colorMode, sizeBy, ...maxima(), glyphs: !!ctx.ctl.geo?.hasCoverage });
+
   return {
     describe(p) {
       const { t, fmt } = ctx;
@@ -37,12 +44,14 @@ export function buildCountsSections(env: Env): Sections {
       if (!ctx.ctl.hasObs) return [
         t("tip.detector", "Detector {{id}}", { id: String(p.eid ?? "") }),
         t("tip.sim", "Simulated: {{v}} veh/h", { v: fmt.int(Number(p.sim)) }),
+        ...directionTip(t, p),
       ];
       return [
         t("tip.detector", "Detector {{id}}", { id: String(p.eid ?? "") }),
         t("tip.sim", "Simulated: {{v}} veh/h", { v: fmt.int(Number(p.sim)) }),
         t("tip.obs", "Observed: {{v}} veh/h", { v: fmt.int(Number(p.obs)) }),
         t("tip.diff", "Difference: {{v}} veh/h", { v: fmt.signed(Number(p.diff), 0) }),
+        ...directionTip(t, p),
       ];
     },
 
@@ -50,9 +59,7 @@ export function buildCountsSections(env: Env): Sections {
       const { ctl } = ctx;
       const { fc } = buildFeatures(ctl.aggs, ctl.geo);
       fc.features.push(...buildUnmatchedFeatures(ctl.unmatched, ctl.geo));
-      const vals = (k: "sim" | "obs" | "diff") => ctl.aggs.map((a) => Math.abs(a[k]));
-      const maxSize = Math.max(1, ...vals(sizeBy));
-      const maxColor = Math.max(1, ...vals(ctx.ctl.state.colorMode));
+      const { maxSize, maxColor } = maxima();
       const coverage = buildCoverage(ctl.aggs, ctl.geo);
       coverage.features.push(...buildUnmatchedCoverage(ctl.unmatched, ctl.geo));
       return { fc, style: styleFor(maxSize, maxColor), coverage };
@@ -82,6 +89,7 @@ export function buildCountsSections(env: Env): Sections {
           { key: "detectors", label: t("kpi.detectors", "Simulated detectors"), value: fmt.int(aggs.length) },
           { key: "simTotal", label: t("kpi.simTotal", "Simulated, sum (veh/h)"), value: fmt.int(nSim) },
         ]));
+        if (ctl.hasGeo) host.append(legend());
         host.append(dayProfileBlock(ctx, profileScope, (scope) => { profileScope = scope; if (ctx.ctl.state.selectedId) ctx.ctl.select(null); env.rerender(); }));
         host.append(el("h3", { class: "av-h", text: t("tbl.h", "Detectors") }), detectorTable(ctx, sortAggs(aggs, ctl.state.sortKey, ctl.state.sortDir), ["id", "sim"], (id) => env.selectAndZoom(id)));
         return;
@@ -131,6 +139,7 @@ export function buildCountsSections(env: Env): Sections {
             ),
             el("p", { class: "av-hint av-span", text: t("map.located", "{{n}} of {{total}} detectors placed on the map.", { n: fmt.int(located), total: fmt.int(aggs.length) }) }),
           ]),
+          legend(),
         );
       }
 

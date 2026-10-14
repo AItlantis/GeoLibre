@@ -266,3 +266,38 @@
 
 .av-actions { flex-direction: row; flex-wrap: wrap; gap: 6px; }
 .av-actions .av-btn { padding-block: 4px; padding-inline: 10px; }
+
+/* count legend: colour ramp + size ramp + direction note (see count-legend.ts) */
+.av-legend-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.av-legend-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+.av-ramp {
+  block-size: 10px;
+  border-radius: 3px;
+  border: 1px solid var(--av-border);
+}
+.av-ramp-scale,
+.av-size-ramp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--av-muted);
+}
+.av-ramp-scale {
+  justify-content: space-between;
+}
+.av-glyph {
+  line-height: 1;
+  color: #41ab5d;
+}
+.av-size-sep {
+  margin-inline: 2px;
+}

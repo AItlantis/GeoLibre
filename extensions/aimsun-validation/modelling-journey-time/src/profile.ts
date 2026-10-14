@@ -30,6 +30,8 @@ export interface ObsRow {
   /** Declared observation window (seconds from midnight), when the data states one. */
   window_start_s?: number | null;
   window_end_s?: number | null;
+  /** Mean clock time of the observations in the bucket (seconds since midnight); absent for legacy views. */
+  t_s?: number | null;
 }
 
 export type Stat = "mean" | "median";
@@ -61,6 +63,7 @@ export function toObsRows(rows: ReadonlyArray<Record<string, unknown>>): ObsRow[
     sup_max_s: num(r.sup_max_s),
     window_start_s: num(r.window_start_s),
     window_end_s: num(r.window_end_s),
+    t_s: num(r.t_s),
   }));
 }
 

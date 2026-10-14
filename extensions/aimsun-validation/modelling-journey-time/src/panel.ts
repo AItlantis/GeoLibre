@@ -5,13 +5,21 @@
  */
 import type { DuckDbHandle } from "../../_shared/src/duckdb";
 import { buildSubpathSql } from "../../_shared/src/sql/subpath.sql";
-import { groupedBarSvg, histogramSvg, mountChart, scatterSvg, stackedBarSvg, STATUS_COLORS } from "../../_shared/src/charts";
+import { barSvg, groupedBarSvg, histogramSvg, mountChart, scatterSvg, stackedBarSvg, STATUS_COLORS } from "../../_shared/src/charts";
 import { geometryPositions, RunFitter } from "../../_shared/src/fit-extent";
 import type { GeoJSONFC, HostApp } from "./host";
 import type { Translator } from "./i18n";
 import { lineSvg } from "./lineSvg";
 import { buildMatching, PREFERRED_GROUP, pairKey, type MatchReason, type MatchResult, type ObsPair } from "./match";
 import { MapOverlay } from "./overlay";
+import { SectionOverlay } from "./sectionOverlay";
+import {
+  aggregates, divergingColour, DIVERGING_GRADIENT, EMPTY_PERIOD_INFO, matchPeriod, obsPointsOf, periodAvailability, resolvePeriodConfig, routeRowsFromPairs, toValidationPairs,
+  clock, type PeriodResult,
+} from "./period";
+import {
+  metricValue, SECTION_METRICS, sectionFeatures, sectionGeometry, sectionScale, sectionValuesAt, toSecRows, worstSections, type SecRow, type SectionMetric,
+} from "./sections";
 import { loadFromFiles, loadFromManifestUrl, subpathRefs, type PackageSummary } from "./pkg";
 import {
   bucketLabel,
@@ -34,6 +42,8 @@ import { hostLabel, packageUiPlan } from "../../_shared/src/host-managed";
 
 export const PLUGIN_ID = "modelling-journey-time";
 const BUCKET = 15;
+/** |signed error| (%) at which the diverging map ramp saturates. */
+const ERROR_CAP = 50;
 const VIEW_JT = "journey-time";
 const VIEW_VALIDATION = "validation";
 const VIEW_COMPARISON = "comparison";
@@ -101,6 +111,12 @@ export class JourneyTimeController {
   private error: string | null = null;
   private status = "";
   private overlayNote = "";
+  // C11 / C12
+  private periodRun = "";
+  private cmpColour: "status" | "error" = "status";
+  private secRows: SecRow[] = [];
+  private secMetric: SectionMetric = "delay_s";
+  private readonly sectionOverlay: SectionOverlay;
   private fitter: RunFitter | null = null;
   private readonly overlay: MapOverlay;
   // DOM
@@ -111,6 +127,7 @@ export class JourneyTimeController {
 
   constructor(private readonly d: Deps) {
     this.overlay = new MapOverlay(d.getApp);
+    this.sectionOverlay = new SectionOverlay(d.getApp);
     if (d.initial) this.applyState(d.initial);
   }
 
@@ -201,12 +218,17 @@ export class JourneyTimeController {
     this.renderBody();
   }
 
+  private removeOverlays(): void {
+    this.overlay.remove();
+    this.sectionOverlay.remove();
+  }
+
   private stateName(): string {
     return this.error ? "error" : this.busy ? "loading" : this.pkg ? "ready" : "empty";
   }
 
   dispose(): void {
-    this.overlay.remove();
+    this.removeOverlays();
     this.fitter?.dispose();
     this.fitter = null;
     this.disposed = true;
@@ -237,7 +259,7 @@ export class JourneyTimeController {
     this.status = t("status.loading", "Loading package...");
     this.build();
     try {
-      this.overlay.remove();
+      this.removeOverlays();
       const h = await this.d.getDuck();
       if (this.disposed) return false;
       const opened = this.session ?? (await openSession(h, "modelling_journey_time"));
@@ -278,6 +300,17 @@ export class JourneyTimeController {
         if (!this.winTouched && this.simRows.length) {
           const bs = this.simRows.map((r) => r.bucket_start_min);
           this.win = { from: Math.min(...bs), to: Math.max(...bs) + this.bucketMin };
+        }
+      }
+      this.secRows = [];
+      if (pkg.hasSectionTt && pkg.sections) {
+        const scols = (await s.query<{ column_name: string }>("DESCRIBE section_sim_tt")).map((c) => String(c.column_name).toLowerCase());
+        const missingSec = ["subpath_oid", "seq", "interval_start_s", "duration_s"].filter((c) => !scols.includes(c));
+        if (missingSec.length) pkg.notes.push(`section_sim_tt is missing column(s): ${missingSec.join(", ")}; per-section delay is not drawn.`);
+        else {
+          const pick = (c: string): string => (scols.includes(c) ? c : `NULL AS ${c}`);
+          const where = scols.includes("valid") ? "WHERE valid IS NOT FALSE" : "";
+          this.secRows = toSecRows(await s.query(`SELECT subpath_oid, seq, ${["section_id", "run", "ttime_s", "dtime_s", "speed_kmh", "flow"].map(pick).join(", ")}, interval_start_s, duration_s FROM section_sim_tt ${where}`));
         }
       }
       this.pkg = pkg;
@@ -349,7 +382,8 @@ export class JourneyTimeController {
     const runs = [...new Set(this.simRows.map((r) => r.run).filter((r): r is string => !!r))];
     const validationOption = el("option", { value: VIEW_VALIDATION, text: t("view.validation", "Validation"), disabled: !hasSim });
     validationOption.selected = this.viewMode === VIEW_VALIDATION; mode.append(validationOption);
-    const comparisonOption = el("option", { value: VIEW_COMPARISON, text: t("view.comparison", "Comparison"), disabled: runs.length < 2 });
+    const typical = this.isTypical();
+    const comparisonOption = el("option", { value: VIEW_COMPARISON, text: t("view.comparison", "Comparison"), disabled: typical ? !hasSim : runs.length < 2 });
     comparisonOption.selected = this.viewMode === VIEW_COMPARISON; mode.append(comparisonOption);
     if (!hasSim) {
       const why = !hasSimRows
@@ -357,21 +391,26 @@ export class JourneyTimeController {
         : (cmp.reason ?? "");
       body.append(el("p", { class: "avp-hint", "data-avp": "mode-unavailable", "data-reason": why, text: t("nosim.short", "Validation and Comparison are disabled: observed profile only ({{why}}).", { why }) }));
     }
-    else if (runs.length < 2) body.append(el("p", { class: "avp-hint", "data-avp": "comparison-unavailable", text: t("comparison.disabled", "Comparison is disabled: at least two runs with simulated journey time are required.") }));
+    else if (!typical && runs.length < 2) body.append(el("p", { class: "avp-hint", "data-avp": "comparison-unavailable", text: t("comparison.disabled", "Comparison is disabled: at least two runs with simulated journey time are required.") }));
     mode.addEventListener("change", () => {
       this.viewMode = mode.value;
-      if (this.viewMode !== VIEW_JT) this.overlay.remove();
+      if (this.viewMode !== VIEW_JT) this.removeOverlays();
       this.build();
       this.updateMap();
     });
     body.append(el("section", { class: "avp-section avp-mode", "data-avp": "mode-selector" }, el("label", { class: "avp-lbl" }, t("view.title", "View mode"), mode)));
     if (this.viewMode === VIEW_VALIDATION && hasSim) {
-      this.overlay.remove();
+      this.removeOverlays();
       this.renderValidation(body);
       return;
     }
+    if (this.viewMode === VIEW_COMPARISON && hasSim && typical) {
+      this.removeOverlays();
+      this.renderPeriodComparison(body);
+      return;
+    }
     if (this.viewMode === VIEW_COMPARISON && hasSim && new Set(this.simRows.map((r) => r.run).filter(Boolean)).size > 1) {
-      this.overlay.remove(); this.renderComparison(body); return;
+      this.removeOverlays(); this.renderComparison(body); return;
     }
     const info = this.sources.find((s) => s.source === this.source);
 
@@ -393,7 +432,7 @@ export class JourneyTimeController {
     }
     toggle.append(el("p", { class: "avp-hint", text: t("source.never", "Sources are never mixed: every number below comes from the selected source only.") }));
     body.append(toggle, this.unitBanner());
-    if (cmp.mode === "profile-only") body.append(banner("info", t("profile.only", "Profile-only: {{why}}.", { why: cmp.reason ?? "" }), { "data-avp": "profile-only", "data-reason": cmp.reason ?? "" }));
+    if (cmp.mode === "profile-only" && cmp.reason) body.append(banner("info", t("profile.only", "Profile-only: {{why}}.", { why: cmp.reason ?? "" }), { "data-avp": "profile-only", "data-reason": cmp.reason ?? "" }));
 
     // Route picker
     const pairs = this.pairsOf(this.source);
@@ -412,6 +451,7 @@ export class JourneyTimeController {
     sel.addEventListener("change", () => {
       this.routeKey = sel.value;
       this.updateChart();
+      this.updateMap();
     });
     const statSel = el("select", { class: "avp-select", "aria-label": t("stat.title", "Statistic"), "data-avp": "stat" });
     for (const [v, k, def] of [["mean", "stat.mean", "Mean across days"], ["median", "stat.median", "Median across days"]] as const) {
@@ -493,6 +533,8 @@ export class JourneyTimeController {
       el("div", { class: "avp-legend", "data-avp": "legend" }, el("span", { "data-avp": "legend-min" }), el("div", { class: "avp-ramp" }), el("span", { "data-avp": "legend-max" })),
       el("p", { class: "avp-small", "data-avp": "overlay-note" }),
     );
+    const secUi = this.sectionControls();
+    if (secUi) sec.append(secUi);
     return sec;
   }
 
@@ -570,8 +612,60 @@ export class JourneyTimeController {
   /** Validation/Comparison need a simulated table AND (for time-only typical-day data) a window declared in the data. */
   private compareInfo(): { mode: "compare" | "profile-only"; reason: string | null } {
     const rows = this.rows.filter((r) => r.source === this.source);
-    const c = comparisonMode(rows);
-    return { mode: c.mode, reason: c.reason };
+    if (!this.isTypical()) {
+      const c = comparisonMode(rows);
+      return { mode: c.mode, reason: c.reason };
+    }
+    // C11: time-only typical-day observations are compared by clock time inside the simulated run period.
+    if (!this.simRows.length) return { mode: "profile-only", reason: null };
+    const av = periodAvailability({ hasSim: true, simReason: this.pkg?.simReason ?? null, hasObs: rows.length > 0, result: this.periodResult() });
+    return av.enabled ? { mode: "compare", reason: null } : { mode: "profile-only", reason: av.reason };
+  }
+
+  /** True when every row of the selected source is a time-only typical-day observation (C11 period matching applies). */
+  private isTypical(): boolean {
+    return !!this.sources.find((x) => x.source === this.source)?.typical;
+  }
+
+  private runNames(): string[] {
+    return [...new Set(this.simRows.map((r) => r.run).filter((r): r is string => !!r))];
+  }
+
+  /** Run used for period matching and section values (the package's single run, else the user's choice). */
+  private activeRun(): string | null {
+    const runs = this.runNames();
+    return runs.includes(this.periodRun) ? this.periodRun : (runs[0] ?? null);
+  }
+
+  /** C11 pairing of the selected observed source with one simulated run (default: the active run). */
+  private periodResult(run?: string): PeriodResult {
+    const r = run ?? this.activeRun();
+    const rows = this.rows.filter((x) => x.source === this.source);
+    const cfg = resolvePeriodConfig(this.pkg?.periodInfo ?? EMPTY_PERIOD_INFO, { source: this.source, source_id: rows.find((x) => x.source_id)?.source_id ?? null }, r);
+    return matchPeriod(obsPointsOf(this.rows, this.source).points, this.simRows.filter((x) => r === null || x.run === r), cfg, this.criteria, r);
+  }
+
+  private routeRowsFor(pairs: ReturnType<typeof toValidationPairs>): ReturnType<typeof perRoute> {
+    return this.isTypical() ? routeRowsFromPairs(pairs) : perRoute(pairs, this.criteria);
+  }
+
+  private runSelect(onChange: () => void): HTMLElement | null {
+    const { t } = this.d;
+    const runs = this.runNames();
+    if (runs.length < 2) return null;
+    const sel = el("select", { class: "avp-select", attrs: { "data-testid": "period-run", "aria-label": t("period.run", "Simulated run") } });
+    for (const r of runs) { const o = el("option", { value: r, text: r }); o.selected = r === this.activeRun(); sel.append(o); }
+    sel.addEventListener("change", () => { this.periodRun = sel.value; onChange(); });
+    return el("label", { class: "avp-lbl" }, t("period.run", "Simulated run"), sel);
+  }
+
+  private periodText(res: PeriodResult): string {
+    const { t } = this.d;
+    const c = res.config;
+    return t("period.info", "Simulated period {{p}} ({{src}}); matching {{mode}}, convention {{conv}}, tolerance {{tol}} s{{decl}}.", {
+      p: res.periodLabel ?? "unknown", src: res.period?.source ?? "-", mode: c.matchMode, conv: c.convention, tol: c.toleranceS,
+      decl: c.declared ? ", declared in the run configuration" : ", defaults",
+    });
   }
 
   private reasonText(reason: MatchReason, candidates: readonly string[] = []): string {
@@ -653,7 +747,9 @@ export class JourneyTimeController {
 
   private currentFeatures(): GeoJSONFC | null {
     if (!this.geo || !this.match) return null;
+    const typicalCmp = this.isTypical();
     if (this.viewMode === VIEW_VALIDATION || this.viewMode === VIEW_COMPARISON) {
+      const errorMode = typicalCmp && this.cmpColour === "error";
       const fc: GeoJSONFC = { type: "FeatureCollection", features: [] };
       const geometry = new Map(this.geo.features.map((f, i) => [String((f.properties?.id as string | number | undefined) ?? f.id ?? i), f.geometry]));
       const add = (rows: ReturnType<typeof perRoute>, statusOverride?: Map<string, string>, extras?: Map<string, Record<string, unknown>>): void => {
@@ -661,7 +757,8 @@ export class JourneyTimeController {
         for (const route of this.match!.matchedObs) for (const match of route.matches) {
           const item = byKey.get(route.key ?? "");
           const status = statusOverride?.get(route.key ?? "") ?? item?.status ?? "only";
-          const color = status === "pass" || status === "improved" ? STATUS_COLORS.pass : status === "warn" ? STATUS_COLORS.warn : status === "fail" || status === "degraded" ? STATUS_COLORS.fail : "#888888";
+          const statusColour = status === "pass" || status === "improved" ? STATUS_COLORS.pass : status === "warn" ? STATUS_COLORS.warn : status === "fail" || status === "degraded" ? STATUS_COLORS.fail : "#888888";
+          const color = errorMode && item ? divergingColour(item.errorPct, ERROR_CAP) : statusColour;
           const g = geometry.get(String(match.subpath.id)); if (!g) continue;
           fc.features.push({ type: "Feature", id: match.subpath.id, geometry: g, properties: {
             name: match.subpath.name, route: route.route, direction: route.direction, status, stroke: color,
@@ -673,9 +770,9 @@ export class JourneyTimeController {
           } });
         }
       };
-      if (this.viewMode === VIEW_VALIDATION) add(perRoute(this.validationPairing().pairs, this.criteria));
+      if (this.viewMode === VIEW_VALIDATION || typicalCmp) add(this.routeRowsFor(this.validationPairing().pairs));
       else {
-        const a = perRoute(this.validationPairing(this.comparisonA).pairs, this.criteria), b = perRoute(this.validationPairing(this.comparisonB).pairs, this.criteria);
+        const a = this.routeRowsFor(this.validationPairing(this.comparisonA).pairs), b = this.routeRowsFor(this.validationPairing(this.comparisonB).pairs);
         const joined = joinComparison(a, b), status = new Map(joined.map((r) => [r.key, r.status]));
         const keysA = new Set(this.simRows.filter((r) => r.run === this.comparisonA).map((r) => pairKey(r.route, r.direction_norm)).filter((k): k is string => !!k));
         const keysB = new Set(this.simRows.filter((r) => r.run === this.comparisonB).map((r) => pairKey(r.route, r.direction_norm)).filter((k): k is string => !!k));
@@ -690,6 +787,12 @@ export class JourneyTimeController {
     const matchedKeys = new Set(this.match.matchedObs.map((m) => m.key));
     const scale = colourScale([...values.values()].filter((v) => matchedKeys.has(v.key)).map((v) => v.value));
     const fc = overlayFeatures({ geo: this.geo, match: this.match, values, source: this.source, bucket: this.bucket, scale });
+    if (this.sectionTarget()) {
+      const [selRoute, selDir] = this.routeKey.split("\u0000");
+      fc.features = fc.features
+        .filter((f) => !(f.properties?.route === selRoute && f.properties?.direction === selDir))
+        .map((f) => ({ ...f, properties: { ...f.properties, "stroke-width": 2, "stroke-opacity": 0.4 } }));
+    }
     const body = this.body;
     if (body) {
       const q = (a: string) => body.querySelector<HTMLElement>(`[data-avp="${a}"]`);
@@ -712,11 +815,11 @@ export class JourneyTimeController {
     };
     const fc = this.pkg ? this.currentFeatures() : null;
     if (!fc) {
-      this.overlay.remove();
+      this.removeOverlays();
       return;
     }
-    if (!fc.features.length) {
-      this.overlay.remove();
+    if (!fc.features.length && !this.sectionTarget()) {
+      this.removeOverlays();
       note(t("map.nomatch", "No matched subpath to draw for this source."));
       return;
     }
@@ -729,6 +832,8 @@ export class JourneyTimeController {
       : this.viewMode === VIEW_COMPARISON
         ? t("map.comparisonDrawn", "{{n}} subpath lines coloured by change between the selected runs.", { n: fc.features.length })
         : t("map.drawn", "{{n}} subpath lines drawn for {{time}} as a live plugin overlay.", { n: fc.features.length, time: bucketLabel(this.bucket) }));
+    this.updateSections();
+    this.updateCmpLegend();
     this.fitRun();
   }
 
@@ -738,6 +843,157 @@ export class JourneyTimeController {
     if (!app || !this.geo || !this.pkg) return;
     this.fitter ??= new RunFitter({ getMap: () => (this.d.getApp()?.getMap?.() as never) ?? null, fitBounds: (b) => this.d.getApp()?.fitBounds?.(b) });
     this.fitter.fit(`${this.lastUrl}|${this.pkg.origin ?? ""}|${this.pkg.run ?? ""}`, geometryPositions(this.geo.features.map((f) => f.geometry as { coordinates?: unknown })));
+  }
+
+  // ---- C12: per-section delay --------------------------------------------------------------------------------------------
+  /** Model subpath oid of the selected route when per-section data exists for it, else null (current behaviour). */
+  private sectionTarget(): string | null {
+    if (this.viewMode !== VIEW_JT || !this.pkg?.sections || !this.secRows.length || !this.match) return null;
+    const [route, dir] = this.routeKey.split("\u0000");
+    const row = this.match.matchedObs.find((m) => m.route === route && m.direction === dir);
+    if (!row) return null;
+    const have = new Set(this.secRows.map((r) => r.subpath_oid));
+    const cands = [row.subpath_oid, ...row.matches.map((m) => m.subpath.oid ?? m.subpath.id)].filter((v) => v !== null && v !== undefined).map(String);
+    for (const c of cands) if (have.has(c) && sectionGeometry(this.pkg.sections, c).length) return c;
+    return null;
+  }
+
+  private sectionControls(): HTMLElement | null {
+    const { t } = this.d;
+    const pkg = this.pkg;
+    if (!pkg) return null;
+    if (!(pkg.sections && this.secRows.length)) {
+      const why = pkg.sectionReason ?? (!pkg.sections && !pkg.hasSectionTt ? "no per-section tables (subpath_sections.geojson, section_sim_tt) in this package" : !pkg.sections ? "subpath_sections.geojson is missing" : "section_sim_tt is missing or has no usable rows");
+      if (!pkg.hasSim && !pkg.sectionReason && !pkg.sections && !pkg.hasSectionTt) return null; // legacy / observed-only: nothing to explain
+      return el("p", { class: "avp-hint", "data-avp": "sections-unavailable", "data-reason": why, text: t("sections.unavailable", "Per-section delay is unavailable ({{why}}).", { why }) });
+    }
+    const wrap = el("div", { class: "avp-section", "data-avp": "sections" }, el("h4", { class: "avp-h", text: t("sections.title", "Selected route by section") }));
+    const sel = el("select", { class: "avp-select", "aria-label": t("sections.metric", "Section colour"), "data-avp": "section-metric" });
+    for (const m of SECTION_METRICS) { const o = el("option", { value: m.id, text: t(`sections.m.${m.id}`, m.label) }); o.selected = m.id === this.secMetric; sel.append(o); }
+    sel.addEventListener("change", () => { this.secMetric = sel.value as SectionMetric; this.updateSections(); });
+    wrap.append(
+      el("div", { class: "avp-row" }, sel),
+      el("div", { class: "avp-legend", "data-avp": "sec-legend" }, el("span", { "data-avp": "sec-legend-min" }), el("div", { class: "avp-ramp", "data-avp": "sec-ramp" }), el("span", { "data-avp": "sec-legend-max" })),
+      el("p", { class: "avp-small", "data-avp": "sec-note" }),
+      el("ol", { class: "avp-small", "data-avp": "worst-sections" }),
+    );
+    return wrap;
+  }
+
+  private updateSections(): void {
+    const { t } = this.d;
+    const q = (a: string): HTMLElement | null => this.body?.querySelector<HTMLElement>(`[data-avp="${a}"]`) ?? null;
+    const note = (txt: string): void => { const n = q("sec-note"); if (n) n.textContent = txt; };
+    const worstEl = q("worst-sections");
+    if (worstEl) worstEl.replaceChildren();
+    const oid = this.sectionTarget();
+    if (!oid || !this.pkg?.sections) {
+      this.sectionOverlay.remove();
+      if (this.pkg?.sections && this.secRows.length && this.viewMode === VIEW_JT) note(t("sections.none", "The selected route has no per-section data; the route line is drawn as usual."));
+      return;
+    }
+    const from = this.bucket * 60;
+    const values = sectionValuesAt(this.secRows, oid, this.activeRun(), from, from + BUCKET * 60);
+    const scale = sectionScale([...values.values()].map((v) => metricValue(v, this.secMetric)), this.secMetric);
+    const [route, dir] = this.routeKey.split("\u0000");
+    const fc = sectionFeatures({ geometry: sectionGeometry(this.pkg.sections, oid), values, metric: this.secMetric, scale, bucketLabel: bucketLabel(this.bucket), routeName: `${route} ${dir}`.trim() });
+    const lo = q("sec-legend-min");
+    const hi = q("sec-legend-max");
+    if (lo) lo.textContent = `${scale.min.toFixed(scale.digits)}${scale.unit}`;
+    if (hi) hi.textContent = `${scale.max.toFixed(scale.digits)}${scale.unit}`;
+    const ramp = q("sec-ramp");
+    if (ramp) ramp.dataset.reverse = String(scale.reverse);
+    if (!values.size) { this.sectionOverlay.remove(); note(t("sections.nodata", "No simulated section values for {{time}} (outside the simulated period).", { time: bucketLabel(this.bucket) })); return; }
+    if (!this.sectionOverlay.set(fc)) { note(t("map.noMap", "No 2D map is available on this renderer; chart and route values remain available.")); return; }
+    const geomMethods = new Set(fc.features.map((f) => String(f.properties?.geometry_method ?? "")).filter(Boolean));
+    note(t("sections.drawn", "{{n}} sections drawn for {{time}}; unselected routes are dimmed.", { n: fc.features.length, time: bucketLabel(this.bucket) }) + (geomMethods.has("split-approx") ? ` ${t("sections.approx", "Section geometry is approximate (split of the subpath line).")}` : ""));
+    if (worstEl) {
+      const worst = worstSections(values, 3);
+      for (const w of worst) worstEl.append(el("li", { text: t("sections.worst", "#{{seq}} section {{id}}: delay {{d}} s", { seq: w.seq, id: w.section_id, d: fmt(w.delay_s) }) }));
+    }
+  }
+
+  // ---- C11: comparison view (pairs, aggregates, per-route status) ------------------------------------------------------------
+  private mapColourControls(): HTMLElement {
+    const { t } = this.d;
+    const sel = el("select", { class: "avp-select", "aria-label": t("cmp.colour", "Map colour"), "data-avp": "cmp-colour" });
+    for (const [v, k, def] of [["status", "cmp.colour.status", "Status (pass / warn / fail)"], ["error", "cmp.colour.error", "Signed error (diverging)"]] as const) {
+      const o = el("option", { value: v, text: t(k, def) }); o.selected = v === this.cmpColour; sel.append(o);
+    }
+    sel.addEventListener("change", () => { this.cmpColour = sel.value as "status" | "error"; this.updateMap(); });
+    return el("section", { class: "avp-section", "data-avp": "cmp-map" }, el("label", { class: "avp-lbl" }, t("cmp.colour", "Map colour"), sel), el("div", { class: "avp-legend", "data-avp": "cmp-legend" }), el("p", { class: "avp-small", "data-avp": "overlay-note" }));
+  }
+
+  private updateCmpLegend(): void {
+    const { t } = this.d;
+    const box = this.body?.querySelector<HTMLElement>('[data-avp="cmp-legend"]');
+    if (!box) return;
+    box.replaceChildren();
+    if (this.cmpColour === "error") {
+      const ramp = el("div", { class: "avp-ramp" });
+      ramp.style.background = DIVERGING_GRADIENT;
+      box.append(el("span", { text: `-${ERROR_CAP}%` }), ramp, el("span", { text: `+${ERROR_CAP}%` }));
+      box.title = t("cmp.legend.error", "Signed relative error of the simulated value (blue: simulated faster than observed, red: slower); saturates at +-{{c}}%.", { c: ERROR_CAP });
+      return;
+    }
+    for (const [colour, label] of [[STATUS_COLORS.pass, t("status.pass", "Pass")], [STATUS_COLORS.warn, t("status.warn", "Warn")], [STATUS_COLORS.fail, t("status.fail", "Fail")], ["#888888", t("cmp.nopair", "No pair")]] as const) {
+      const sw = el("span", { class: "avp-swatch" });
+      sw.style.background = colour;
+      box.append(sw, el("span", { text: label }));
+    }
+  }
+
+  private renderPeriodComparison(body: HTMLElement): void {
+    const { t } = this.d;
+    const redraw = (): void => this.renderBody();
+    const res = this.periodResult();
+    const agg = aggregates(res.pairs);
+    const rs = this.runSelect(redraw);
+    body.append(el("section", { class: "avp-section", attrs: { "data-testid": "period-controls" } }, ...(rs ? [rs] : []), el("p", { class: "avp-hint", attrs: { "data-avp": "period-info", "data-period": res.periodLabel ?? "" } }, this.periodText(res)),
+      el("p", { class: "avp-hint", attrs: { "data-avp": "thresholds" } }, t("period.thresholds", "Status: pass when the simulated value is inside the supplied min-max band or the absolute error is <= {{p}}%; warn up to {{f}}%; fail beyond (editable below). A route takes the worst status of its pairs.", { p: this.criteria.passPct, f: this.criteria.failPct }))));
+    body.append(this.criteriaSection(redraw));
+    if (!res.pairs.length) { body.append(banner("warn", t("period.none", "No observation is inside the simulated period."), { "data-testid": "validation-disabled" })); this.updateMap(); return; }
+    const pct = (v: number | null): string => (v === null ? "-" : `${v.toFixed(1)}%`);
+    const kpi = (id: string, label: string, value: string): HTMLElement => el("div", { class: "avp-kpi", attrs: { "data-kpi": id, "data-value": value } }, el("b", { text: value }), el("span", { text: label }));
+    body.append(el("div", { class: "avp-kpis", attrs: { "data-testid": "period-kpis" } },
+      kpi("n", t("kpi.pairs", "Pairs"), String(agg.n)), kpi("routes", t("kpi.routes", "Routes"), String(agg.nRoutes)),
+      kpi("mape", t("kpi.mape", "MAPE (%)"), pct(agg.mape)), kpi("bias", t("kpi.bias", "Bias (s)"), fmt(agg.bias)),
+      kpi("band", t("kpi.band", "Inside min-max band"), agg.bandHitRate === null ? "-" : `${agg.bandHitRate.toFixed(0)}% (${agg.nBand})`),
+      kpi("pass", t("status.pass", "Pass"), String(agg.nPass)), kpi("warn", t("status.warn", "Warn"), String(agg.nWarn)), kpi("fail", t("status.fail", "Fail"), String(agg.nFail))));
+    const routes = this.routeRowsFor(toValidationPairs(res.pairs));
+    const chart = el("div", { class: "avp-chart", attrs: { "data-testid": "route-status-chart" } });
+    mountChart(chart, barSvg(routes.map((r) => ({ label: `${r.route} ${r.direction}`.trim(), value: r.errorPct, color: STATUS_COLORS[r.status] })), { label: t("period.statusChart", "Mean signed error per route, coloured by status"), yTitle: t("period.errorPct", "Error (%)") }));
+    body.append(el("section", { class: "avp-section" }, el("h3", { class: "avp-h", text: t("period.byRoute", "Per-route status") }), chart,
+      el("div", { class: "avp-table-wrap" }, (() => {
+        const tb = el("table", { class: "avp-table", attrs: { "data-testid": "route-status" } }, el("thead", {}, el("tr", {}, ...["Route", "Direction", "Pairs", "Observed (s)", "Simulated (s)", "Error (%)", "Status"].map((h) => el("th", { text: t(`table.${h}`, h) })))));
+        const tbd = el("tbody");
+        for (const r of routes) tbd.append(el("tr", { attrs: { "data-status": r.status } }, el("td", { text: r.route }), el("td", { text: r.direction }), el("td", { text: String(r.nBuckets) }), el("td", { text: fmt(r.obs) }), el("td", { text: fmt(r.sim) }), el("td", { text: fmt(r.errorPct) }), el("td", { text: t(`status.${r.status}`, r.status) })));
+        tb.append(tbd);
+        return tb;
+      })())));
+    // pairs table
+    const tb = el("table", { class: "avp-table", attrs: { "data-testid": "pairs-table" } });
+    tb.append(el("thead", {}, el("tr", {}, ...["Route", "Direction", "Time", "Simulated (s)", "Observed (s)", "Min (s)", "Max (s)", "Error (s)", "Error (%)", "Inside band", "Status"].map((h) => el("th", { text: t(`table.${h}`, h) })))));
+    const tbody = el("tbody");
+    for (const p of res.pairs) {
+      tbody.append(el("tr", { attrs: { "data-status": p.status, "data-kind": p.kind } }, el("td", { text: p.route }), el("td", { text: p.direction }), el("td", { text: p.timeLabel }), el("td", { text: fmt(p.sim) }), el("td", { text: fmt(p.obs) }),
+        el("td", { text: fmt(p.min) }), el("td", { text: fmt(p.max) }), el("td", { text: fmt(p.errorS) }), el("td", { text: fmt(p.errorPct) }),
+        el("td", { text: p.inBand === null ? "-" : p.inBand ? t("yes", "yes") : t("no", "no") }), el("td", { text: t(`status.${p.status}`, p.status) })));
+    }
+    tb.append(tbody);
+    body.append(el("section", { class: "avp-section" }, el("h3", { class: "avp-h", text: t("period.pairs", "Simulated vs observed pairs") }), el("div", { class: "avp-table-wrap" }, tb)));
+    // unpaired
+    const det = el("details", { class: "avp-details avp-section", attrs: { "data-avp": "unpaired", "data-n": String(res.unpaired.length) } });
+    det.append(el("summary", { text: t("period.unpaired", "Not compared: {{n}} observation(s), {{o}} route(s) without simulation, {{s}} simulated-only route(s)", { n: res.unpaired.length, o: res.obsOnlyRoutes.length, s: res.simOnlyRoutes.length }) }));
+    const ut = el("table", { class: "avp-table", attrs: { "data-testid": "unpaired-table" } }, el("thead", {}, el("tr", {}, ...["Route", "Direction", "Time", "Reason"].map((h) => el("th", { text: t(`table.${h}`, h) })))));
+    const ub = el("tbody");
+    for (const u of res.unpaired) ub.append(el("tr", { attrs: { "data-code": u.code } }, el("td", { text: u.route }), el("td", { text: u.direction }), el("td", { text: u.timeLabel }), el("td", { text: u.reason })));
+    ut.append(ub);
+    det.append(el("div", { class: "avp-table-wrap" }, ut));
+    if (res.simOnlyRoutes.length) det.append(el("p", { class: "avp-small", text: `${t("unm.sim", "Simulated only")}: ${res.simOnlyRoutes.join("; ")}` }));
+    body.append(det, this.mapColourControls());
+    if (this.runNames().length > 1) this.renderComparison(body);
+    else this.updateMap();
   }
 
   private criteriaSection(onChange: () => void): HTMLElement {
@@ -778,6 +1034,12 @@ export class JourneyTimeController {
   }
 
   private validationPairing(run?: string): PairingResult {
+    if (this.isTypical()) {
+      const r = this.periodResult(run);
+      const paired = new Set(r.pairs.map((x) => x.key));
+      const noOverlap = [...new Map(r.unpaired.filter((u) => u.key && !paired.has(u.key) && u.code !== "no-sim-route").map((u) => [u.key!, `${u.route} - ${u.direction}`])).values()];
+      return { pairs: toValidationPairs(r.pairs), obsOnly: r.obsOnlyRoutes, simOnly: r.simOnlyRoutes, noOverlap };
+    }
     const obs = this.rows.filter((r) => r.source === this.source);
     const sim = run ? this.simRows.filter((r) => r.run === run) : this.simRows;
     return pairObsSim(obs, sim, "median", this.win, this.criteria);
@@ -822,11 +1084,15 @@ export class JourneyTimeController {
     from.addEventListener("change", applyWindow); to.addEventListener("change", applyWindow);
     body.append(el("section", { class: "avp-section", attrs: { "data-testid": "validation-controls" } },
       el("div", { class: "avp-row" }, el("label", { class: "avp-lbl" }, t("source.title", "Observed source"), source),
-        el("label", { class: "avp-lbl" }, t("window.title", "Time window"), el("span", { class: "avp-row" }, from, to))),
+        this.isTypical()
+          ? el("span", { class: "avp-small", attrs: { "data-avp": "period-info" } }, this.periodText(this.periodResult()))
+          : el("label", { class: "avp-lbl" }, t("window.title", "Time window"), el("span", { class: "avp-row" }, from, to)),
+        this.isTypical() ? this.runSelect(redraw) : null),
       el("p", { class: "avp-hint", text: t("source.never", "Sources are never mixed; the observed typical-day median is paired over the selected time window.") })));
     body.append(this.criteriaSection(redraw));
+    if (this.isTypical()) body.append(this.mapColourControls());
     const pairing = this.validationPairing();
-    const rows = perRoute(pairing.pairs, this.criteria);
+    const rows = this.routeRowsFor(pairing.pairs);
     if (!rows.length) {
       body.append(banner("warn", t("validation.none", "Validation is disabled: this package contains no simulated JT segments overlapping the selected source and time window."), { "data-testid": "validation-disabled" }));
       return;
@@ -908,7 +1174,7 @@ export class JourneyTimeController {
     };
     body.append(el("div", { class: "avp-row" }, el("label", { class: "avp-lbl" }, t("comparison.a", "Run A baseline"), selectRun("run-a", this.comparisonA)),
       el("label", { class: "avp-lbl" }, t("comparison.b", "Run B"), selectRun("run-b", this.comparisonB))));
-    const pairByRun = new Map(runs.map((r) => [r, perRoute(this.validationPairing(r).pairs, this.criteria)]));
+    const pairByRun = new Map(runs.map((r) => [r, this.routeRowsFor(this.validationPairing(r).pairs)]));
     const table = el("table", { class: "avp-table", attrs: { "data-testid": "comparison-kpis" } });
     table.append(el("thead", {}, el("tr", {}, el("th", { text: t("comparison.metric", "Metric") }), ...runs.map((r) => el("th", { text: r })))));
     const metrics: Array<[string, (r: ReturnType<typeof perRoute>[number][]) => string]> = [

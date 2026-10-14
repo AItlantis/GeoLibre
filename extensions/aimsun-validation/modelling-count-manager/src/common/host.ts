@@ -23,6 +23,9 @@ export interface MapLike {
   getContainer(): HTMLElement;
   getCanvas(): HTMLCanvasElement;
   getZoom(): number;
+  /** Rendered features under a pixel box (collided/hidden symbols are not returned). */
+  queryRenderedFeatures?(box: [[number, number], [number, number]], options?: { layers?: string[] }): Array<{ layer?: { id?: string }; geometry?: { type?: string; coordinates?: unknown }; properties?: Record<string, unknown> | null }>;
+  project?(lngLat: [number, number]): { x: number; y: number };
   flyTo(opts: Record<string, unknown>): void;
   fitBounds?(bounds: [[number, number], [number, number]], opts?: Record<string, unknown>): void;
 }

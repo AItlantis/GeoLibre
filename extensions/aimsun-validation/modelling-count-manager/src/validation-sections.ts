@@ -1,6 +1,7 @@
 ﻿/** Detector validation: KPIs, scatter + OLS, GEH histogram, status map colouring, worst-N table. */
 import { complianceShares, computeKpis, DEFAULT_CRITERIA, flowBandStats, gehBins, sortAggs, validateCriteria, worstN, type Criteria, type Kpis, type DetAgg, type ValRow } from "./common/aggregate.ts";
 import { buildCoverage, buildFeatures, buildUnmatchedCoverage, buildUnmatchedFeatures } from "./common/geo.ts";
+import { directionNote, directionTip } from "./common/count-legend.ts";
 import { statusColor } from "./common/map-layer.ts";
 import { detectorTable, kpiGrid, unmatchedTable, unmatchedWarning } from "./common/panel-parts.ts";
 import type { Env, Sections } from "./common/plugin-host.ts";
@@ -94,6 +95,7 @@ export function buildValidationSections(env: Env): Sections {
         return [
           t("tip.unmatched", "Detector (object id {{id}}): no external id", { id: String(p.oid ?? "") }),
           t("tip.sim", "Simulated: {{v}} veh/h", { v: fmt.int(Number(p.sim)) }),
+          ...directionTip(t, p),
           t("tip.excluded", "Excluded from validation"),
         ];
       }
@@ -106,6 +108,7 @@ export function buildValidationSections(env: Env): Sections {
         t("tip.sim", "Simulated: {{v}} veh/h", { v: fmt.int(Number(p.sim)) }),
         t("tip.obs", "Observed: {{v}} veh/h", { v: fmt.int(Number(p.obs)) }),
         t("tip.geh", "GEH {{v}} ({{s}}; pass <{{pass}}, fail >{{fail}})", { v: fmt.num(value, 1), s: label, pass: criteria.gehPass, fail: criteria.gehFail }),
+        ...directionTip(t, p),
       ];
     },
 
@@ -172,6 +175,7 @@ export function buildValidationSections(env: Env): Sections {
           el("span", {}, [el("span", { class: "av-dot", attrs: { style: `background:${STATUS_COLORS.warn}` } }), t("legend.warn", "{{pass}} to {{fail}}: {{n}}", { pass: criteria.gehPass, fail: criteria.gehFail, n: fmt.int(k.nWarn) })]),
           el("span", {}, [el("span", { class: "av-dot", attrs: { style: `background:${STATUS_COLORS.fail}` } }), t("legend.fail", "> {{limit}}: {{n}}", { limit: criteria.gehFail, n: fmt.int(k.nFail) })]),
         ]),
+        ...(ctl.geo?.hasCoverage ? [directionNote(ctx)] : []),
       );
 
       // scatter: identity (dashed) + OLS trendline (solid), points coloured by GEH status

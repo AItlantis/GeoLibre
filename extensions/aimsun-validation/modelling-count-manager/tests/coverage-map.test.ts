@@ -15,7 +15,27 @@ import {
   partsForAgg,
 } from "../src/common/geo.ts";
 import { ARROW_POLYGON, GLYPH_SIZE, makeArrowImage, makeNeutralImage } from "../src/common/glyphs.ts";
-import { arrowSize, coverageLineWidth, DetectorMapLayer, dotOpacity, selectedAreaFilter, ZOOM } from "../src/common/map-layer.ts";
+import {
+  arrowAllowOverlap,
+  arrowIgnorePlacement,
+  arrowOpacity,
+  arrowPadding,
+  arrowSize,
+  arrowSortKey,
+  coverageLineWidth,
+  DetectorMapLayer,
+  dotFilter,
+  dotOpacity,
+  glyphHeightPx,
+  hitBox,
+  HIT_PX,
+  pickFeature,
+  selectedAreaFilter,
+  selectedArrowFilter,
+  ZOOM,
+} from "../src/common/map-layer.ts";
+import { cardinal, countLegend, countLegendModel, directionNote, directionTip } from "../src/common/count-legend.ts";
+import { installDomShim } from "./dom-shim.ts";
 import { fileURLToPath } from "node:url";
 
 const FIX = new URL("./fixtures/detectors_c6.geojson", import.meta.url);
@@ -182,6 +202,9 @@ class FakeMap {
   filters = new Map<string, unknown>();
   flown: unknown[] = [];
   zoom = 3;
+  /** what queryRenderedFeatures returns (the test decides which symbols are rendered/placed) */
+  rendered: Array<Record<string, any>> = [];
+  queries: Array<{ box: unknown; layers: string[] | undefined }> = [];
   addSource(id: string, s: Record<string, unknown>) {
     const rec = { data: s.data, setData: (d: unknown) => void (rec.data = d) };
     this.sources.set(id, rec);
@@ -209,6 +232,11 @@ class FakeMap {
   getCanvas() { return { style: {} } as HTMLCanvasElement; }
   getZoom() { return this.zoom; }
   flyTo(o: unknown) { this.flown.push(o); }
+  queryRenderedFeatures(box: unknown, o?: { layers?: string[] }) {
+    this.queries.push({ box, layers: o?.layers });
+    return this.rendered.filter((f) => !o?.layers || o.layers.includes(f.layer?.id));
+  }
+  project(c: [number, number]) { return { x: (c[0] - 55) * 1e5, y: (25 - c[1]) * 1e5 }; }
   /** setStyle(): sources, layers and images vanish; layer-bound listeners stay registered; styledata fires. */
   reloadStyle() {
     this.sources.clear();
@@ -216,6 +244,8 @@ class FakeMap {
     this.images.clear();
     for (const l of this.listeners.filter((x) => x.type === "styledata")) l.fn({});
   }
+  /** map-level (layer-less) event, as MapLibre fires click / mousemove / mouseout */
+  fireMap(type: string, e: any) { for (const l of this.listeners.filter((x) => x.type === type && x.layer === null)) l.fn(e); }
   fire(type: string, layer: string, e: any) { for (const l of this.listeners.filter((x) => x.type === type && x.layer === layer)) l.fn(e); }
 }
 
@@ -241,7 +271,7 @@ test("coverage package: dots + coverage source, fill/outline/arrow layers, SDF i
   const { fc, coverage } = c6Data();
   layer.update(fc, STYLE, coverage);
   assert.deepEqual([...map.sources.keys()].sort(), ["cm-cov-src", "cm-sel-src", "cm-src"]);
-  assert.deepEqual([...map.layers.keys()].sort(), ["cm-arrows", "cm-cov-fill", "cm-cov-line", "cm-cov-sel", "cm-pts", "cm-sel"]);
+  assert.deepEqual([...map.layers.keys()].sort(), ["cm-arrows", "cm-arrows-sel", "cm-cov-fill", "cm-cov-line", "cm-cov-sel", "cm-pts", "cm-sel"]);
   assert.equal(map.sources.size, 3, "few sources for ~300 detectors: dots, coverage+arrows, selection");
   // images: SDF, registered once each
   assert.deepEqual([...map.images.keys()].sort(), ["cm-arrow", "cm-neutral"]);
@@ -252,24 +282,23 @@ test("coverage package: dots + coverage source, fill/outline/arrow layers, SDF i
   assert.deepEqual(arrows.layout["icon-rotate"], ["to-number", ["get", "bearing_deg"], 0]);
   assert.equal(arrows.layout["icon-rotation-alignment"], "map");
   assert.equal(arrows.layout["icon-pitch-alignment"], "map");
-  assert.equal(arrows.layout["icon-allow-overlap"], true);
+  assert.deepEqual(arrows.layout["icon-allow-overlap"], arrowAllowOverlap());
   assert.deepEqual(arrows.layout["icon-image"], ["match", ["get", "glyph"], "arrow", "cm-arrow", "cm-neutral"]);
   assert.deepEqual(arrows.filter, ["==", ["get", "kind"], "arrow"]);
   const size = arrows.layout["icon-size"] as unknown[];
   assert.equal(size[0], "interpolate");
   assert.deepEqual(size[2], ["zoom"], "icon-size is a zoom expression");
-  assert.equal(arrows.minzoom, ZOOM.arrowMin);
+  assert.equal(arrows.minzoom, undefined, "glyphs are drawn at every zoom");
   // colour: the same metric colour as the circles
   assert.equal(arrows.paint["icon-color"], map.layers.get("cm-pts")!.paint["circle-color"]);
   assert.equal(map.layers.get("cm-cov-fill")!.paint["fill-color"], STYLE.color);
   assert.equal(map.layers.get("cm-cov-fill")!.type, "fill");
   assert.equal(map.layers.get("cm-cov-line")!.type, "line");
-  // dots stay until ~z16 then fade (only where a coverage exists)
-  const dots = map.layers.get("cm-pts")!.paint["circle-opacity"] as any[];
-  assert.deepEqual(dots.slice(0, 3), ["interpolate", ["linear"], ["zoom"]]);
-  assert.equal(dots[3], 16);
-  assert.equal(dots[5], 17.5);
-  assert.deepEqual(dots[6], ["case", ["==", ["get", "cov"], true], 0, 0.85]);
+  // dots: constant opacity, and only for detectors without a coverage glyph (no double drawing)
+  const dots = map.layers.get("cm-pts")!;
+  assert.equal(dots.paint["circle-opacity"], 0.85);
+  assert.equal("circle-stroke-opacity" in dots.paint, false);
+  assert.deepEqual(dots.filter, ["!=", ["get", "cov"], true]);
   // registered into the Layers panel with every native layer and source
   const r = reg.at(-1)!;
   assert.deepEqual([...r.nativeLayerIds].sort(), [...map.layers.keys()].sort());
@@ -288,7 +317,8 @@ test("old Point-only package renders exactly as before: two sources, two layers,
   assert.equal(paint["circle-opacity"], 0.85);
   assert.equal(paint["circle-radius"], STYLE.radius);
   assert.equal("circle-stroke-opacity" in paint, false);
-  assert.equal(map.listeners.filter((l) => l.layer === "cm-pts").length, 3);
+  assert.deepEqual(map.listeners.filter((l) => l.layer === null && l.type !== "styledata").map((l) => l.type).sort(), ["click", "mouseout", "mousemove"].sort(), "map-level pointer handlers");
+  assert.equal(map.listeners.filter((l) => l.layer !== null).length, 0);
   assert.deepEqual(reg.at(-1)!.nativeLayerIds, ["cm-pts", "cm-sel"]);
 });
 
@@ -306,6 +336,8 @@ test("metric/filter changes update paint and data; an identical update touches n
   assert.equal(map.layers.get("cm-cov-fill")!.paint["fill-color"], "#c62828");
   assert.equal(map.layers.get("cm-arrows")!.paint["icon-color"], "#c62828");
   assert.deepEqual(map.layers.get("cm-arrows")!.layout["icon-size"], arrowSize(9));
+  assert.deepEqual(map.layers.get("cm-arrows")!.layout["symbol-sort-key"], arrowSortKey(9));
+  assert.deepEqual(map.layers.get("cm-arrows-sel")!.layout["icon-size"], arrowSize(9, 1.7));
   assert.deepEqual(map.layers.get("cm-cov-line")!.paint["line-width"], coverageLineWidth(9));
 });
 
@@ -317,6 +349,7 @@ test("a run without coverage after one with coverage empties the coverage data a
   layer.update(buildFeatures(aggregateDetectors([row("E1", 10)]), g).fc, STYLE, buildCoverage([], g));
   assert.equal((map.sources.get("cm-cov-src")!.data as { features: unknown[] }).features.length, 0);
   assert.equal(map.layers.get("cm-pts")!.paint["circle-opacity"], 0.85);
+  assert.equal(map.filters.get("cm-pts"), null, "every dot is drawn again when the run has no coverage");
 });
 
 test("style reload re-adds sources, layers and images without duplicating listeners", () => {
@@ -326,9 +359,10 @@ test("style reload re-adds sources, layers and images without duplicating listen
   const before = map.listeners.length;
   map.reloadStyle();
   assert.deepEqual([...map.sources.keys()].sort(), ["cm-cov-src", "cm-sel-src", "cm-src"]);
-  assert.equal(map.layers.size, 6);
+  assert.equal(map.layers.size, 7);
   assert.deepEqual([...map.images.keys()].sort(), ["cm-arrow", "cm-neutral"]);
-  assert.equal(map.listeners.length, before, "layer listeners survive setStyle and are not registered twice");
+  assert.equal(map.listeners.length, before, "map-level pointer handlers survive setStyle and are not registered twice");
+  assert.deepEqual(map.layers.get("cm-arrows")!.layout["icon-allow-overlap"], arrowAllowOverlap(), "layout is re-applied");
   assert.equal((map.sources.get("cm-cov-src")!.data as { features: unknown[] }).features.length, coverage.features.length);
   // a point-only layer survives the reload too
   const p = mount();
@@ -339,20 +373,62 @@ test("style reload re-adds sources, layers and images without duplicating listen
   assert.equal(p.map.images.size, 0);
 });
 
-test("click on polygon, arrow or dot selects the eid; empty eid (unmatched) and hover are safe", () => {
+const at = (x = 100, y = 100) => ({ point: { x, y } });
+
+test("click on polygon, arrow or dot selects the eid via a bbox query; empty eid (unmatched) and misses are safe", () => {
   const { map, layer, selected } = mount();
   const { fc, coverage } = c6Data();
   layer.update(fc, STYLE, coverage);
-  map.fire("click", "cm-cov-fill", { features: [{ properties: { eid: "C6_FWD", oid: "5001" } }] });
-  map.fire("click", "cm-arrows", { features: [{ properties: { eid: "J383_A", oid: "5004" } }] });
-  map.fire("click", "cm-pts", { features: [{ properties: { eid: "C6_REV" } }] });
-  map.fire("click", "cm-cov-fill", { features: [{ properties: { eid: "" } }] });
-  map.fire("click", "cm-pts", { features: [] });
+  map.rendered = [{ layer: { id: "cm-cov-fill" }, properties: { eid: "C6_FWD", oid: "5001" } }];
+  map.fireMap("click", at());
+  map.rendered = [{ layer: { id: "cm-arrows" }, properties: { eid: "J383_A", oid: "5004" } }];
+  map.fireMap("click", at());
+  map.rendered = [{ layer: { id: "cm-pts" }, properties: { eid: "C6_REV" } }];
+  map.fireMap("click", at());
+  map.rendered = [{ layer: { id: "cm-cov-fill" }, properties: { eid: "" } }];
+  map.fireMap("click", at());
+  map.rendered = [];
+  map.fireMap("click", at());
   assert.deepEqual(selected, ["C6_FWD", "J383_A", "C6_REV"]);
-  for (const l of ["cm-pts", "cm-cov-fill", "cm-arrows"]) {
-    assert.deepEqual(map.listeners.filter((x) => x.layer === l).map((x) => x.type).sort(), ["click", "mouseleave", "mousemove"]);
-  }
-  map.fire("mouseleave", "cm-arrows", {});
+  assert.deepEqual(map.queries[0].box, hitBox({ x: 100, y: 100 }), "a small box around the pointer, not a point");
+  assert.deepEqual(map.queries[0].layers!.sort(), ["cm-arrows", "cm-cov-fill", "cm-pts"], "only the interactive layers (never the selection underlay)");
+  assert.deepEqual(map.listeners.filter((x) => x.layer === null && x.type !== "styledata").map((x) => x.type).sort(), ["click", "mousemove", "mouseout"]);
+  map.fireMap("mouseout", {});
+});
+
+test("hit-testing: a click next to a tiny arrow selects it; an unmatched symbol or the polygon below never steals the click", () => {
+  const { map, layer, selected } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  // a polygon (top of the stack by order of the query result), an unmatched arrow and two arrows 3 px / 7 px away
+  map.rendered = [
+    { layer: { id: "cm-cov-fill" }, geometry: { type: "Polygon", coordinates: [] }, properties: { eid: "POLY" } },
+    { layer: { id: "cm-arrows" }, geometry: { type: "Point", coordinates: [55, 25] }, properties: { eid: "" } },
+    { layer: { id: "cm-arrows" }, geometry: { type: "Point", coordinates: [55.00007, 25] }, properties: { eid: "FAR" } },
+    { layer: { id: "cm-arrows" }, geometry: { type: "Point", coordinates: [55.00003, 25] }, properties: { eid: "NEAR" } },
+  ];
+  map.fireMap("click", { point: { x: 0, y: 0 } });
+  assert.deepEqual(selected, ["NEAR"]);
+  // hover on the unmatched one alone still resolves (tooltip), but selects nothing
+  map.rendered = [{ layer: { id: "cm-arrows" }, geometry: { type: "Point", coordinates: [55, 25] }, properties: { eid: "" } }];
+  map.fireMap("click", { point: { x: 0, y: 0 } });
+  assert.deepEqual(selected, ["NEAR"]);
+  // collided (unplaced) symbols are not returned by MapLibre, so they cannot be hit
+  map.rendered = [];
+  map.fireMap("click", at());
+  assert.deepEqual(selected, ["NEAR"]);
+});
+
+test("pickFeature: eid beats unmatched, glyph beats dot beats polygon, then nearest; no features -> null", () => {
+  const order = ["a", "p", "f"];
+  const f = (layer: string, eid: string, x?: number) => ({ layer: { id: layer }, properties: { eid }, ...(x === undefined ? {} : { geometry: { type: "Point", coordinates: [x, 0] as [number, number] } }) });
+  const project = (c: [number, number]) => ({ x: c[0], y: 0 });
+  assert.equal(pickFeature([], { x: 0, y: 0 }, order), null);
+  assert.equal(pickFeature([f("f", "P"), f("p", "D"), f("a", "A", 5)], { x: 0, y: 0 }, order, project)!.properties!.eid, "A");
+  assert.equal(pickFeature([f("a", "", 0), f("f", "P")], { x: 0, y: 0 }, order, project)!.properties!.eid, "P");
+  assert.equal(pickFeature([f("a", "A1", 6), f("a", "A2", 2)], { x: 0, y: 0 }, order, project)!.properties!.eid, "A2");
+  assert.equal(pickFeature([f("a", "", 3)], { x: 0, y: 0 }, order, project)!.properties!.eid, "", "tooltip-only fallback");
+  assert.deepEqual(hitBox({ x: 10, y: 20 }), [[10 - HIT_PX, 20 - HIT_PX], [10 + HIT_PX, 20 + HIT_PX]]);
 });
 
 test("selected highlight: halo at the anchor plus the eid's coverage outline", () => {
@@ -363,12 +439,19 @@ test("selected highlight: halo at the anchor plus the eid's coverage outline", (
   layer.setSelected([55.2, 25.1], "J383_A");
   assert.deepEqual(map.filters.get("cm-cov-sel"), selectedAreaFilter("J383_A"));
   assert.equal((map.sources.get("cm-sel-src")!.data as { features: unknown[] }).features.length, 1);
+  assert.deepEqual(map.filters.get("cm-arrows-sel"), selectedArrowFilter("J383_A"), "the selected detector's glyph is highlighted");
   layer.setSelected(null);
   assert.deepEqual(map.filters.get("cm-cov-sel"), selectedAreaFilter(null));
+  assert.deepEqual(map.filters.get("cm-arrows-sel"), selectedArrowFilter(null));
   // the selection survives a style reload
   layer.setSelected([55.2, 25.1], "C6_FWD");
   map.reloadStyle();
   assert.deepEqual(map.layers.get("cm-cov-sel")!.filter, selectedAreaFilter("C6_FWD"));
+  assert.deepEqual(map.layers.get("cm-arrows-sel")!.filter, selectedArrowFilter("C6_FWD"));
+  const under = map.layers.get("cm-arrows-sel")!;
+  assert.equal(under.paint["icon-color"], "#0b57d0");
+  assert.equal(under.layout["icon-allow-overlap"], true, "the selected glyph is always drawn");
+  assert.deepEqual([...map.layers.keys()].filter((k) => k.endsWith("arrows") || k.endsWith("arrows-sel")), ["cm-arrows-sel", "cm-arrows"], "underlay below the glyph: reads as an outline");
 });
 
 test("visibility toggle and opacity reach every layer", () => {
@@ -381,8 +464,9 @@ test("visibility toggle and opacity reach every layer", () => {
   bridge.setVisibility(true);
   assert.ok([...map.layers.values()].every((l) => l.layout?.visibility === "visible"));
   bridge.setOpacity(0.5);
-  assert.deepEqual(map.layers.get("cm-pts")!.paint["circle-opacity"], dotOpacity(0.5, true));
-  assert.deepEqual(map.layers.get("cm-arrows")!.paint["icon-opacity"], ["interpolate", ["linear"], ["zoom"], ZOOM.arrowStart, 0, ZOOM.arrowEnd, 0.5]);
+  assert.deepEqual(map.layers.get("cm-pts")!.paint["circle-opacity"], dotOpacity(0.5));
+  assert.equal(map.layers.get("cm-arrows")!.paint["icon-opacity"], arrowOpacity(0.5));
+  assert.equal(map.layers.get("cm-arrows")!.paint["icon-opacity"], 0.5, "constant opacity, no zoom fade");
 });
 
 test("dispose removes every layer, source, image and listener, and unregisters the native layer", () => {
@@ -415,11 +499,157 @@ test("zoomTo goes close enough to see the coverage only when there is coverage",
   const { fc, coverage } = c6Data();
   a.layer.update(fc, STYLE, coverage);
   a.layer.zoomTo(55.2, 25.1);
-  assert.equal((a.map.flown[0] as { zoom: number }).zoom, 18);
+  assert.equal((a.map.flown[0] as { zoom: number }).zoom, ZOOM.focus);
+  assert.equal(ZOOM.focus, 17.5);
   const b = mount();
   b.layer.update(buildFeatures([], null).fc, STYLE);
   b.layer.zoomTo(55.2, 25.1);
   assert.equal((b.map.flown[0] as { zoom: number }).zoom, 16);
+});
+
+// ---------- C14: arrows at all zooms ----------
+test("arrow layer: no minzoom/maxzoom, constant opacity, screen-pixel size expression, metric colour", () => {
+  const { map, layer } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  const arrows = map.layers.get("cm-arrows")!;
+  assert.equal("minzoom" in arrows, false);
+  assert.equal("maxzoom" in arrows, false);
+  assert.equal(arrows.paint["icon-opacity"], 0.85, "no zoom fade");
+  assert.equal(typeof arrows.paint["icon-opacity"], "number");
+  const size = arrows.layout["icon-size"] as any[];
+  assert.deepEqual(size.slice(0, 3), ["interpolate", ["linear"], ["zoom"]]);
+  const flat = JSON.stringify(size);
+  assert.ok(!/meter|metre|pitch|ln2|"\*",\s*"zoom"/i.test(flat), "no metres-to-pixels (2^zoom) conversion: the size is in screen px");
+  // legible by z10..z14: 14-18 CSS px at z12 for a mid-ramp (radius 8) detector, mild growth afterwards
+  const px12 = glyphHeightPx(8, 12);
+  assert.ok(px12 >= 13 && px12 <= 18, `z12 mid glyph is ${px12}px`);
+  assert.ok(glyphHeightPx(8, 10) >= 10 && glyphHeightPx(8, 14) <= 20);
+  assert.ok(glyphHeightPx(8, 21) > glyphHeightPx(8, 12) && glyphHeightPx(8, 21) < 2 * glyphHeightPx(8, 12), "mild growth");
+  // the metric ramp (radius) still drives the size
+  assert.ok(glyphHeightPx(16, 12) > glyphHeightPx(8, 12) && glyphHeightPx(8, 12) > glyphHeightPx(3, 12));
+  assert.equal(JSON.stringify(arrowSize(STYLE.radius)).includes("sqrt"), true, "radius ramp is embedded");
+  assert.equal(arrows.paint["icon-color"], STYLE.color);
+});
+
+test("density control: collision below z15, everything drawn from z15; padding and ignore-placement follow", () => {
+  const { map, layer } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  const l = map.layers.get("cm-arrows")!.layout;
+  assert.deepEqual(l["icon-allow-overlap"], ["step", ["zoom"], false, 15, true]);
+  assert.deepEqual(l["icon-ignore-placement"], ["step", ["zoom"], false, 15, true], "placed glyphs must enter the collision index below z15");
+  assert.deepEqual(l["icon-padding"], arrowPadding());
+  assert.equal(ZOOM.overlapMin, 15);
+  // evaluate the step like MapLibre does
+  const stepAt = (e: any[], z: number) => (z >= e[3] ? e[4] : e[2]);
+  assert.equal(stepAt(arrowAllowOverlap() as any[], 14.99), false);
+  assert.equal(stepAt(arrowAllowOverlap() as any[], 15), true);
+  assert.equal(stepAt(arrowIgnorePlacement() as any[], 8), false);
+  assert.equal(stepAt(arrowPadding() as any[], 10) > 0 && stepAt(arrowPadding() as any[], 16) === 0, true);
+});
+
+test("symbol-sort-key: the largest flow/size wins a collision (lower key placed first)", () => {
+  const { map, layer } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  const key = map.layers.get("cm-arrows")!.layout["symbol-sort-key"];
+  assert.deepEqual(key, ["*", -1, STYLE.radius]);
+  assert.deepEqual(arrowSortKey(6), ["*", -1, ["to-number", ["get", "sim"], 0]], "constant radius (validation/comparison): by simulated flow");
+  // an explicit key wins (e.g. worst GEH first)
+  const custom = ["*", -1, ["get", "geh"]];
+  const m2 = mount();
+  m2.layer.update(fc, { ...STYLE, sortKey: custom }, coverage);
+  assert.deepEqual(m2.map.layers.get("cm-arrows")!.layout["symbol-sort-key"], custom);
+});
+
+test("dots only for detectors without a coverage glyph; old Point-only packages draw every dot with no filter", () => {
+  assert.deepEqual(dotFilter(true), ["!=", ["get", "cov"], true]);
+  assert.equal(dotFilter(false), null);
+  const { map, layer } = mount();
+  const g = parseDetectorGeo(legacy);
+  layer.update(buildFeatures(aggregateDetectors([row("E1", 10)]), g).fc, STYLE, buildCoverage([], g));
+  assert.equal("filter" in map.layers.get("cm-pts")!, false);
+  assert.equal(map.layers.get("cm-pts")!.paint["circle-radius"], STYLE.radius);
+  assert.equal(map.layers.has("cm-arrows"), false);
+  assert.equal(map.layers.has("cm-arrows-sel"), false);
+  // coverage appearing later (run switch) filters the dots; disappearing restores them
+  const d = c6Data();
+  layer.update(d.fc, STYLE, d.coverage);
+  assert.deepEqual(map.filters.get("cm-pts"), ["!=", ["get", "cov"], true]);
+});
+
+test("a map without queryRenderedFeatures cannot select (and does not throw)", () => {
+  const map = new FakeMap();
+  (map as { queryRenderedFeatures?: unknown }).queryRenderedFeatures = undefined;
+  const { layer, selected } = mount(map);
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  map.fireMap("click", at());
+  map.fireMap("mousemove", at());
+  assert.deepEqual(selected, []);
+});
+
+test("hover moves resolve through the same query and leave resets the cursor", () => {
+  const { map, layer } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  map.rendered = [];
+  map.fireMap("mousemove", at());
+  map.fireMap("mouseout", {});
+  assert.equal(map.queries.length, 1);
+});
+
+// ---------- C14: tooltip direction ----------
+test("tooltip direction line: bearing + cardinal for arrows, both ways for bidirectional, nothing when unknown", () => {
+  const t = (_k: string, en: string, p?: Record<string, string | number>) => en.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => String(p?.[k]));
+  assert.deepEqual(directionTip(t, { glyph: "arrow", bearing_deg: 75.3, direction: "forward" }), ["Direction: 75° (E)"]);
+  assert.deepEqual(directionTip(t, { glyph: "arrow", bearing_deg: 255.3 }), ["Direction: 255° (W)"]);
+  assert.deepEqual(directionTip(t, { glyph: "neutral", direction: "bidirectional", bearing_deg: 90 }), ["Direction: both ways"]);
+  assert.deepEqual(directionTip(t, { glyph: "neutral", direction: "unknown", bearing_deg: null }), []);
+  assert.deepEqual(directionTip(t, { eid: "dot" }), []);
+  assert.equal(cardinal(359), "N");
+  assert.equal(cardinal(-45), "NW");
+});
+
+// ---------- C14: legend ----------
+test("legend model: colour ramp and size ramp with min/max, diverging for the difference mode", () => {
+  const seq = countLegendModel({ colorBy: "sim", sizeBy: "sim", maxSize: 1200, maxColor: 1200, glyphs: true });
+  assert.equal(seq.diverging, false);
+  assert.deepEqual([seq.colorMin, seq.colorMax, seq.sizeMin, seq.sizeMax], [0, 1200, 0, 1200]);
+  assert.equal(seq.colorStops.length, 3);
+  assert.ok(seq.sizeMaxPx > seq.sizeMinPx);
+  assert.ok(seq.colorTitle.en.includes("simulated flow") && seq.colorTitle.en.includes("veh/h"));
+  const div = countLegendModel({ colorBy: "diff", sizeBy: "obs", maxSize: 800, maxColor: 150, glyphs: false });
+  assert.equal(div.diverging, true);
+  assert.deepEqual([div.colorMin, div.colorMax], [-150, 150]);
+  assert.ok(div.sizeTitle.en.includes("observed"));
+  assert.equal(div.sizeMinPx, 6, "dots: diameter of the 3 px radius");
+  assert.equal(countLegendModel({ colorBy: "sim", sizeBy: "sim", maxSize: 0, maxColor: 0, glyphs: true }).colorMax, 1, "never a zero domain");
+});
+
+test("legend DOM: colour gradient, scale, size ramp, direction note (arrows) and none of it for dots-only packages", () => {
+  const restore = installDomShim();
+  try {
+    const t = (_k: string, en: string) => en;
+    const fmt = { int: (v: number | null | undefined) => (typeof v === "number" ? String(Math.round(v)) : "-") };
+    const root = countLegend({ t, fmt }, { colorBy: "diff", sizeBy: "sim", maxSize: 1200, maxColor: 150, glyphs: true });
+    const byId = (id: string) => root.querySelector(`[data-testid="${id}"]`)!;
+    assert.equal(root.getAttribute("data-testid"), "count-legend");
+    assert.ok(byId("legend-colour-ramp").getAttribute("style")!.startsWith("background:linear-gradient(to right, #2166ac"));
+    assert.deepEqual(Array.from(byId("legend-colour-scale").children, (c) => c.textContent), ["-150", "0", "150"]);
+    assert.ok(byId("legend-size-ramp").textContent.includes("1200"));
+    assert.ok(byId("legend-size-ramp").textContent.includes("\u25B2"), "arrow glyph samples");
+    assert.ok(byId("legend-direction").textContent.includes("direction of travel"));
+    assert.ok(root.textContent.includes("Colour: difference sim - obs (veh/h)"));
+    assert.ok(root.textContent.includes("Size: simulated flow (veh/h)"));
+    const dots = countLegend({ t, fmt }, { colorBy: "sim", sizeBy: "obs", maxSize: 50, maxColor: 50, glyphs: false });
+    assert.equal(dots.querySelector('[data-testid="legend-direction"]'), null);
+    assert.equal(dots.querySelector('[data-testid="legend-size-ramp"]')!.textContent.includes("\u25B2"), false);
+    assert.ok(directionNote({ t }).textContent.includes("Diamonds"));
+  } finally {
+    restore();
+  }
 });
 
 // ---------- extents ----------

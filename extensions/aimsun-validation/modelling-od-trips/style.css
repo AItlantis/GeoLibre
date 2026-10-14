@@ -299,3 +299,18 @@
 .ao-ratio-row { display: grid; grid-template-columns: 72px 1fr 40px; gap: 8px; align-items: center; font-size: 11px; }
 .ao-ratio-track { display: block; block-size: 8px; background: var(--ao-bg); }
 .ao-ratio-bar { display: block; block-size: 100%; background: var(--ao-primary); }
+
+.ao-legend-wrap { flex-wrap: wrap; gap: 4px 12px; }
+.ao-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.ao-sw { display: inline-block; flex: none; background: var(--ao-sw, currentColor); }
+.ao-sw-dot { inline-size: 9px; block-size: 9px; border-radius: 50%; }
+.ao-sw-bar { inline-size: 8px; block-size: 12px; }
+.ao-sw-line { inline-size: 14px; block-size: 3px; border-radius: 2px; }
+.ao-dom-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
+.ao-dom-label {
+  position: absolute; inset-block-start: 0; inset-inline-start: 0; text-align: center; white-space: nowrap;
+  font: 600 11px/1.25 system-ui, sans-serif; color: #1b1f24;
+  text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff;
+}
+.ao-dom-label-out { color: #e66100; }
+.ao-dom-label-in { color: #1c71d8; }

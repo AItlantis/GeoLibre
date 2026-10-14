@@ -11,11 +11,24 @@
  */
 import type { FC } from "./calc.ts";
 import type { AppLike, MapLike } from "./host.ts";
+import { LABEL_LAYOUT_BASE, LABEL_PAINT, labelOffsetExpression, labelSizeExpression, labelTextField, layoutDomLabels, liftPx, resolveLabelFont } from "./trips-map.ts";
+
+const opacityKey = (t: OverlayLayerSpec["type"]): string => (t === "line" ? "line-opacity" : t === "circle" ? "circle-opacity" : t === "symbol" ? "text-opacity" : "fill-extrusion-opacity");
+/** A style without a `glyphs` URL cannot draw text layers (MapLibre fails silently), so labels fall back to DOM. */
+export function styleHasGlyphs(map: MapLike): boolean {
+  try {
+    const st = map.getStyle?.();
+    if (!st) return true; // unknown: assume the host style is complete
+    return typeof st.glyphs === "string" && st.glyphs.length > 0;
+  } catch {
+    return true;
+  }
+}
 
 export interface OverlayLayerSpec {
   id: string;
   source: string;
-  type: "line" | "circle" | "fill-extrusion";
+  type: "line" | "circle" | "fill-extrusion" | "symbol";
   /** Extra paint merged over the defaults. */
   paint?: Record<string, unknown>;
   layout?: Record<string, unknown>;
@@ -35,6 +48,11 @@ export class MapOverlay {
   private pitchTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly onPitch = (): void => { if(this.pitchBefore!==null&&!this.programmaticPitch)this.userTilted=true; };
   private disposed = false;
+  /** DOM label fallback state (basemap style without glyphs). */
+  private domFallback = false;
+  private domEl: HTMLElement | null = null;
+  private domHidden = false;
+  private readonly onDomMove = (): void => this.renderDomLabels();
   private readonly moves: Array<[string, (e: any) => void, () => void]> = [];
   private readonly onStyleData = (): void => {
     if (this.disposed || !this.map || !this.specs.length || this.map.getSource(this.sid(this.specs[0].source))) return;
@@ -80,7 +98,7 @@ export class MapOverlay {
   setLayerOpacity(id: string, opacity: number): void {
     const spec = this.specs.find((x) => x.id === id);
     if (!spec || !this.map?.getLayer(this.lid(spec))) return;
-    const key = spec.type === "line" ? "line-opacity" : spec.type === "circle" ? "circle-opacity" : "fill-extrusion-opacity";
+    const key = opacityKey(spec.type);
     try { this.map.setPaintProperty(this.lid(spec), key, this.opacityExpression(spec, opacity)); } catch { /* style is changing */ }
   }
 
@@ -142,29 +160,120 @@ export class MapOverlay {
             ? { "line-color": ["get", "c"], "line-width": ["get", "w"], "line-opacity": ["*", this.opacity, ["coalesce", ["get", "o"], 1]], ...spec.paint }
             : spec.type === "circle"
               ? { "circle-color": ["get", "c"], "circle-radius": ["get", "r"], "circle-opacity": ["*", this.opacity, ["coalesce", ["get", "o"], 1]], "circle-stroke-width": 1, "circle-stroke-color": "#ffffff", ...spec.paint }
-              : { "fill-extrusion-color": ["get", "c"], "fill-extrusion-height": ["get", "height"], "fill-extrusion-base": ["get", "base"], "fill-extrusion-opacity": this.opacity, ...spec.paint };
-        map.addLayer({
-          id: lid,
-          type: spec.type,
-          source: this.sid(spec.source),
-          paint,
-          layout: spec.type === "line" ? { "line-cap": "round", ...spec.layout } : spec.layout ?? {},
-          ...(spec.minzoom !== undefined ? { minzoom: spec.minzoom } : {}),
-        });
+              : spec.type === "symbol"
+                ? { ...LABEL_PAINT, "text-opacity": ["*", this.opacity, ["coalesce", ["get", "o"], 1]], ...spec.paint }
+                : { "fill-extrusion-color": ["get", "c"], "fill-extrusion-height": ["get", "height"], "fill-extrusion-base": ["get", "base"], "fill-extrusion-opacity": this.opacity, ...spec.paint };
+        if (spec.type === "symbol") {
+          if (!this.addSymbolLayer(map, spec, lid, paint)) continue;
+        } else {
+          map.addLayer({
+            id: lid,
+            type: spec.type,
+            source: this.sid(spec.source),
+            paint,
+            layout: spec.type === "line" ? { "line-cap": "round", ...spec.layout } : spec.layout ?? {},
+            ...(spec.minzoom !== undefined ? { minzoom: spec.minzoom } : {}),
+          });
+        }
         const mv = (e: any): void => this.move(e);
         const lv = (): void => this.leave();
         map.on("mousemove", lid, mv);
         map.on("mouseleave", lid, lv);
         this.moves.push([lid, mv, lv]);
       }
+      this.syncDomFallback(active.some((s) => s.type === "symbol" && !map.getLayer(this.lid(s))));
     } catch (e) {
       // style still loading: the styledata hook retries
       if (typeof console !== "undefined") console.debug("[aimsun] overlay deferred:", e);
     }
   }
 
+  /** Adds the label layer; false when the basemap cannot draw text (DOM fallback takes over). */
+  private addSymbolLayer(map: MapLike, spec: OverlayLayerSpec, lid: string, paint: Record<string, unknown>): boolean {
+    if (!styleHasGlyphs(map)) return false;
+    let font: string[] = ["Noto Sans Regular"];
+    try { font = resolveLabelFont(map.getStyle?.()?.layers); } catch { /* keep the default */ }
+    const full = { "text-field": labelTextField(), "text-font": font, "text-size": labelSizeExpression(), "text-offset": labelOffsetExpression(), ...LABEL_LAYOUT_BASE, ...spec.layout };
+    const simple = { "text-field": ["get", "name"], "text-font": font, "text-size": 11, "text-offset": [0, -1.2], ...LABEL_LAYOUT_BASE, "symbol-sort-key": ["get", "sk"] };
+    for (const layout of [full, simple]) {
+      try {
+        map.addLayer({ id: lid, type: "symbol", source: this.sid(spec.source), paint, layout, ...(spec.minzoom !== undefined ? { minzoom: spec.minzoom } : {}) });
+        return true;
+      } catch (e) {
+        if (typeof console !== "undefined") console.debug("[aimsun] label layer variant rejected:", e);
+      }
+    }
+    return false;
+  }
+
+  /** (De)activates the HTML label layer used when the style has no glyphs. */
+  private syncDomFallback(on: boolean): void {
+    const map = this.map;
+    if (on === this.domFallback) {
+      if (on) this.renderDomLabels();
+      return;
+    }
+    this.domFallback = on;
+    if (!map) return;
+    if (on) {
+      map.on("move", this.onDomMove);
+      this.renderDomLabels();
+    } else {
+      try { map.off("move", this.onDomMove); } catch { /* map gone */ }
+      this.domEl?.remove();
+      this.domEl = null;
+    }
+  }
+
+  private renderDomLabels(): void {
+    const map = this.map;
+    const spec = this.specs.find((s) => s.type === "symbol" && this.active.has(s.id));
+    if (!map || !spec || !this.domFallback || !map.project || typeof document === "undefined") return;
+    const c = map.getContainer();
+    if (!this.domEl) {
+      this.domEl = document.createElement("div");
+      this.domEl.className = "ao-dom-labels";
+      c.appendChild(this.domEl);
+    }
+    this.domEl.style.display = this.domHidden ? "none" : "block";
+    this.domEl.style.opacity = String(this.opacity);
+    const fc = this.data.get(spec.source) as FC<any> | undefined;
+    const zoom = map.getZoom(), pitch = map.getPitch?.() ?? 0;
+    const byId = new Map<string, any>();
+    const items = (fc?.features ?? []).flatMap((f: any) => {
+      const [lon, lat] = f.geometry?.coordinates ?? [];
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return [];
+      const p = map.project!([lon, lat]);
+      const id = String(f.properties?.id);
+      byId.set(id, f.properties);
+      return [{ id, x: p.x, y: p.y, sk: Number(f.properties?.sk ?? 0), minz: Number(f.properties?.minz ?? 0), lift: liftPx(Number(f.properties?.hm ?? 0), zoom, lat, pitch) }];
+    });
+    const placed = layoutDomLabels(items, zoom, { w: c.clientWidth, h: c.clientHeight });
+    this.domEl.replaceChildren(
+      ...placed.map((p) => {
+        const props = byId.get(p.id) ?? {};
+        const d = document.createElement("div");
+        d.className = "ao-dom-label";
+        d.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px) translate(-50%, -100%)`;
+        const n = document.createElement("div");
+        n.className = "ao-dom-label-name";
+        n.textContent = String(props.name ?? "");
+        const o = document.createElement("span");
+        o.className = "ao-dom-label-out";
+        o.textContent = String(props.out_s ?? "");
+        const i = document.createElement("span");
+        i.className = "ao-dom-label-in";
+        i.textContent = String(props.in_s ?? "");
+        const v = document.createElement("div");
+        v.append(o, " / ", i);
+        d.append(n, v);
+        return d;
+      }),
+    );
+  }
+
   private register(): void {
-    const active = this.specs.filter((s) => this.active.has(s.id));
+    const active = this.specs.filter((s) => this.active.has(s.id) && !(s.type === "symbol" && this.map && !this.map.getLayer(this.lid(s))));
     if (!this.app.registerExternalNativeLayer || !this.map || !active.length) return;
     const first = active[0];
     this.app.registerExternalNativeLayer({
@@ -179,15 +288,18 @@ export class MapOverlay {
       paintBridge: {
         setOpacity: (o) => {
           this.opacity = o;
+          if (this.domEl) this.domEl.style.opacity = String(o);
           for (const s of active) {
             try {
-            this.map?.setPaintProperty(this.lid(s), s.type === "line" ? "line-opacity" : s.type === "circle" ? "circle-opacity" : "fill-extrusion-opacity", this.opacityExpression(s,o));
+            this.map?.setPaintProperty(this.lid(s), opacityKey(s.type), this.opacityExpression(s,o));
             } catch {
               /* layer gone */
             }
           }
         },
         setVisibility: (v) => {
+          this.domHidden = !v;
+          if (this.domEl) this.domEl.style.display = v ? "block" : "none";
           for (const s of active) {
             try {
               this.map?.setLayoutProperty(this.lid(s), "visibility", v ? "visible" : "none");
@@ -250,6 +362,7 @@ export class MapOverlay {
     try {
       m.off("styledata", this.onStyleData);
       m.off("pitch",this.onPitch);
+      m.off("move", this.onDomMove);
       for (const [lid, mv, lv] of this.moves) {
         m.off("mousemove", lid, mv);
         m.off("mouseleave", lid, lv);
@@ -262,6 +375,9 @@ export class MapOverlay {
     }
     this.tip?.remove();
     this.tip = null;
+    this.domEl?.remove();
+    this.domEl = null;
+    this.domFallback = false;
   }
 
   dispose(): void {

@@ -19,6 +19,8 @@
  * Extended observed contract (C9, all nullable, old rows valid): subpath_oid, match_method, seconds_min,
  * seconds_max (SUPPLIED bounds), window_start_s, window_end_s, dateKind ('actual'|'typical'), source_id.
  * Pass `columns` (e.g. from DESCRIBE) to use them; without it the legacy views are produced unchanged.
+ * Extended views also add t_s (v_sp_obs; obs_t_s in v_sp_obs_day): mean clock time of the rows in the bucket in
+ * seconds since midnight, so a time-only observation keeps its exact time (C11 period matching).
  * Extended views add: subpath_oid, match_method, source_id, date_kind (identity, part of the grouping) and
  *   sup_min_s / sup_max_s = SUPPLIED bounds (min of seconds_min / max of seconds_max), window_start_s / window_end_s.
  * `min_s` / `max_s` stay the ACROSS-DAY band (min/max of the daily means): a separate statistic from the supplied
@@ -58,7 +60,8 @@ export function buildSubpathSql(o: SubpathOptions = {}): string {
        ${have.has("seconds_min") ? "MIN(CASE WHEN seconds_min > 0 THEN seconds_min END)" : "CAST(NULL AS DOUBLE)"} AS sup_min_s,
        ${have.has("seconds_max") ? "MAX(CASE WHEN seconds_max > 0 THEN seconds_max END)" : "CAST(NULL AS DOUBLE)"} AS sup_max_s,
        ${have.has("window_start_s") ? "MIN(window_start_s)" : "CAST(NULL AS DOUBLE)"} AS window_start_s,
-       ${have.has("window_end_s") ? "MAX(window_end_s)" : "CAST(NULL AS DOUBLE)"} AS window_end_s`
+       ${have.has("window_end_s") ? "MAX(window_end_s)" : "CAST(NULL AS DOUBLE)"} AS window_end_s,
+       AVG(hour(ts) * 3600 + minute(ts) * 60 + second(ts)) AS obs_t_s`
     : "";
   const idNames = ext ? ", subpath_oid, match_method, source_id, date_kind" : "";
   const dayGroup = ext ? "GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9" : "GROUP BY 1, 2, 3, 4, 5";
@@ -79,7 +82,8 @@ export function buildSubpathSql(o: SubpathOptions = {}): string {
        MIN(sup_min_s) AS sup_min_s,
        MAX(sup_max_s) AS sup_max_s,
        MIN(window_start_s) AS window_start_s,
-       MAX(window_end_s) AS window_end_s`
+       MAX(window_end_s) AS window_end_s,
+       AVG(obs_t_s) AS t_s`
     : "";
   const aggGroup = ext ? "GROUP BY 1, 2, 3, 4, 5, 6, 7, 8" : "GROUP BY 1, 2, 3, 4";
   return `
