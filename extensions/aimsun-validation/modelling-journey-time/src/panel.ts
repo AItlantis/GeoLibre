@@ -26,6 +26,7 @@ import { loadFromFiles, loadFromManifestUrl, subpathRefs, type PackageSummary } 
 import {
   bucketLabel,
   colourScale,
+  legendUsable,
   comparisonMode,
   featuresBounds,
   overlayFeatures,
@@ -612,7 +613,7 @@ export class JourneyTimeController {
       this.updateMap();
     });
     sec.append(
-      el("div", { class: "avp-row" }, col),
+      el("div", { class: "avp-row", "data-avp": "colour-row" }, col),
       el("div", { class: "avp-legend", "data-avp": "legend" }, el("span", { "data-avp": "legend-min" }), el("div", { class: "avp-ramp" }), el("span", { "data-avp": "legend-max" })),
     );
     const secUi = this.sectionControls();
@@ -887,7 +888,8 @@ export class JourneyTimeController {
     const matchedKeys = new Set(this.match.matchedObs.map((m) => m.key));
     const scale = colourScale([...values.values()].filter((v) => matchedKeys.has(v.key)).map((v) => v.value));
     const fc = overlayFeatures({ geo: this.geo, match: this.match, values, source: this.source, bucket: this.bucket, scale });
-    if (this.sectionTarget()) {
+    const sectionActive = this.sectionTarget() !== null;
+    if (sectionActive) {
       const [selRoute, selDir] = this.routeKey.split("\u0000");
       fc.features = fc.features
         .filter((f) => !(f.properties?.route === selRoute && f.properties?.direction === selDir))
@@ -900,6 +902,12 @@ export class JourneyTimeController {
       const d = this.colourBy === "seconds" ? 0 : 2;
       const lo = q("legend-min");
       const hi = q("legend-max");
+      // the section layer owns the selected route's colour (its own speed legend); the seconds/ratio control and
+      // legend only show while route lines are what is coloured, and never for a degenerate scale
+      const colourRow = q("colour-row");
+      const legend = q("legend");
+      if (colourRow) colourRow.hidden = sectionActive;
+      if (legend) legend.hidden = sectionActive || !legendUsable(scale, this.colourBy);
       if (lo) lo.textContent = `${scale.min.toFixed(d)}${unit}`;
       if (hi) hi.textContent = `${scale.max.toFixed(d)}${unit}`;
     }

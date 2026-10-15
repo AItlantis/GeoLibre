@@ -6,6 +6,7 @@ import { subpathRefs } from "../src/pkg.ts";
 import {
   bucketLabel,
   colourScale,
+  legendUsable,
   featuresBounds,
   median,
   NO_DATA_COLOUR,
@@ -121,4 +122,15 @@ test("overlayFeatures: matched subpaths coloured for the bucket; grey where the 
   assert.equal(none.features[0].properties!.jt_s, null);
   assert.deepEqual(featuresBounds(fc), [54.3, 24.4, 54.6, 24.7]);
   assert.equal(featuresBounds({ type: "FeatureCollection", features: [] }), null);
+});
+
+test("legendUsable: never a degenerate '0 s - 1 s' or single-value route legend", () => {
+  assert.equal(legendUsable(colourScale([]), "seconds"), false);
+  assert.equal(legendUsable(colourScale([42]), "seconds"), false);
+  assert.equal(legendUsable(colourScale([42, 42]), "seconds"), false);
+  assert.equal(legendUsable(colourScale([42, 42.5]), "seconds"), false);
+  assert.equal(legendUsable(colourScale([42, 43]), "seconds"), true);
+  assert.equal(legendUsable(colourScale([60, 300, null]), "seconds"), true);
+  assert.equal(legendUsable(colourScale([1, 1]), "ratio"), false);
+  assert.equal(legendUsable(colourScale([0.9, 1.3]), "ratio"), true);
 });

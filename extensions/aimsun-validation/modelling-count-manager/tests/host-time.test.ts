@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { planHostWindow } from "../src/common/host-window.ts";
 import { WHOLE_PERIOD } from "../src/common/sql.ts";
-import { controlsSection } from "../src/common/panel-parts.ts";
+import { controlsSection, statusBanner } from "../src/common/panel-parts.ts";
 import { initialState } from "../src/common/state.ts";
 import { installDomShim } from "./dom-shim.ts";
 
@@ -71,5 +71,41 @@ test("observed source: select only with several sources, a plain text line with 
     }
     // zero sources: the existing (disabled) select is kept
     assert.ok(/Observed source/.test(text(controlsSection(ctxWith([]), true))));
+  } finally { restore(); }
+});
+
+test("host-managed: no Package/Run line and no Reports line; standalone keeps both", () => {
+  const restore = installDomShim();
+  try {
+    const mk = () => {
+      const c = ctxWith([choice("a"), choice("b")]) as unknown as { ctl: { state: Record<string, unknown>; reports: unknown[] } };
+      c.ctl.state.sourceLabel = "jumeira";
+      c.ctl.reports = [{ name: "observed_report.json" }];
+      return c as never;
+    };
+    assert.equal(text(statusBanner(mk(), true)).trim(), "");
+    assert.ok(/Package: jumeira/.test(text(statusBanner(mk(), false))));
+    assert.ok(!/Reports:/.test(text(controlsSection(mk(), true))));
+    assert.ok(/Reports: observed_report.json/.test(text(controlsSection(mk(), false))));
+    const err = mk() as unknown as { ctl: { state: Record<string, unknown> } };
+    err.ctl.state.phase = "error"; err.ctl.state.error = "boom";
+    assert.ok(/boom/.test(text(statusBanner(err as never, true))));
+  } finally { restore(); }
+});
+
+test("legacy observed source (host-managed): plain text with one real source, select with two", () => {
+  const restore = installDomShim();
+  try {
+    const mk = (have: string[]) => {
+      const c = ctxWith(null) as unknown as { ctl: { legacyObsSources: string[] } };
+      c.ctl.legacyObsSources = have;
+      return c as never;
+    };
+    const one = controlsSection(mk(["calibration"]), true) as unknown as { querySelector(s: string): { textContent: string } | null; textContent: string };
+    assert.equal(one.querySelector('[data-testid="observed-source-label"]')?.textContent, "Observed: Calibration");
+    assert.ok(!/Observed source/.test(one.textContent));
+    const two = text(controlsSection(mk(["validation", "calibration"]), true));
+    assert.ok(/Observed source/.test(two) && /Both/.test(two));
+    assert.ok(/Observed source/.test(text(controlsSection(mk(["calibration"]), false))), "standalone unchanged");
   } finally { restore(); }
 });

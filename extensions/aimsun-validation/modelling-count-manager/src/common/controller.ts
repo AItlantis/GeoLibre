@@ -109,6 +109,8 @@ export class DetController {
   sources: ResolvedSource[] | null = null;
   /** Reports listed by the run's manifest (`reports`): exposed read-only, never loaded as tables. */
   reports: ReportRef[] = [];
+  /** Legacy packages: the observed files (validation / calibration) that really hold rows; null = unknown or v2 package. */
+  legacyObsSources: Array<"validation" | "calibration"> | null = null;
   /** Simulated eids shared by several simulated oids -> how many (C8); the others are absent. */
   sharedEids: Map<string, number> = new Map();
   /** Columns of the loaded raw observed table (extended mode). */
@@ -372,6 +374,7 @@ export class DetController {
       this.observed = observed;
       this.sources = meta.sources ? resolveSources(meta.sources, observed) : null;
       this.reports = meta.reports;
+      this.legacyObsSources = null;
       this.obsColumns = [];
       this.probeInfo = null;
       this.sharedEids = new Map();
@@ -397,6 +400,17 @@ export class DetController {
         this.obsColumns = await withLock(async () =>
           (await db.query<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_name = '${t.obs}'`)).map((r) => String(r.column_name)),
         );
+      }
+      if (!this.sources && e.obs) {
+        this.legacyObsSources = await withLock(async () => {
+          try {
+            const rows = await db.query<{ s: string }>(`SELECT DISTINCT source_file AS s FROM ${t.obs} WHERE flow IS NOT NULL`);
+            const have = new Set(rows.map((r) => String(r.s)));
+            return (["validation", "calibration"] as const).filter((k) => have.has(k));
+          } catch {
+            return null;
+          }
+        });
       }
       // keep the user's observed source across runs when the run offers it, else its default
       if (this.sources) {
