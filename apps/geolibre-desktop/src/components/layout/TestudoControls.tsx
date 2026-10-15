@@ -247,8 +247,9 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         return analysisManager.openWithParams(id, params, appApi);
       },
       deactivate: (id: string, appApi: GeoLibreAppAPI) => analysisManager.deactivate(id, appApi),
+      getPlugin: (id: string) => analysisManager.list().find(item => item.id === id) ?? null,
     };
-    const analysis = new TestudoAnalysisController(analysisHost, app, status => emit("testudoAnalysisStatus", status));
+    const analysis = new TestudoAnalysisController(analysisHost, app, status => emit("testudoAnalysisStatus", status), Date.now, info => emit("testudoAnalysisInfo", info));
     const featureBridge = new plugins.TestudoFeatureBridge((packageBootstrap) => ({
       open: async (_bootstrap, context) => {
         plugins.setVehiclePlaybackLiveDiagnosticsGeneration(context.generation);
@@ -1437,12 +1438,13 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           return featureBridge.setActiveTView("main");
         }
         if (request.type === "testudoGetActiveTView") return featureBridge.getActiveTView();
-        if (request.type === "testudoOpenAnalysis" || request.type === "testudoCloseAnalysis" || request.type === "testudoRefreshAnalysisGrant") {
+        if (request.type === "testudoOpenAnalysis" || request.type === "testudoCloseAnalysis" || request.type === "testudoRefreshAnalysisGrant" || request.type === "testudoSetAnalysisTime") {
           // Not under the command gate: closing must stay possible while an open is still loading.
           if (commandGate.packageBusy) throw new Error("The viewer is loading a package. Please wait.");
           if (guestCredential) throw new Error("Analysis is not available to guest sessions.");
           if (request.type === "testudoCloseAnalysis") return analysis.close(request.payload);
           if (request.type === "testudoRefreshAnalysisGrant") return analysis.refreshGrant(request.payload);
+          if (request.type === "testudoSetAnalysisTime") return analysis.setTime(request.payload);
           if (!current.package) throw new Error("Select a package first.");
           return await analysis.open(request.payload);
         }

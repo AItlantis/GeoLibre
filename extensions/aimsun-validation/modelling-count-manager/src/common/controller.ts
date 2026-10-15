@@ -26,6 +26,8 @@ import {
   type PackageIndex,
   type RunEntry,
 } from "./package-source.ts";
+import { planHostWindow, type HostWindowPlan } from "./host-window.ts";
+import type { HostTimeWindow } from "../../../_shared/src/host-time.ts";
 import { initialState, reduce, type Action, type PanelState } from "./state.ts";
 import type { ComparisonRun } from "./comparison.ts";
 import {
@@ -498,6 +500,30 @@ export class DetController {
   setWindow(fromMin: number, toMin: number): void {
     this.dispatch({ type: "set-window", fromMin, toMin });
     void this.refresh();
+  }
+
+  /** Period (seconds) spanned by the detector intervals (min/max) and the interval length; null before the run is probed. */
+  period(): { start_s: number; end_s: number; interval_s: number } | null {
+    const p = this.probeInfo;
+    return p ? { start_s: p.start * 60, end_s: p.end * 60, interval_s: p.dur * 60 } : null;
+  }
+
+  /** Host-managed window: map seconds to the window (snapped to the data interval) plus the auto bucket; one refresh. Returns the plan applied (null while not probed). */
+  setHostWindow(win: HostTimeWindow): HostWindowPlan | null {
+    const period = this.period();
+    if (!period || this.state.phase !== "ready") return null;
+    const plan = planHostWindow(win, period, this.state.bucketOptions);
+    const s = this.state;
+    if (plan.fromMin === s.fromMin && plan.toMin === s.toMin && plan.bucket === s.bucket) return plan;
+    this.dispatch({ type: "set-bucket", bucket: plan.bucket });
+    this.setWindow(plan.fromMin, plan.toMin);
+    return plan;
+  }
+
+  /** Bucket length (s) currently in effect. */
+  bucketSeconds(): number {
+    const s = this.state;
+    return s.bucket === WHOLE_PERIOD ? (s.toMin - s.fromMin) * 60 : s.bucket * 60;
   }
 
   setBucket(bucket: number): void {

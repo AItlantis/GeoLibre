@@ -5,10 +5,16 @@
  * A hover tooltip (section id, travel time, delay, speed) is a plain DOM node in the map container.
  */
 import type { GeoJSONFC, HostApp, HostMapLike } from "./host";
+import { zoomCasingWidth, zoomLineWidth } from "./linePaint";
+import { SECTION_LINE_WIDTH } from "./sections";
 
 export const SECTIONS_SRC = "aimsun-jt-sections";
 export const SECTIONS_CASING = "aimsun-jt-sections-casing";
 export const SECTIONS_LINE = "aimsun-jt-sections-line";
+
+/** Paint of the casing / line layers: constant base width (section length is visible on the map), zoom-aligned for tilted maps. */
+export const sectionCasingPaint = (): Record<string, unknown> => ({ "line-color": "#ffffff", "line-width": zoomCasingWidth(SECTION_LINE_WIDTH), "line-opacity": 0.85 });
+export const sectionLinePaint = (): Record<string, unknown> => ({ "line-color": ["get", "stroke"], "line-width": zoomLineWidth(SECTION_LINE_WIDTH), "line-opacity": 1 });
 
 export class SectionOverlay {
   private map: HostMapLike | null = null;
@@ -45,14 +51,14 @@ export class SectionOverlay {
         map.addLayer({
           id: SECTIONS_CASING, type: "line", source: SECTIONS_SRC,
           layout: { "line-cap": "round", "line-join": "round" },
-          paint: { "line-color": "#ffffff", "line-width": 9, "line-opacity": 0.85 },
+          paint: sectionCasingPaint(),
         });
       }
       if (!map.getLayer(SECTIONS_LINE)) {
         map.addLayer({
           id: SECTIONS_LINE, type: "line", source: SECTIONS_SRC,
           layout: { "line-cap": "butt", "line-join": "round" },
-          paint: { "line-color": ["get", "stroke"], "line-width": 6, "line-opacity": 1 },
+          paint: sectionLinePaint(),
         });
       }
       if (!this.listening) {

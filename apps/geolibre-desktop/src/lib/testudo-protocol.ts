@@ -1,4 +1,4 @@
-import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoBootstrap, TestudoCapabilityId, TestudoCloseAnalysis, TestudoDemoMode, TestudoOpenAnalysis, TestudoRefreshAnalysisGrant } from "@geolibre/embed";
+import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoBootstrap, TestudoCapabilityId, TestudoCloseAnalysis, TestudoDemoMode, TestudoOpenAnalysis, TestudoRefreshAnalysisGrant, TestudoSetAnalysisTime } from "@geolibre/embed";
 
 /** Analyse capability id -> the drop-in plugin it opens (contract C3). */
 export const TESTUDO_ANALYSIS_PLUGIN_IDS: Record<TestudoAnalysisCapabilityId, TestudoAnalysisPluginId> = {
@@ -16,7 +16,7 @@ export function isTestudoAnalysisPluginId(value: unknown): value is TestudoAnaly
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings", "analysis-counts", "analysis-od", "analysis-journey-time"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPanels", "testudoSetPresentSuspended", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis", "testudoRefreshAnalysisGrant"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPanels", "testudoSetPresentSuspended", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis", "testudoRefreshAnalysisGrant", "testudoSetAnalysisTime"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density", "results", "comparison", "environment"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -196,6 +196,17 @@ export function isRefreshAnalysisGrantPayload(payload: unknown): payload is Test
     && base !== null && String(value.baseUrl).endsWith("/") && !base.search && !base.hash && analysisExpiryMs(value.expiresAt) !== null;
 }
 
+/** Strict testudoSetAnalysisTime payload (challenge is checked by the caller): finite seconds, from_s <= cursor_s < to_s, positive generation. */
+export function isSetAnalysisTimePayload(payload: unknown): payload is TestudoSetAnalysisTime & { challenge: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const value = payload as Record<string, unknown>;
+  const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+  return Object.keys(value).every(key => ["challenge", "plugin", "generation", "from_s", "to_s", "cursor_s"].includes(key))
+    && isTestudoAnalysisPluginId(value.plugin) && Number.isSafeInteger(value.generation) && Number(value.generation) >= 1
+    && finite(value.from_s) && finite(value.to_s) && finite(value.cursor_s)
+    && value.from_s <= value.cursor_s && value.cursor_s < value.to_s;
+}
+
 export function isCloseAnalysisPayload(payload: unknown): payload is TestudoCloseAnalysis & { challenge: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
@@ -255,6 +266,7 @@ export function acceptsTestudoMessage(event: Pick<MessageEvent, "source" | "orig
   if (request.type === "testudoOpenAnalysis") return request.payload?.challenge === challenge && isOpenAnalysisPayload(request.payload);
   if (request.type === "testudoRefreshAnalysisGrant") return request.payload?.challenge === challenge && isRefreshAnalysisGrantPayload(request.payload);
   if (request.type === "testudoCloseAnalysis") return request.payload?.challenge === challenge && isCloseAnalysisPayload(request.payload);
+  if (request.type === "testudoSetAnalysisTime") return request.payload?.challenge === challenge && isSetAnalysisTimePayload(request.payload);
   if (request.type === "testudoOpenLocalPackage") {
     const payload = request.payload;
     if (!payload || typeof payload !== "object" || payload.challenge !== challenge || payload.tviewId !== "main"

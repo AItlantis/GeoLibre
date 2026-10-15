@@ -1,3 +1,4 @@
+import type { HostInfoCallback, HostTimeWindow } from "../../_shared/src/host-time";
 /**
  * Minimal structural subset of GeoLibre's plugin contract (packages/plugins/src/types.ts), kept local
  * because a drop-in plugin is built outside the monorepo's TypeScript project. Every member used here
@@ -48,6 +49,10 @@ export interface HostPlugin {
   deactivate: (app: HostApp) => void;
   handleUrlParameters?: (app: HostApp, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
   setRun?: (run: string) => Promise<boolean>;
+  /** Host-driven time (C15): window + cursor in seconds since midnight. */
+  setTimeWindow?: (win: HostTimeWindow) => void;
+  /** Host callback receiving the plugin's period / bucket / tab / busy info (C15); null detaches. */
+  onHostInfo?: (cb: HostInfoCallback | null) => void;
   getProjectState?: () => unknown;
   applyProjectState?: (app: HostApp, state: unknown) => boolean | void;
 }

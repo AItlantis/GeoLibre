@@ -202,7 +202,7 @@ describe("TestudoAnalysisController", () => {
     const status = await c.open(open("modelling-count-manager", 1));
     assert.deepEqual(status, { plugin: "modelling-count-manager", status: "open", run: "run1", generation: 1 });
     assert.deepEqual(opens, [{ id: "modelling-count-manager", params: { aimsunPackage: MANIFEST, aimsunRun: "run1", aimsunHost: "testudo" } }]);
-    assert.deepEqual(events, [status]);
+    assert.deepEqual(events, [{ plugin: "modelling-count-manager", status: "loading", run: "run1", generation: 1 }, status]);
     assert.equal(c.isOpen("modelling-count-manager"), true);
     assert.equal(c.isOpen("modelling-od-trips"), false);
   });
@@ -498,8 +498,8 @@ describe("Load semantics: failed loads are errors, not opens", () => {
         assert.equal(c.isOpen(plugin), false);
         assert.equal(manager.isActive(plugin), false, "half-open panel was deactivated");
         assert.ok(log.includes(`deactivate:${plugin}`));
-        assert.deepEqual(events.map(e => e.status), ["error"]);
-        assert.ok(events[0].error);
+        assert.deepEqual(events.map(e => e.status), ["loading", "error"]);
+        assert.ok(events[1].error);
       } finally { restore(); }
     });
     it(`${label}: a malformed manifest answers error`, async () => {
@@ -508,7 +508,7 @@ describe("Load semantics: failed loads are errors, not opens", () => {
         const { c, events } = bridge([]);
         await assert.rejects(c.open(open(plugin, 1)));
         assert.equal(c.isOpen(plugin), false);
-        assert.deepEqual(events.map(e => e.status), ["error"]);
+        assert.deepEqual(events.map(e => e.status), ["loading", "error"]);
       } finally { restore(); }
     });
     it(`${label}: a manifest without usable runs answers error with the plugin's message`, async () => {

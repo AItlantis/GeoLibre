@@ -36,3 +36,19 @@ test("duckdb helpers", () => {
   const urls = defaultWasmUrls(); // no document in node -> CDN only
   assert.ok(urls[urls.length - 1].includes("1.33.1-dev57.0"));
 });
+
+test("stackedBarSvg: compact height, 0-100 axis ticks every 25, axis title, legend values, labelled target", async () => {
+  const { stackedBarSvg, SHARE_H, CHART_H } = await import("../src/charts.ts");
+  const svg = stackedBarSvg([
+    { label: "Pass", value: 60, color: "#2e7d32" },
+    { label: "Warn", value: 25, color: "#f9a825" },
+    { label: "Fail", value: 15, color: "#c62828" },
+  ], 85);
+  assert.ok(SHARE_H >= 90 && SHARE_H <= 110 && SHARE_H < CHART_H);
+  assert.ok(svg.includes(`viewBox="0 0 560 ${SHARE_H}"`));
+  for (const tick of [0, 25, 50, 75, 100]) assert.ok(svg.includes(`>${tick}</text>`), `tick ${tick}`);
+  assert.ok(svg.includes("Share of detectors (%)"));
+  for (const l of ["Pass 60%", "Warn 25%", "Fail 15%"]) assert.ok(svg.includes(l), l);
+  assert.ok(svg.includes("Target 85%"));
+  assert.ok(stackedBarSvg([], 85, "x", { xTitle: "Part (%)", targetLabel: "Cible 85%" }).includes("Cible 85%"));
+});

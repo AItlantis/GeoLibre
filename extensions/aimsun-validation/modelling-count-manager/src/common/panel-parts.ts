@@ -126,18 +126,28 @@ export function controlsSection(ctx: Ctx, hostManaged = false): HTMLElement {
   );
   for (const c of [run, from, to, bucket]) c.disabled = disabled;
   obs.disabled = disabled || !ctl.hasObsData;
+  // C2: a select only with more than one observed source; exactly one = plain text; none = the existing disabled select
+  const single = choices && choices.length === 1 ? choices[0] : null;
+  const obsField = single
+    ? el("p", { class: "av-hint av-span", attrs: { "data-testid": "observed-source-label" }, text: t("ctl.obsSource.single", "Observed: {{name}}", { name: single.kind === "all" ? t("ctl.obs.all", "All comparable sources") : sourceLabel(single.source as ResolvedSource) }) })
+    : field(t("ctl.obsSource", "Observed source"), obs);
   return el("section", { class: "av-section av-grid" }, [
     ...(ui.showRunSelector ? [field(t("ctl.run", "Run"), run)] : []),
-    field(t("ctl.obsSource", "Observed source"), obs),
-    field(t("ctl.from", "From"), from),
-    field(t("ctl.to", "To"), to),
-    field(t("ctl.bucket", "Bucket"), bucket),
-    el("p", {
-      class: "av-hint av-span",
-      text: t("ctl.bucketNote", "Buckets are whole multiples of the {{n}}-minute interval shared by the simulation and the observations; Whole period is the From-To span rounded to complete intervals.", {
-        n: ctl.bucketStepMin,
-      }),
-    }),
+    obsField,
+    // host-managed (Testudo owns the time window and derives the bucket): no From / To / Bucket and no bucket hint
+    ...(hostManaged
+      ? []
+      : [
+          field(t("ctl.from", "From"), from),
+          field(t("ctl.to", "To"), to),
+          field(t("ctl.bucket", "Bucket"), bucket),
+          el("p", {
+            class: "av-hint av-span",
+            text: t("ctl.bucketNote", "Buckets are whole multiples of the {{n}}-minute interval shared by the simulation and the observations; Whole period is the From-To span rounded to complete intervals.", {
+              n: ctl.bucketStepMin,
+            }),
+          }),
+        ]),
     ...(ctl.validationReason
       ? [el("p", { class: "av-alert av-warn av-span", attrs: { role: "status", "data-testid": "validation-reason" }, text: t("ctl.obs.disabledReason", "Validation and Comparison are disabled for this observed source ({{reason}}). It is shown in the day profile only.", { reason: ctl.validationReason }) })]
       : []),

@@ -6,8 +6,9 @@
  * Old Point-only packages: one circle layer (dots) exactly as before. Packages with detector
  * coverage (contract C6/C14) additionally get, from one extra GeoJSON source: direction glyphs
  * at ALL zooms (SDF arrow rotated by bearing_deg, neutral diamond for bidirectional / mixed /
- * unknown / no bearing), sized in screen pixels (metric ramp), de-cluttered below z15 by symbol
- * collision (largest flow wins), plus the coverage fill + outline (real metres) from z15.5.
+ * unknown / no bearing), sized in screen pixels (metric ramp, larger at low zoom), never hidden by
+ * collision (biggest flow drawn on top, small perpendicular offset so opposite directions at one
+ * position stay readable, white casing), flat on the ground so a pitched map keeps them aligned, plus the coverage fill + outline (real metres) from z15.5.
  * Dots are then drawn only for detectors that have no coverage (no double drawing).
  * Hover/click use one bbox query around the pointer so tiny or overlapped symbols are hit.
  */
@@ -33,8 +34,7 @@ const NONE = "\u0000none";
 const EMPTY_COVERAGE: CoverageCollection = { type: "FeatureCollection", features: [] };
 
 /**
- * Zoom stops. Glyphs have no minzoom (all zooms); below `overlapMin` they collide (allow-overlap
- * false), from there on every glyph is drawn. Coverage polygons appear from `covMin`.
+ * Zoom stops. Glyphs have no minzoom and no collision hiding (every glyph is drawn at every zoom). Coverage polygons appear from `covMin`.
  */
 export const ZOOM = { covMin: 15, overlapMin: 15, fillStart: 15.5, fillEnd: 17, focus: 17.5 } as const;
 /** Pointer tolerance (CSS px) of the hit-test box around the cursor. */
@@ -67,34 +67,53 @@ export function coverageLineWidth(radius: unknown): unknown {
   const s = scaleOf(radius);
   return zoomInterp(16, ["*", 0.6, s], 19, ["*", 1.4, s], 21, ["*", 2.4, s]);
 }
+/** Glyph size multipliers per zoom (x the 24 CSS px glyph box x the clamped metric scale). */
+export const ARROW_SIZE_STOPS: ReadonlyArray<readonly [number, number]> = [[8, 0.95], [10, 1.0], [12, 1.0], [14, 0.95], [15, 0.8], [18, 0.75], [21, 0.9]];
 /**
- * Glyph size in SCREEN pixels (icon-size multiplies the 32 CSS px glyph box, never metres): the
- * arrow is ~10 px tall at the smallest ramp value and ~15 px at the middle of the ramp at z12,
- * growing mildly with zoom. `boost` enlarges the selected-detector underlay.
+ * Glyph size in SCREEN pixels (icon-size multiplies the 24 CSS px glyph box, never metres): at z<=14
+ * the arrow is at least ~14 px tall (about 24 px in the middle of the ramp), easing to a smaller
+ * glyph from z15 where the coverage polygon takes over, then growing mildly. `boost` enlarges the
+ * selected-detector underlay.
  */
 export function arrowSize(radius: unknown, boost = 1): unknown {
   const s = glyphScaleOf(radius);
   const k = (v: number): unknown => ["*", v * boost, s];
-  return zoomInterp(8, k(0.45), 10, k(0.5), 12, k(0.62), 15, k(0.7), 18, k(0.75), 21, k(0.9));
+  return zoomInterp(...ARROW_SIZE_STOPS.flatMap(([z, v]) => [z, k(v)]));
 }
 /** Constant opacity (no zoom fade): glyphs are visible at every zoom. */
 export function arrowOpacity(opacity: number): unknown {
   return opacity;
 }
-/** Collision on below z15 (density control), everything drawn from z15 on. */
+/** Every arrow is drawn at every zoom: no collision hiding. */
 export function arrowAllowOverlap(): unknown {
-  return ["step", ["zoom"], false, ZOOM.overlapMin, true];
+  return true;
 }
-/** A placed glyph only blocks others while collision is on (an ignored placement skips the collision index). */
 export function arrowIgnorePlacement(): unknown {
-  return ["step", ["zoom"], false, ZOOM.overlapMin, true];
+  return true;
 }
 export function arrowPadding(): unknown {
-  return ["step", ["zoom"], 3, ZOOM.overlapMin, 0];
+  return 0;
 }
-/** Lower key is placed first and so wins a collision: negate the size (radius) ramp, else the simulated flow. */
+/** White casing (SDF halo) width: thick at low zoom where arrows overlap, thin once the polygon is drawn. */
+export function arrowHaloWidth(): unknown {
+  return zoomInterp(8, 2.4, 14, 2, 16, 1.2, 18, 1);
+}
+/**
+ * Offset (icon-size units, so it scales with the glyph) to the RIGHT of the travel direction: the
+ * icon offset is rotated with the icon, so two arrows at one position pointing in opposite
+ * directions land on opposite sides of the road instead of cancelling. Fades out at the focus zoom.
+ */
+export function arrowOffset(): unknown {
+  return zoomInterp(8, ["literal", [5, 0]], 14, ["literal", [5, 0]], 16, ["literal", [3, 0]], ZOOM.focus, ["literal", [0, 0]]);
+}
+/** Arrows lie on the ground and turn with the map: they stay aligned with the road when the map is pitched or rotated. */
+export const ARROW_ALIGNMENT = Object.freeze({ rotation: "map", pitch: "map" } as const);
+/**
+ * Draw order: with overlap allowed, a LOWER key is drawn first (below), so the biggest flow (the
+ * size ramp, else the simulated flow) must have the HIGHEST key to end up on top.
+ */
 export function arrowSortKey(radius: unknown): unknown {
-  return typeof radius === "number" ? ["*", -1, ["to-number", ["get", "sim"], 0]] : ["*", -1, radius];
+  return typeof radius === "number" ? ["to-number", ["get", "sim"], 0] : radius;
 }
 /** Selected-detector outline filter (area features of one eid). */
 export function selectedAreaFilter(eid: string | null): unknown {
@@ -376,7 +395,7 @@ export class DetectorMapLayer {
           "icon-size": arrowSize(radius),
           "symbol-sort-key": this.sortKey(),
         },
-        paint: { "icon-color": color, "icon-opacity": arrowOpacity(this.opacity), "icon-halo-color": "#ffffff", "icon-halo-width": 1 },
+        paint: { "icon-color": color, "icon-opacity": arrowOpacity(this.opacity), "icon-halo-color": "#ffffff", "icon-halo-width": arrowHaloWidth() },
       });
     }
     return true;
@@ -386,8 +405,9 @@ export class DetectorMapLayer {
     return {
       "icon-image": ["match", ["get", "glyph"], "arrow", this.arrowImg, this.neutralImg],
       "icon-rotate": ["to-number", ["get", "bearing_deg"], 0],
-      "icon-rotation-alignment": "map",
-      "icon-pitch-alignment": "map",
+      "icon-rotation-alignment": ARROW_ALIGNMENT.rotation,
+      "icon-pitch-alignment": ARROW_ALIGNMENT.pitch,
+      "icon-offset": arrowOffset(),
     };
   }
 
@@ -591,7 +611,7 @@ export const DIVERGING_STOPS = ["#2166ac", "#f7f7f7", "#b2182b"] as const;
 export const GLYPH_BOX_PX = 24;
 /** Rendered glyph height for a radius-ramp value at a zoom (default z12), mirroring arrowSize(). */
 export function glyphHeightPx(radius: number, zoom = 12): number {
-  const stops: Array<[number, number]> = [[8, 0.45], [10, 0.5], [12, 0.62], [15, 0.7], [18, 0.75], [21, 0.9]];
+  const stops = ARROW_SIZE_STOPS;
   let k = stops[0][1];
   for (let i = 0; i < stops.length; i++) {
     if (zoom >= stops[i][0]) k = stops[i][1];

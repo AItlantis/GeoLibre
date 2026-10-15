@@ -6,9 +6,18 @@
  * Layers panel uses app.addGeoJsonLayer (features carry simplestyle `stroke`, which the host honours).
  */
 import type { GeoJSONFC, HostApp, HostMapLike } from "./host";
+import { zoomCasingWidth, zoomLineWidth } from "./linePaint";
 
 const SRC = "aimsun-jt-overlay";
 const LYR = "aimsun-jt-overlay-line";
+export const OVERLAY_CASING = "aimsun-jt-overlay-casing";
+
+const WIDTH = ["coalesce", ["get", "stroke-width"], 4];
+const OPACITY = ["coalesce", ["get", "stroke-opacity"], 0.9];
+
+/** Paint of the casing / line layers (exported for tests). */
+export const overlayCasingPaint = (): Record<string, unknown> => ({ "line-color": "#ffffff", "line-width": zoomCasingWidth(WIDTH as unknown[]), "line-opacity": ["*", OPACITY, 0.7] });
+export const overlayLinePaint = (): Record<string, unknown> => ({ "line-color": ["get", "stroke"], "line-width": zoomLineWidth(WIDTH as unknown[]), "line-opacity": OPACITY });
 
 export class MapOverlay {
   private map: HostMapLike | null = null;
@@ -42,14 +51,11 @@ export class MapOverlay {
       const src = map.getSource(SRC) as { setData?: (d: unknown) => void } | undefined;
       if (src?.setData) src.setData(fc);
       else map.addSource(SRC, { type: "geojson", data: fc });
+      if (!map.getLayer(OVERLAY_CASING)) {
+        map.addLayer({ id: OVERLAY_CASING, type: "line", source: SRC, layout: { "line-cap": "round", "line-join": "round" }, paint: overlayCasingPaint() });
+      }
       if (!map.getLayer(LYR)) {
-        map.addLayer({
-          id: LYR,
-          type: "line",
-          source: SRC,
-          layout: { "line-cap": "round", "line-join": "round" },
-          paint: { "line-color": ["get", "stroke"], "line-width": ["coalesce", ["get", "stroke-width"], 4], "line-opacity": ["coalesce", ["get", "stroke-opacity"], 0.9] },
-        });
+        map.addLayer({ id: LYR, type: "line", source: SRC, layout: { "line-cap": "round", "line-join": "round" }, paint: overlayLinePaint() });
       }
     } catch {
       /* the style may be mid-reload: onStyle retries on the next styledata */
@@ -67,6 +73,7 @@ export class MapOverlay {
     if (map) {
       try {
         if (map.getLayer(LYR)) map.removeLayer(LYR);
+        if (map.getLayer(OVERLAY_CASING)) map.removeLayer(OVERLAY_CASING);
         if (map.getSource(SRC)) map.removeSource(SRC);
       } catch {
         /* map already torn down */

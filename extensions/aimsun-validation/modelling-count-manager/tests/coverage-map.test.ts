@@ -16,7 +16,10 @@ import {
 } from "../src/common/geo.ts";
 import { ARROW_POLYGON, GLYPH_SIZE, makeArrowImage, makeNeutralImage } from "../src/common/glyphs.ts";
 import {
+  ARROW_ALIGNMENT,
   arrowAllowOverlap,
+  arrowHaloWidth,
+  arrowOffset,
   arrowIgnorePlacement,
   arrowOpacity,
   arrowPadding,
@@ -521,46 +524,71 @@ test("arrow layer: no minzoom/maxzoom, constant opacity, screen-pixel size expre
   assert.deepEqual(size.slice(0, 3), ["interpolate", ["linear"], ["zoom"]]);
   const flat = JSON.stringify(size);
   assert.ok(!/meter|metre|pitch|ln2|"\*",\s*"zoom"/i.test(flat), "no metres-to-pixels (2^zoom) conversion: the size is in screen px");
-  // legible by z10..z14: 14-18 CSS px at z12 for a mid-ramp (radius 8) detector, mild growth afterwards
+  // easy to see at low zoom: >= 13 px even for the smallest ramp value, ~24 px mid-ramp at z12, smaller once the polygon takes over
   const px12 = glyphHeightPx(8, 12);
-  assert.ok(px12 >= 13 && px12 <= 18, `z12 mid glyph is ${px12}px`);
-  assert.ok(glyphHeightPx(8, 10) >= 10 && glyphHeightPx(8, 14) <= 20);
-  assert.ok(glyphHeightPx(8, 21) > glyphHeightPx(8, 12) && glyphHeightPx(8, 21) < 2 * glyphHeightPx(8, 12), "mild growth");
+  assert.ok(px12 >= 22 && px12 <= 28, `z12 mid glyph is ${px12}px`);
+  for (const z of [8, 10, 12, 14]) assert.ok(glyphHeightPx(3, z) >= 13, `z${z} smallest glyph is ${glyphHeightPx(3, z)}px`);
+  assert.ok(glyphHeightPx(8, 21) < glyphHeightPx(8, 12) && glyphHeightPx(8, 21) > glyphHeightPx(8, 15) - 1, "polygon takes over, mild growth after z15");
   // the metric ramp (radius) still drives the size
   assert.ok(glyphHeightPx(16, 12) > glyphHeightPx(8, 12) && glyphHeightPx(8, 12) > glyphHeightPx(3, 12));
   assert.equal(JSON.stringify(arrowSize(STYLE.radius)).includes("sqrt"), true, "radius ramp is embedded");
   assert.equal(arrows.paint["icon-color"], STYLE.color);
 });
 
-test("density control: collision below z15, everything drawn from z15; padding and ignore-placement follow", () => {
+test("density control: NO collision hiding at any zoom (every arrow drawn)", () => {
   const { map, layer } = mount();
   const { fc, coverage } = c6Data();
   layer.update(fc, STYLE, coverage);
   const l = map.layers.get("cm-arrows")!.layout;
-  assert.deepEqual(l["icon-allow-overlap"], ["step", ["zoom"], false, 15, true]);
-  assert.deepEqual(l["icon-ignore-placement"], ["step", ["zoom"], false, 15, true], "placed glyphs must enter the collision index below z15");
-  assert.deepEqual(l["icon-padding"], arrowPadding());
-  assert.equal(ZOOM.overlapMin, 15);
-  // evaluate the step like MapLibre does
-  const stepAt = (e: any[], z: number) => (z >= e[3] ? e[4] : e[2]);
-  assert.equal(stepAt(arrowAllowOverlap() as any[], 14.99), false);
-  assert.equal(stepAt(arrowAllowOverlap() as any[], 15), true);
-  assert.equal(stepAt(arrowIgnorePlacement() as any[], 8), false);
-  assert.equal(stepAt(arrowPadding() as any[], 10) > 0 && stepAt(arrowPadding() as any[], 16) === 0, true);
+  assert.equal(l["icon-allow-overlap"], true);
+  assert.equal(l["icon-ignore-placement"], true);
+  assert.equal(l["icon-padding"], 0);
+  assert.equal(arrowAllowOverlap(), true);
+  assert.equal(arrowIgnorePlacement(), true);
+  assert.equal(arrowPadding(), 0);
 });
 
-test("symbol-sort-key: the largest flow/size wins a collision (lower key placed first)", () => {
+test("symbol-sort-key: the biggest flow is drawn on top (higher key drawn last)", () => {
   const { map, layer } = mount();
   const { fc, coverage } = c6Data();
   layer.update(fc, STYLE, coverage);
   const key = map.layers.get("cm-arrows")!.layout["symbol-sort-key"];
-  assert.deepEqual(key, ["*", -1, STYLE.radius]);
-  assert.deepEqual(arrowSortKey(6), ["*", -1, ["to-number", ["get", "sim"], 0]], "constant radius (validation/comparison): by simulated flow");
-  // an explicit key wins (e.g. worst GEH first)
-  const custom = ["*", -1, ["get", "geh"]];
+  assert.deepEqual(key, STYLE.radius, "size ramp ascending: biggest last = on top");
+  assert.deepEqual(arrowSortKey(6), ["to-number", ["get", "sim"], 0], "constant radius (validation/comparison): by simulated flow");
+  const custom = ["get", "geh"];
   const m2 = mount();
   m2.layer.update(fc, { ...STYLE, sortKey: custom }, coverage);
   assert.deepEqual(m2.map.layers.get("cm-arrows")!.layout["symbol-sort-key"], custom);
+});
+
+test("arrows: casing halo thick at low zoom, perpendicular offset to the right of travel, fades at the focus zoom", () => {
+  assert.deepEqual(arrowHaloWidth(), ["interpolate", ["linear"], ["zoom"], 8, 2.4, 14, 2, 16, 1.2, 18, 1]);
+  const off = arrowOffset() as any[];
+  assert.deepEqual(off.slice(0, 3), ["interpolate", ["linear"], ["zoom"]]);
+  assert.deepEqual(off[4], ["literal", [5, 0]], "x = to the right of the (rotated) icon");
+  assert.deepEqual(off.at(-1), ["literal", [0, 0]]);
+  assert.equal(off.at(-2), ZOOM.focus);
+  const { map, layer } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  const arrows = map.layers.get("cm-arrows")!;
+  assert.deepEqual(arrows.layout["icon-offset"], arrowOffset());
+  assert.deepEqual(arrows.paint["icon-halo-width"], arrowHaloWidth());
+  assert.equal(arrows.paint["icon-halo-color"], "#ffffff");
+  assert.deepEqual(map.layers.get("cm-arrows-sel")!.layout["icon-offset"], arrowOffset(), "the selection underlay stays aligned with its arrow");
+});
+
+test("pitched (tilted 2D) map: arrows lie on the ground and rotate with the map, bearing is the geographic heading", () => {
+  assert.deepEqual({ ...ARROW_ALIGNMENT }, { rotation: "map", pitch: "map" });
+  const { map, layer } = mount();
+  const { fc, coverage } = c6Data();
+  layer.update(fc, STYLE, coverage);
+  for (const id of ["cm-arrows", "cm-arrows-sel"]) {
+    const l = map.layers.get(id)!.layout;
+    assert.equal(l["icon-rotation-alignment"], "map");
+    assert.equal(l["icon-pitch-alignment"], "map");
+    assert.deepEqual(l["icon-rotate"], ["to-number", ["get", "bearing_deg"], 0]);
+  }
 });
 
 test("dots only for detectors without a coverage glyph; old Point-only packages draw every dot with no filter", () => {
