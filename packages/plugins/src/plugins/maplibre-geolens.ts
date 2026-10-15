@@ -65,6 +65,7 @@ import {
   type GeoLensFeatureBaseline,
   type GeoLensFetch,
 } from "./geolens-api";
+import { setGeoLensProjectState, snapshotGeoLensProjectState } from "./geolens-project-state";
 
 export const GEOLENS_PLUGIN_ID = "maplibre-gl-geolens";
 
@@ -2254,6 +2255,13 @@ function createGeoLensPlugin(config: GeoLensPluginConfig): GeoLibrePlugin {
     // Public rasters and vector data are store layers; only a keyed raster
     // needs MapLibre's request transform (see registerRasterApiKey).
     engines: ["maplibre", "mapbox", "arcgis", "cesium"],
+    // The publish keys are project data, so a project without them must not
+    // inherit the previous project's.
+    clearsStateOnProjectLoad: true,
+    getProjectState: snapshotGeoLensProjectState,
+    applyProjectState: (_app: GeoLibreAppAPI, value: unknown) => {
+      setGeoLensProjectState(value);
+    },
     activate: (app: GeoLibreAppAPI) => {
       appRef = app;
       mountedPanels.add(remount);
