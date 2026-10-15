@@ -1,5 +1,5 @@
-import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate, TestudoArtifactFetcher, TestudoArtifactRequest, TestudoTViewInfo, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter } from "./testudo";
-export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoStyle, TestudoViewModeMetadata, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter } from "./testudo";
+import type { TestudoLoadPackage, TestudoViewerState, TestudoSelectablePluginId, TestudoDemoMode, TestudoSetGuestCapability, TestudoGeoAiInvestigationUpdate, TestudoArtifactFetcher, TestudoArtifactRequest, TestudoTViewInfo, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter, TestudoOpenAnalysis, TestudoCloseAnalysis, TestudoRefreshAnalysisGrant, TestudoAnalysisStatus } from "./testudo";
+export type { TestudoLoadPackage, TestudoViewerState, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoBootstrap, TestudoCapability, TestudoStyle, TestudoViewModeMetadata, TestudoSetGuestCapability, TestudoGeoAiInvestigationSummary, TestudoGeoAiInvestigationUpdate, TestudoInvestigationSectionSummary, TestudoArtifactFetcher, TestudoArtifactFetchRequest, TestudoArtifactRequest, TestudoTViewInfo, TestudoActiveTView, TestudoScopedPayload, TestudoCameraView, TestudoPlaybackState, TestudoGeoAIRequest, TestudoGeoAIReply, TestudoKpiGeometry, TestudoKpiGeometryState, TestudoMapControlState, TestudoNetworkFilter, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoAnalysisBootstrap, TestudoAnalysisRun, TestudoAnalysisPluginAvailability, TestudoOpenAnalysis, TestudoCloseAnalysis, TestudoRefreshAnalysisGrant, TestudoAnalysisStatus, TestudoPanels, TestudoSetPanels, TestudoSetPresentSuspended, TestudoCameraViewState } from "./testudo";
 /** Current GeoLibre iframe protocol version. Version 1 requests remain supported by the app. */
 export const EMBED_API_VERSION = 2 as const;
 export const EMBED_API_SOURCE = "geolibre" as const;
@@ -59,6 +59,8 @@ export type EmbedEventMap = {
   testudoArtifactRequest: TestudoArtifactRequest & { challenge: string };
   testudoGeoAIRequest: TestudoGeoAIRequest;
   testudoGeoAIReply: TestudoGeoAIReply;
+  /** Result of testudoOpenAnalysis / testudoCloseAnalysis / testudoRefreshAnalysisGrant (also returned as the command ack result). */
+  testudoAnalysisStatus: TestudoAnalysisStatus;
   /**
    * Every command already returns a promise the client settles from this ack,
    * so subscribing is only worth it to observe the traffic (logging, or an ack
@@ -108,6 +110,19 @@ export interface GeoLibreEmbedClient {
   testudoOpenLocalPackage(payload: TestudoOpenLocalPackagePayload): Promise<TestudoViewerState>;
   testudoSetMode(payload: { mode: TestudoDemoMode }): Promise<TestudoViewerState>;
   testudoOpenGeoAiChat(payload: { open: boolean }): Promise<TestudoViewerState>;
+  /** Choose which side panels the shell shows (default all hidden). Rejects with an "unsupported command" error on older viewer runtimes. */
+  testudoSetPanels(payload: import("./testudo").TestudoSetPanels): Promise<TestudoViewerState>;
+  /**
+   * Suspend (true) or resume (false) the Present plugin: suspending pauses playback and closes the Present map plugin panel(s)
+   * (the assistant panel is untouched) while remembering the selected plugin; resuming reopens that plugin's panel from the
+   * data already loaded (no package reload). Idempotent. Rejects with an "unsupported command" error on older viewer runtimes.
+   */
+  testudoSetPresentSuspended(payload: import("./testudo").TestudoSetPresentSuspended): Promise<TestudoViewerState>;
+  /** Open exactly one Analyse plugin on a run manifest. `generation` must increase per plugin; stale values are rejected. */
+  testudoOpenAnalysis(payload: TestudoOpenAnalysis): Promise<TestudoAnalysisStatus>;
+  testudoCloseAnalysis(payload: TestudoCloseAnalysis): Promise<TestudoAnalysisStatus>;
+  /** Swap the analysis authorization (token segment of baseUrl, and expiry) without closing open plugins; resolves `status: "refreshed"` or `"error"`. */
+  testudoRefreshAnalysisGrant(payload: TestudoRefreshAnalysisGrant): Promise<TestudoAnalysisStatus>;
   /** Subscribe to testudoGeoAiInvestigationUpdate first, then submit a question and correlate by the returned requestId. */
   testudoRequestInvestigation(question: string): Promise<{ requestId: string; accepted: true }>;
   testudoSetPreset(payload: { id: string }): Promise<TestudoViewerState>;
@@ -134,8 +149,8 @@ export interface GeoLibreEmbedClient {
   testudoOpenRecordVideo(payload: { tviewId: string; generation?: number }): Promise<{ opened: true }>;
   testudoRecordTour(payload: { tviewId: string; generation?: number }): Promise<{ opened: true }>;
   testudoRecordVideo(payload: { tviewId: string; generation?: number }): Promise<{ opened: true }>;
-  testudoSetCameraView(payload: { tviewId: string; view: TestudoCameraView; generation?: number }): Promise<TestudoCameraView | null>;
-  testudoGetCameraView(payload: { tviewId: string; generation?: number }): Promise<TestudoCameraView | null>;
+  testudoSetCameraView(payload: { tviewId: string; view: TestudoCameraView; generation?: number }): Promise<import("./testudo").TestudoCameraViewState>;
+  testudoGetCameraView(payload: { tviewId: string; generation?: number }): Promise<import("./testudo").TestudoCameraViewState>;
   testudoFeatureRequestInvestigation(payload: { tviewId: string; question: string; activeScenarioId?: string }): Promise<{ requestId: string; tviewId: string; generation: number; accepted: true }>;
   testudoRespondGeoAIRequest(payload: { requestId: string; tviewId: string; generation: number; content?: string; error?: string; proposedActions?: unknown[]; scenario_analysis?: Record<string, unknown>; viewer_action?: TestudoGeoAIReply["viewer_action"] }): Promise<{ requestId: string; accepted: boolean }>;
   loadProject(url: string): Promise<void>;
@@ -245,6 +260,26 @@ export function connect(
     testudoSetPlugin: (payload) => sendTestudo<TestudoViewerState>("testudoSetPlugin", payload),
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
     testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),
+    testudoSetPanels: (payload) => {
+      const allowed = ["tviewId", "layers", "plugins", "comments", "layersCollapsed", "hostGeoAi"];
+      const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+      const record = payload as unknown as Record<string, unknown>;
+      if (!keys.length || keys.some(key => !allowed.includes(key))) return Promise.reject(new Error("testudoSetPanels accepts only tviewId, layers, plugins, comments, layersCollapsed and hostGeoAi."));
+      if (["layers", "plugins", "comments"].some(key => typeof record[key] !== "boolean")
+        || ["layersCollapsed", "hostGeoAi"].some(key => record[key] !== undefined && typeof record[key] !== "boolean")
+        || (record.tviewId !== undefined && typeof record.tviewId !== "string")) return Promise.reject(new Error("testudoSetPanels layers, plugins and comments must be booleans."));
+      return sendTestudo<TestudoViewerState>("testudoSetPanels", { ...payload });
+    },
+    testudoSetPresentSuspended: (payload) => {
+      const keys = payload && typeof payload === "object" && !Array.isArray(payload) ? Object.keys(payload) : [];
+      const record = payload as unknown as Record<string, unknown>;
+      if (!keys.includes("suspended") || keys.some(key => key !== "suspended" && key !== "tviewId")) return Promise.reject(new Error("testudoSetPresentSuspended accepts only tviewId and suspended."));
+      if (typeof record.suspended !== "boolean" || (record.tviewId !== undefined && typeof record.tviewId !== "string")) return Promise.reject(new Error("testudoSetPresentSuspended suspended must be a boolean."));
+      return sendTestudo<TestudoViewerState>("testudoSetPresentSuspended", { ...payload });
+    },
+    testudoOpenAnalysis: (payload) => sendTestudo<TestudoAnalysisStatus>("testudoOpenAnalysis", { ...payload }),
+    testudoCloseAnalysis: (payload) => sendTestudo<TestudoAnalysisStatus>("testudoCloseAnalysis", { ...payload }),
+    testudoRefreshAnalysisGrant: (payload) => sendTestudo<TestudoAnalysisStatus>("testudoRefreshAnalysisGrant", { ...payload }),
     testudoRequestInvestigation: (question) => {
       if (typeof question !== "string" || !question.trim() || question.length > 4000) {
         return Promise.reject(new Error("Investigation question must be nonblank and at most 4000 characters"));

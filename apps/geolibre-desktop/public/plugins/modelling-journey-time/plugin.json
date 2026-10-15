@@ -1,0 +1,8 @@
+{
+  "id": "modelling-journey-time",
+  "name": "Modelling Journey Time",
+  "version": "0.1.0",
+  "description": "Observed journey-time profiles, route matching and map overlay, with simulated-versus-observed validation when simulated journey times are included.",
+  "entry": "dist/index.js",
+  "style": "dist/style.css"
+}

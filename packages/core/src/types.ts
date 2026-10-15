@@ -1676,10 +1676,22 @@ export interface GeocodingPreferences {
   email?: string;
 }
 
+/** Interface (chrome) preferences carried by a project. */
+export interface UiPreferences {
+  /**
+   * Interface accent colour as `#rgb` / `#rrggbb`. When present it overrides the
+   * viewer's own accent scheme while the project is open; absent keeps the
+   * viewer's setting unchanged.
+   */
+  accentColor?: string;
+}
+
 export interface ProjectPreferences {
   map: MapPreferences;
   environmentVariables: RuntimeEnvironmentVariable[];
   geocoding: GeocodingPreferences;
+  /** Optional: only present when the project sets an interface accent. */
+  ui?: UiPreferences;
 }
 
 export type ProjectPluginControlPosition =

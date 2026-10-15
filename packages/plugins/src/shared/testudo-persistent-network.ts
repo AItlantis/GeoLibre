@@ -1,6 +1,7 @@
 import { loadNetworkKpiGeometry, parseNetworkKpiManifest, type NetworkKpiGeometry } from "../plugins/network-kpi-data";
 import { createNetworkKpiDirectorySource, type NetworkKpiDirectoryHandle } from "../plugins/network-kpi-data";
 import type { TestudoFeatureContext, TestudoMapHandle } from "./testudo-feature-session";
+import { geometryBounds, type PackageBounds } from "./testudo-package-fit";
 import { TestudoGenerationMount } from "./testudo-generation-resources";
 import { laneWidthMetersExpression, metersLineWidthExpression, sectionWidthMetersExpression } from "./map-ground-width";
 
@@ -140,6 +141,12 @@ export class TestudoPersistentNetwork {
     tracePersistentNetwork("generation-mount", "complete", { mounted, isCurrent: isCurrent(context), styleLoaded: map.isStyleLoaded?.() ?? null });
     tracePersistentNetwork("mount-entry", "complete", { mounted, isCurrent: isCurrent(context) });
     return mounted;
+  }
+
+  /** Extent of the mounted network geometry (sections first, then lanes/turns/nodes), or null when nothing is mounted. */
+  getGeometryBounds(): PackageBounds | null {
+    const g = this.geometry;
+    return g ? geometryBounds([g.sections, g.lanes, g.nodes, g.turns]) : null;
   }
 
   clear(): void {

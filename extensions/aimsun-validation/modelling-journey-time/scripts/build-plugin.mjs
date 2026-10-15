@@ -1,15 +1,14 @@
-// Generic drop-in plugin build, used by aimsun-subpath-jt and aimsun-subpath-validation.
+// Drop-in plugin build for Modelling Journey Time.
 //   node build.mjs            -> <repo>/apps/geolibre-desktop/public/plugins/<id>/{plugin.json,dist/index.js,dist/style.css}
 // The id/name/version/description come from the plugin's package.json (`geolibre` block), so
 // plugin.json, the exported plugin object and the folder name cannot drift apart.
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundlePlugin } from "../../_shared/scripts/build-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SHARED_CSS = join(HERE, "..", "src", "common", "base.css");
+const OWN_CSS = join(HERE, "..", "src", "style.css");
 const MAX_ENTRY_BYTES = 50 * 1024 * 1024; // host MAX_PLUGIN_ASSET_BYTES
 
 export async function buildPlugin(pluginDir, { outRoot } = {}) {
@@ -19,8 +18,7 @@ export async function buildPlugin(pluginDir, { outRoot } = {}) {
   await mkdir(join(out, "dist"), { recursive: true });
   await bundlePlugin({ entry: join(pluginDir, "src/index.ts"), outfile: join(out, "dist/index.js") });
 
-  const own = join(pluginDir, "src/style.css");
-  const css = (await readFile(SHARED_CSS, "utf8")) + (existsSync(own) ? "\n" + (await readFile(own, "utf8")) : "");
+  const css = await readFile(OWN_CSS, "utf8");
   await writeFile(join(out, "dist/style.css"), css);
 
   const manifest = { id: meta.id, name: meta.name, version: pkg.version, description: meta.description, entry: "dist/index.js", style: "dist/style.css" };

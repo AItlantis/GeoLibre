@@ -101,3 +101,12 @@ test("v_sp_obs: per-day hourly values, then mean/median across days; sources kep
   assert.deepEqual(q.map((x) => num(x.bucket_start_min)), [420, 435, 450, 465]);
   assert.throws(() => buildSubpathSql({ bucketMinutes: 7 }));
 });
+
+test("adapter options: observed reference day / grid / simDurationSeconds filter", () => {
+  const s = buildAdapterSql({ obsRefDay: "2020-01-01", obsGridMin: 15, simDurationSeconds: 300 });
+  assert.match(s, /TIMESTAMP '2020-01-01 00:00:00'/);
+  assert.match(s, /AND duration_s = 300/);
+  assert.match(s, /15 AS dur_min/);
+  assert.doesNotMatch(buildAdapterSql(), /duration_s = /);
+  assert.throws(() => buildAdapterSql({ simDurationSeconds: 0 }), /simDurationSeconds/);
+});

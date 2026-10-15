@@ -71,15 +71,16 @@ describe("GeoAI chat capability wiring (issue #273)", () => {
     assert.ok(guard, "the trigger guard must be derived from the active package capability");
     assert.match(guard![1]!, /state\.capabilities\.some\(item => item\.id === "geoai" && item\.available\)/);
 
-    const evalGuard = (capabilities: Array<{ id: string; available: boolean }>) => {
+    const evalGuard = (capabilities: Array<{ id: string; available: boolean }>, hostGeoAi = false) => {
       const state = { capabilities };
       // eslint-disable-next-line no-new-func -- evaluating the extracted guard expression itself is the point of this test
-      return new Function("app", "state", `return ${guard![1]};`)({}, state);
+      return new Function("app", "state", "hostGeoAi", `return ${guard![1]};`)({}, state, hostGeoAi);
     };
     assert.equal(evalGuard([{ id: "geoai", available: true }]), true, "trigger must render when geoai is available");
     assert.equal(evalGuard([{ id: "geoai", available: false }]), false, "trigger must not render when geoai is unavailable");
     assert.equal(evalGuard([{ id: "vehicle-playback", available: true }]), false, "trigger must not render when geoai is not in the capability list at all");
     assert.equal(evalGuard([]), false, "trigger must not render for an empty capability list");
+    assert.equal(evalGuard([{ id: "geoai", available: true }], true), false, "the in-iframe trigger is hidden when the host drives GeoAI");
   });
 
   it("accepts a bootstrap that declares the geoai capability", () => {

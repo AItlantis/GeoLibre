@@ -768,6 +768,8 @@ app.deactivatePlugin?.("maplibre-gl-time-slider");
 
 Neither may target the **calling** plugin: `activatePlugin` on yourself is meaningless, and deactivating yourself would unmount the code still on the stack. Both return false in that case.
 
+Hosts (not plugins) that need to open exactly one plugin with URL-style parameters, without the global URL-parameter loop that opens every plugin owning the parameter, use `PluginManager.openWithParams(id, params, app)`: it activates the plugin if needed, then calls only that plugin's `handleUrlParameters`. It resolves `{ ok, error? }`: `ok: false` (with the message) when the plugin is unknown, has no handler, refuses activation, or its handler resolves `false` or throws; a handler resolving `true` (or nothing) is `ok`. A handler that loads something asynchronously should resolve `true` only after the load succeeded. The Testudo Analyse bridge uses it; see [testudo-analysis-bridge.md](testudo-analysis-bridge.md).
+
 ## Custom (WebGL) layers and paint ownership
 
 `registerExternalNativeLayer` mirrors a layer the plugin added to the map itself into GeoLibre's layer store, so it appears in the Layers panel and persists with the project:

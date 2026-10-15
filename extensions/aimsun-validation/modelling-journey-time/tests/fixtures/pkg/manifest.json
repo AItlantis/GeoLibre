@@ -14,8 +14,8 @@
       "table": "subpath_sim_jt",
       "path": "subpath_sim_jt.parquet",
       "format": "parquet",
-      "sha256": "83bddbc9b6d08a48287a55675e59bdcc89d7c507feffe2c6e115cc712538063a",
-      "rows": 56
+      "sha256": "927909b0e848971853282e01e5b24e0d78352b4181aedc3b2b0e145938a32291",
+      "rows": 104
     }
   ]
 }

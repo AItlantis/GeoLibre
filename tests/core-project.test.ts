@@ -20,6 +20,30 @@ import {
 } from "@geolibre/core";
 import { geojsonLayer } from "./helpers/layer-fixtures";
 
+describe("project interface accent", () => {
+  const withUi = (ui: unknown) => {
+    const base = createEmptyProject();
+    return parseProject(
+      JSON.stringify({ ...base, preferences: { ...base.preferences, ui } }),
+    );
+  };
+
+  it("keeps a valid hex accent (lower-cased) and round-trips it", () => {
+    assert.equal(withUi({ accentColor: "#F97316" }).preferences.ui?.accentColor, "#f97316");
+    assert.equal(withUi({ accentColor: "#fa0" }).preferences.ui?.accentColor, "#fa0");
+    const project = withUi({ accentColor: "#f97316" });
+    assert.equal(parseProject(serializeProject(project)).preferences.ui?.accentColor, "#f97316");
+  });
+
+  it("drops anything that is not a hex colour and leaves the default unchanged", () => {
+    for (const bad of ["orange", "f97316", "#12345", "url(x)", "#f97316; x", 5, null, {}]) {
+      assert.equal(withUi({ accentColor: bad }).preferences.ui, undefined, String(bad));
+    }
+    assert.equal(createEmptyProject().preferences.ui, undefined);
+    assert.equal(parseProject(serializeProject(createEmptyProject())).preferences.ui, undefined);
+  });
+});
+
 describe("project parsing", () => {
   it("discards session raster URLs on save and on loading older projects", () => {
     const layer = geojsonLayer({

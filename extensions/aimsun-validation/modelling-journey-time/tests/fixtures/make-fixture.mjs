@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DuckDBInstance } from "../../../../_shared/node_modules/@duckdb/node-api/lib/index.js";
+import { DuckDBInstance } from "../../../_shared/node_modules/@duckdb/node-api/lib/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "pkg");
@@ -30,19 +30,21 @@ for (const r of routes) for (let d = 0; d < 3; d++) for (let k = 0; k < K; k++) 
 // another source for Route Alpha: must stay separate (999 s)
 for (let k = 0; k < K; k++) obsRows.push(["Route Alpha", "IB", ts(1, k), 999, "subnetwork_may2025"]);
 
-const simRows = []; // two replications per bucket: target -2 and +2 (average = target)
-for (const r of routes) {
+const simRows = []; // CURVES: intervals are explicit; two runs have different validation quality.
+const runFactors = { JT_A: { alpha: 1.1, beta: 1.5, gamma: 0.8 }, JT_B: { alpha: 1.0, beta: 1.2, gamma: 0.95 } };
+for (const [run, factors] of Object.entries(runFactors)) for (const r of routes) {
   if (!r.simRoute) continue;
-  for (let k = 0; k < K; k++) for (const e of [-2, 2]) simRows.push([r.simRoute, r.simDir, ts(0, k), r.base(k) * r.factor + e]);
+  const factor = r.obsRoute.endsWith("Alpha") ? factors.alpha : r.obsRoute.endsWith("Beta") ? factors.beta : factors.gamma;
+  for (let k = 0; k < K; k++) for (const e of [-2, 2]) simRows.push([r.simRoute, r.simDir, (420 + k * 15) * 60, 900, r.base(k) * factor + e, run]);
 }
-for (let k = 0; k < K; k++) simRows.push([simOnly.route, simOnly.dir, ts(0, k), 50]);
+for (const run of ["JT_A"]) for (let k = 0; k < K; k++) simRows.push([simOnly.route, simOnly.dir, (420 + k * 15) * 60, 900, 50, run]);
 
 const conn = await (await DuckDBInstance.create(":memory:")).connect();
 await conn.run("CREATE TABLE subpath_obs_jt(route VARCHAR, direction_norm VARCHAR, ts TIMESTAMP, seconds DOUBLE, source VARCHAR)");
-await conn.run("CREATE TABLE subpath_sim_jt(route VARCHAR, direction_norm VARCHAR, ts_bucket TIMESTAMP, seconds DOUBLE)");
+await conn.run("CREATE TABLE subpath_sim_jt(route VARCHAR, direction_norm VARCHAR, interval_start_s DOUBLE, duration_s DOUBLE, seconds DOUBLE, run VARCHAR)");
 const lit = (v) => (typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`);
 await conn.run(`INSERT INTO subpath_obs_jt VALUES ${obsRows.map((r) => `(${lit(r[0])},${lit(r[1])},TIMESTAMP ${lit(r[2])},${r[3]},${lit(r[4])})`).join(",")}`);
-await conn.run(`INSERT INTO subpath_sim_jt VALUES ${simRows.map((r) => `(${lit(r[0])},${lit(r[1])},TIMESTAMP ${lit(r[2])},${r[3]})`).join(",")}`);
+await conn.run(`INSERT INTO subpath_sim_jt VALUES ${simRows.map((r) => `(${lit(r[0])},${lit(r[1])},${r[2]},${r[3]},${r[4]},${lit(r[5])})`).join(",")}`);
 const files = [];
 for (const [table, rows] of [["subpath_obs_jt", obsRows.length], ["subpath_sim_jt", simRows.length]]) {
   const p = join(out, `${table}.parquet`);

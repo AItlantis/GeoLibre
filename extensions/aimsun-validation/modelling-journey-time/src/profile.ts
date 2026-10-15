@@ -5,7 +5,7 @@
 import type { GeoJSONFC, GeoJSONFeature } from "./host";
 import type { LinePoint, BandPoint } from "./lineSvg";
 import { minutesToHHMM } from "./lineSvg";
-import { pairKey, type MatchResult } from "./match";
+import { obsKey, type MatchResult } from "./match";
 
 export interface ObsRow {
   route: string;
@@ -16,7 +16,22 @@ export interface ObsRow {
   mean_s: number | null;
   median_s: number | null;
   min_s: number | null;
+  /** ACROSS-DAY band: min_s / max_s are the min / max of the daily means (computed here, not supplied by the source). */
   max_s: number | null;
+  /** Observed identity / provenance (C9, null for legacy rows). */
+  subpath_oid?: string | null;
+  match_method?: string | null;
+  source_id?: string | null;
+  /** 'actual' = real dates; 'typical' = time-only typical-day observation (no real date). */
+  date_kind?: string | null;
+  /** Bounds SUPPLIED by the source (seconds_min / seconds_max), distinct from the across-day band above. */
+  sup_min_s?: number | null;
+  sup_max_s?: number | null;
+  /** Declared observation window (seconds from midnight), when the data states one. */
+  window_start_s?: number | null;
+  window_end_s?: number | null;
+  /** Mean clock time of the observations in the bucket (seconds since midnight); absent for legacy views. */
+  t_s?: number | null;
 }
 
 export type Stat = "mean" | "median";
@@ -25,6 +40,8 @@ export type ColourBy = "seconds" | "ratio";
 export const bucketLabel = minutesToHHMM;
 
 const num = (v: unknown): number | null => (v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v));
+
+const text = (v: unknown): string | null => (v === null || v === undefined || String(v) === "" ? null : String(v));
 
 /** Coerce DuckDB rows (BigInt/null-safe) to ObsRow. */
 export function toObsRows(rows: ReadonlyArray<Record<string, unknown>>): ObsRow[] {
@@ -38,14 +55,56 @@ export function toObsRows(rows: ReadonlyArray<Record<string, unknown>>): ObsRow[
     median_s: num(r.median_s),
     min_s: num(r.min_s),
     max_s: num(r.max_s),
+    subpath_oid: text(r.subpath_oid),
+    match_method: text(r.match_method),
+    source_id: text(r.source_id),
+    date_kind: text(r.date_kind ?? r.dateKind),
+    sup_min_s: num(r.sup_min_s),
+    sup_max_s: num(r.sup_max_s),
+    window_start_s: num(r.window_start_s),
+    window_end_s: num(r.window_end_s),
+    t_s: num(r.t_s),
   }));
 }
 
 export interface Profile {
   mean: LinePoint[];
   median: LinePoint[];
+  /** ACROSS-DAY min-max band (computed from the daily means). */
   band: BandPoint[];
+  /** Band SUPPLIED by the source (seconds_min / seconds_max); empty when the source supplies none. */
+  suppliedBand: BandPoint[];
+  hasSupplied: boolean;
   nDaysMax: number;
+  /** 'typical' when every row is a time-only typical-day observation, 'actual' when none is, else 'mixed'. */
+  dateKind: "actual" | "typical" | "mixed";
+  /** Window declared by the data (minutes from midnight), or null. */
+  window: { from: number; to: number } | null;
+}
+
+/** Declared window (minutes) of the given rows, or null when the data declares none. */
+export function declaredWindow(rows: readonly ObsRow[]): { from: number; to: number } | null {
+  const a = rows.map((r) => r.window_start_s).filter((v): v is number => v !== null && v !== undefined);
+  const b = rows.map((r) => r.window_end_s).filter((v): v is number => v !== null && v !== undefined);
+  if (!a.length || !b.length) return null;
+  const from = Math.min(...a) / 60;
+  const to = Math.max(...b) / 60;
+  return to > from ? { from, to } : null;
+}
+
+export type ComparisonMode = { mode: "compare"; reason: null } | { mode: "profile-only"; reason: string };
+
+/**
+ * Time-only typical-day observations are comparable with a simulated run ONLY when the data declares a window
+ * (window_start_s / window_end_s); otherwise they are an observed day profile ('profile-only') with the reason.
+ * Rows with real dates keep the legacy behaviour (compare when a simulated table exists).
+ */
+export function comparisonMode(rows: readonly ObsRow[]): ComparisonMode {
+  if (!rows.length) return { mode: "profile-only", reason: "no observed rows" };
+  const typical = rows.filter((r) => r.date_kind === "typical");
+  if (!typical.length) return { mode: "compare", reason: null };
+  if (declaredWindow(typical)) return { mode: "compare", reason: null };
+  return { mode: "profile-only", reason: "typical-day observations carry no declared window (window_start_s / window_end_s); shown as an observed day profile only" };
 }
 
 /** Profile of one route/direction/source, sorted by bucket. */
@@ -53,11 +112,17 @@ export function profileOf(rows: readonly ObsRow[], route: string, direction: str
   const mine = rows
     .filter((r) => r.route === route && r.direction_norm === direction && r.source === source)
     .sort((a, b) => a.bucket_start_min - b.bucket_start_min);
+  const hasSupplied = mine.some((r) => r.sup_min_s !== null && r.sup_min_s !== undefined && r.sup_max_s !== null && r.sup_max_s !== undefined);
+  const kinds = new Set(mine.map((r) => (r.date_kind === "typical" ? "typical" : "actual")));
   return {
     mean: mine.map((r) => ({ x: r.bucket_start_min, y: r.mean_s })),
     median: mine.map((r) => ({ x: r.bucket_start_min, y: r.median_s })),
     band: mine.map((r) => ({ x: r.bucket_start_min, lo: r.min_s, hi: r.max_s })),
+    suppliedBand: hasSupplied ? mine.map((r) => ({ x: r.bucket_start_min, lo: r.sup_min_s ?? null, hi: r.sup_max_s ?? null })) : [],
+    hasSupplied,
     nDaysMax: mine.reduce((m, r) => Math.max(m, r.n_days), 0),
+    dateKind: kinds.size > 1 ? "mixed" : kinds.has("typical") ? "typical" : "actual",
+    window: declaredWindow(mine),
   };
 }
 
@@ -72,6 +137,12 @@ export interface BucketValue {
   key: string;
   route: string;
   direction: string;
+  subpath_oid: string | null;
+  match_method: string | null;
+  source_id: string | null;
+  /** Supplied bounds at this bucket (null when the source supplies none). */
+  supMin: number | null;
+  supMax: number | null;
   /** Value used for colouring (seconds, or ratio to the route's own median over the day). */
   value: number | null;
   seconds: number | null;
@@ -85,7 +156,7 @@ export function valuesAtBucket(rows: readonly ObsRow[], bucket: number, stat: St
   if (mode === "ratio") {
     const byKey = new Map<string, number[]>();
     for (const r of rows) {
-      const k = pairKey(r.route, r.direction_norm) ?? `${r.route}|${r.direction_norm}`;
+      const k = obsKey(r.route, r.direction_norm, r.subpath_oid);
       const v = pick(r);
       if (v !== null) (byKey.get(k) ?? byKey.set(k, []).get(k)!).push(v);
     }
@@ -94,13 +165,18 @@ export function valuesAtBucket(rows: readonly ObsRow[], bucket: number, stat: St
   const out = new Map<string, BucketValue>();
   for (const r of rows) {
     if (r.bucket_start_min !== bucket) continue;
-    const key = pairKey(r.route, r.direction_norm) ?? `${r.route}|${r.direction_norm}`;
+    const key = obsKey(r.route, r.direction_norm, r.subpath_oid);
     const s = pick(r);
     const ref = dayMedian.get(key) ?? null;
     out.set(key, {
       key,
       route: r.route,
       direction: r.direction_norm,
+      subpath_oid: r.subpath_oid ?? null,
+      match_method: r.match_method ?? null,
+      source_id: r.source_id ?? null,
+      supMin: r.sup_min_s ?? null,
+      supMax: r.sup_max_s ?? null,
       seconds: s,
       value: mode === "seconds" ? s : s !== null && ref ? s / ref : null,
       nDays: r.n_days,
@@ -155,7 +231,7 @@ export function overlayFeatures(inp: OverlayInput): GeoJSONFC {
   inp.geo.features.forEach((f, i) => byId.set(String((f.properties?.id as string | number | undefined) ?? f.id ?? i), f));
   const features: GeoJSONFeature[] = [];
   for (const row of inp.match.matchedObs) {
-    const val = row.key ? inp.values.get(row.key) : undefined;
+    const val = inp.values.get(row.valueKey);
     for (const m of row.matches) {
       const f = byId.get(String(m.subpath.id));
       if (!f) continue;
@@ -171,6 +247,11 @@ export function overlayFeatures(inp: OverlayInput): GeoJSONFC {
           source: inp.source,
           bucket: bucketLabel(inp.bucket),
           jt_s: val?.seconds ?? null,
+          subpath_oid: row.subpath_oid ?? val?.subpath_oid ?? null,
+          match_method: m.method === "oid" ? (val?.match_method ?? "oid") : (m.method ?? null),
+          source_id: val?.source_id ?? row.source_id ?? null,
+          sup_min_s: val?.supMin ?? null,
+          sup_max_s: val?.supMax ?? null,
           value: val?.value ?? null,
           stroke: inp.scale.colour(val?.value ?? null),
           "stroke-width": 4,

@@ -42,7 +42,20 @@ file contents do not change.
 | `dashboardColumns`| number  | Optional Dashboard widget-grid column count (1-6, default 2); omitted when default                          |
 | `styleLibrary`    | array   | Optional project-scoped Style Manager entries (name, tags, kind, `LayerStyle` subset); omitted when empty    |
 | `primaryRenderer` | string  | Optional engine for the primary map area: `"maplibre"` (2D, the default), `"mapbox"` (Mapbox GL JS), `"arcgis"` (ArcGIS Maps SDK for JavaScript) or `"cesium"` (3D globe); omitted when default |
+| `preferences`     | object  | Map, environment, geocoding and optional `ui` preferences. `preferences.ui.accentColor` (optional `#rgb`/`#rrggbb`) sets the interface accent while the project is open; anything else is dropped and the viewer's own scheme stays |
 | `metadata`        | object  | Free-form project metadata                                                                                   |
+
+## Interface accent
+
+`preferences.ui.accentColor` carries the interface accent colour, e.g.
+`"preferences": { "ui": { "accentColor": "#f97316" } }`. It is validated
+strictly (hex only, lower-cased on load) and applied to `--primary`,
+`--primary-foreground` and `--ring` in both light and dark mode through the same
+path as the custom accent scheme; the foreground is chosen automatically for
+contrast. When absent, the viewer's own accent scheme is unchanged. Testudo
+projects use orange `#f97316` (dark text on it measures about 7.4:1; as an
+accent against the dark theme about 7:1; it is meant for fills and focus
+rings, not small text on white at about 2.8:1).
 
 ## Plugin state
 

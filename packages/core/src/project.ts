@@ -1268,7 +1268,23 @@ function normalizeProjectPreferences(preferences: unknown): ProjectPreferences {
           .filter((variable): variable is RuntimeEnvironmentVariable => Boolean(variable))
       : [],
     geocoding: normalizeGeocodingPreferences(candidate.geocoding),
+    ...normalizeUiPreferences(candidate.ui),
   };
+}
+
+const UI_HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+/**
+ * Strictly validate `preferences.ui`: only a `#rgb`/`#rrggbb` accent colour is
+ * kept (lower-cased); anything else is dropped so the viewer default applies.
+ */
+function normalizeUiPreferences(ui: unknown): { ui?: ProjectPreferences["ui"] } {
+  if (!ui || typeof ui !== "object") return {};
+  const accent = (ui as { accentColor?: unknown }).accentColor;
+  if (typeof accent !== "string") return {};
+  const trimmed = accent.trim();
+  if (!UI_HEX_COLOR.test(trimmed)) return {};
+  return { ui: { accentColor: trimmed.toLowerCase() } };
 }
 
 function normalizeGeocodingPreferences(geocoding: unknown): ProjectPreferences["geocoding"] {

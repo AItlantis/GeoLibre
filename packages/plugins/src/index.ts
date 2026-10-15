@@ -31,6 +31,7 @@ export {
   type TestudoSqliteRuntime,
 } from "./plugins/testudo-dataset-provider";
 export { PluginManager } from "./plugin-manager";
+export type { OpenWithParamsResult } from "./plugin-manager";
 export { MAPLIBRE_LABEL_LAYOUT, MAPLIBRE_LABEL_PAINT, declutterMapLabels, formatRoundedDifference, formatTripVolume, lineMidpoint, passesComparisonDifferenceFilter, passesDifferenceThreshold, type MapLabelPoint } from "./shared/map-labels";
 export {
   PATH_ANALYSIS_PLUGIN_ID,
@@ -1504,7 +1505,9 @@ export { readLocalNetworkKpiManifestJson } from "./plugins/network-kpi-data";
 export { setTestudoResultsSessionKey } from "./plugins/network-kpi-parquet-data";
 export { getGeolibrePackage, resolveEnvironmentScenarioCoverage, verifyEnvironmentScenarioCandidates } from "./plugins/geolibre-package-loader";
 export { TestudoFeatureBridge } from "./testudo-feature-bridge";
+export { validateTestudoCameraView } from "./plugins/testudo-camera";
 export { TestudoPersistentNetwork, TESTUDO_NETWORK_LAYERS } from "./shared/testudo-persistent-network";
+export { PackageFitter, manifestBounds, parsePackageBounds, geometryBounds, decidePackageFit, cameraForBounds, isValidPackageBounds, PACKAGE_FIT_PADDING, PACKAGE_FIT_MAX_ZOOM, type PackageBounds, type FitDecision, type PackageFitMap } from "./shared/testudo-package-fit";
 export { isTestudoLayout } from "./shared/testudo-layout";
 export { TestudoGenerationMount, TestudoGenerationResourceCache } from "./shared/testudo-generation-resources";
 export type { TestudoFeatureProviderFactory, TestudoFeatureProviderResolver, TestudoPackageBootstrap, TestudoArtifactRequest, TestudoArtifactFetcher, TestudoFeatureViewerState, TestudoTViewInfo } from "./testudo-feature-bridge";

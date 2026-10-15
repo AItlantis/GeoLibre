@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readdirSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const app = join(root, "apps/geolibre-desktop");
@@ -47,6 +48,33 @@ const git = args => {
   if (result.status !== 0) throw new Error("Cannot record native source provenance");
   return result.stdout;
 };
+// Aimsun Analyse drop-ins (Testudo "Analyse" bridge). Vite discovers public/plugins/<id>/plugin.json at build
+// time, so the three bundles must exist before `vite build`. They are committed; a missing one is rebuilt from
+// extensions/aimsun-validation, and --rebuild-plugins forces all three (the output can differ byte-wise from the
+// committed bundle when the local esbuild differs from the one that produced it).
+const analysisPluginIds = ["modelling-count-manager", "modelling-od-trips", "modelling-journey-time"];
+const pluginsPublic = join(app, "public/plugins");
+const rebuildPlugins = process.argv.includes("--rebuild-plugins");
+const analysisPlugins = {};
+for (const id of analysisPluginIds) {
+  const manifestFile = join(pluginsPublic, id, "plugin.json");
+  const entryFile = join(pluginsPublic, id, "dist/index.js");
+  if (rebuildPlugins || !existsSync(manifestFile) || !existsSync(entryFile)) {
+    const pluginDir = join(root, "extensions/aimsun-validation", id);
+    run(join(pluginDir, "build.mjs"), [], pluginDir);
+  }
+  const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
+  if (manifest.id !== id || !existsSync(join(pluginsPublic, id, manifest.entry))) throw new Error(`Bundled Analyse plugin ${id} is missing or inconsistent in ${pluginsPublic}`);
+  analysisPlugins[id] = { version: manifest.version, entrySha256: createHash("sha256").update(readFileSync(join(pluginsPublic, id, manifest.entry))).digest("hex") };
+}
+// The plugins fetch the DuckDB engine from <app>/plugins/_shared/duckdb/duckdb-eh.wasm and only fall back to
+// jsDelivr. The wasm is generated (git-ignored, ~36 MB): provision it from the installed, already-pinned
+// @duckdb/duckdb-wasm so an offline Testudo build never needs the CDN, and verify the copy byte for byte.
+const { copyDuckDbWasm } = await import(pathToFileURL(join(root, "extensions/aimsun-validation/_shared/scripts/build-lib.mjs")).href);
+const provisionedWasm = await copyDuckDbWasm(pluginsPublic);
+const sha256File = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+const duckdbEhWasmSha256 = sha256File(provisionedWasm);
+if (duckdbEhWasmSha256 !== sha256File(require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"))) throw new Error("Provisioned plugins/_shared/duckdb/duckdb-eh.wasm does not match the installed DuckDB engine");
 const tsc = join(dirname(require.resolve("typescript/package.json")), "bin/tsc");
 run(tsc, ["-p", "packages/embed/tsconfig.build.json"]);
 run(tsc, ["-b", "apps/geolibre-desktop"]);
@@ -84,9 +112,9 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const files = {};
 const walk = path => { for (const entry of readdirSync(path, { withFileTypes: true })) { const full = join(path, entry.name); if (entry.isDirectory()) walk(full); else files[relative(output, full).replaceAll("\\", "/")] = hash(readFileSync(full)); } };
 walk(output);
-const sourceFiles = git(["ls-files", "--cached", "--others", "--exclude-standard", "apps/geolibre-desktop/src", "apps/geolibre-desktop/public/duckdb-extensions", "packages/embed/src", "packages/plugins/src", "scripts/build-testudo.mjs", "apps/geolibre-desktop/vite.config.ts"]).trim().split(/\r?\n/).sort();
+const sourceFiles = git(["ls-files", "--cached", "--others", "--exclude-standard", "apps/geolibre-desktop/src", "apps/geolibre-desktop/public/duckdb-extensions", "packages/embed/src", "packages/plugins/src", "apps/geolibre-desktop/public/plugins", "extensions/aimsun-validation", "scripts/build-testudo.mjs", "apps/geolibre-desktop/vite.config.ts"]).trim().split(/\r?\n/).sort();
 const sourceHashes = Object.fromEntries(sourceFiles.map(path => [path, hash(readFileSync(join(root, path)))]));
 const dependencyLocks = Object.fromEntries(["package-lock.json", "pnpm-lock.yaml"].map(file => [file, hash(readFileSync(join(root, file)))]));
 const tooling = Object.fromEntries(["typescript", "vite", "esbuild"].map(name => [name, JSON.parse(readFileSync(require.resolve(name + "/package.json"), "utf8")).version]));
-writeFileSync(join(output, "testudo-build-manifest.json"), JSON.stringify({ schemaVersion: 1, revision: git(["rev-parse", "HEAD"]).trim(), trackedPatchSha256: hash(git(["diff", "--", "apps", "packages", "scripts"])), sourceHashes, dependencyLocks, tooling, node: process.version, base: env.GEOLIBRE_APP_BASE, origins, byteOrigins: bytes, command: "node scripts/build-testudo.mjs", files }, null, 2) + "\n");
+writeFileSync(join(output, "testudo-build-manifest.json"), JSON.stringify({ schemaVersion: 1, revision: git(["rev-parse", "HEAD"]).trim(), trackedPatchSha256: hash(git(["diff", "--", "apps", "packages", "scripts"])), sourceHashes, dependencyLocks, tooling, analysis: { plugins: analysisPlugins, duckdbEhWasmSha256 }, node: process.version, base: env.GEOLIBRE_APP_BASE, origins, byteOrigins: bytes, command: "node scripts/build-testudo.mjs", files }, null, 2) + "\n");
 process.stdout.write(`Testudo native artifact: ${output}\n`);

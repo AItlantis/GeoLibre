@@ -19,8 +19,12 @@ export interface HostMapLike {
   getLayer(id: string): unknown;
   removeLayer(id: string): unknown;
   removeSource(id: string): unknown;
-  on?(event: string, listener: () => void): unknown;
-  off?(event: string, listener: () => void): unknown;
+  on?(event: string, layerOrListener: string | ((e?: any) => void), listener?: (e?: any) => void): unknown;
+  off?(event: string, layerOrListener: string | ((e?: any) => void), listener?: (e?: any) => void): unknown;
+  getContainer?(): HTMLElement;
+  getCanvas?(): HTMLCanvasElement;
+  flyTo?(opts: Record<string, unknown>): void;
+  fitBounds?(bounds: [[number, number], [number, number]], opts?: Record<string, unknown>): void;
 }
 
 export interface HostApp {
@@ -42,7 +46,10 @@ export interface HostPlugin {
   urlParameterNames?: string[];
   activate: (app: HostApp) => boolean | void | Promise<boolean | void>;
   deactivate: (app: HostApp) => void;
-  handleUrlParameters?: (app: HostApp, params: URLSearchParams) => void | Promise<void>;
+  handleUrlParameters?: (app: HostApp, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
+  setRun?: (run: string) => Promise<boolean>;
+  getProjectState?: () => unknown;
+  applyProjectState?: (app: HostApp, state: unknown) => boolean | void;
 }
 
 export interface GeoJSONFeature {

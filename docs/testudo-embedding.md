@@ -127,3 +127,7 @@ A successful acknowledgement means initialization completed; it does not prove
 pixels painted. Exercise all five plugin renders and package/logout cleanup.
 Buffering Parquet is intentional for authentication correctness; assess memory
 and startup with representative packages before release.
+
+The Analyse bridge (`testudoOpenAnalysis`, `testudoCloseAnalysis`, the `analysis-*`
+capabilities and `bootstrap.analysis`) is documented in
+[testudo-analysis-bridge.md](testudo-analysis-bridge.md).

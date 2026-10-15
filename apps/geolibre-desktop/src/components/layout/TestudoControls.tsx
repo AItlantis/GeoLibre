@@ -2,15 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as plugins from "@geolibre/plugins";
 import { useAppStore } from "@geolibre/core";
+import { validateTestudoCameraView } from "@geolibre/plugins";
 import type { GeoAiViewerContext, GeoLibreAppAPI, TestudoCameraView, TestudoFeatureSession } from "@geolibre/plugins";
-import type { TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
+import type { TestudoAnalysisCapabilityId, TestudoBootstrap, TestudoCapabilityId, TestudoSelectablePluginId, TestudoDemoMode, TestudoLoadPackage, TestudoViewerState } from "@geolibre/embed";
+import { resetTestudoPanels, setTestudoPanels, TESTUDO_PANELS_DEFAULT, testudoPanelsFromPayload, useTestudoPanels } from "../../lib/testudo-panels";
+import { isSetPanelsPayload, isSetPresentSuspendedPayload } from "../../lib/testudo-protocol";
 import { containsCredentialField, parseTestudoArtifactResponse, readEmbedOrigins, unsupportedTestudoCommand } from "../../lib/embed-api";
 import { parentOriginHintFromBrowser, pickBroadcastTargets } from "../../hooks/embedHost";
 import { mapViewFromMapLibre, type TestudoRendererReadinessRef, type TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { runWithPackageOwnerRelease, TestudoCommandGate } from "../../lib/testudo-command-gate";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, isTestudoAnalysisCapabilityId, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { resolveTestudoViewerKind, TestudoAnalysisController } from "../../lib/testudo-analysis";
+import { getPluginManager } from "../../hooks/usePlugins";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
 import { getGeolibrePackage } from "@geolibre/plugins";
 import type { VehicleDirectoryHandle } from "@geolibre/plugins";
@@ -39,7 +44,9 @@ function tracePlaybackCommand(event: string, detail: Record<string, unknown>): v
 
 /** Exported so tests can assert every Testudo capability is actually wired here (see #273: GeoAI
  * chat previously existed only in the legacy viewer, with zero entry in this list). */
-export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings"];
+export const ids: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings", "analysis-counts", "analysis-od", "analysis-journey-time"];
+/** Capabilities driven through the shared `handlers` table; Analyse ids open via testudoOpenAnalysis instead. */
+const handledIds = ids.filter((id): id is Exclude<TestudoCapabilityId, TestudoAnalysisCapabilityId> => !isTestudoAnalysisCapabilityId(id));
 const featureCapabilityIds: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison"];
 
 function consistentComparisonDurationSeconds(
@@ -59,14 +66,41 @@ function consistentComparisonDurationSeconds(
   return a && b && Math.abs(a.start - b.start) <= tolerance && Math.abs(a.end - b.end) <= tolerance
     ? a.duration : null;
 }
-const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai" && id !== "geoai-buildings");
+const selectableIds = ids.filter((id): id is TestudoSelectablePluginId => id !== "geoai" && id !== "geoai-buildings" && !isTestudoAnalysisCapabilityId(id));
 const modes: Array<{ id: TestudoDemoMode; label: string; plugin: TestudoSelectablePluginId }> = [
   { id: "animation", label: "Animation", plugin: "vehicle-playback" },
   { id: "flow", label: "Flow", plugin: "network-kpi" },
   { id: "paths", label: "Paths", plugin: "path-analysis" },
   { id: "density", label: "Density", plugin: "network-kpi" },
 ];
-const empty: TestudoViewerState = { package: null, selectedPlugin: null, assistantOpen: false, capabilities: [], availableModes: [], status: "empty" };
+const empty: TestudoViewerState = { package: null, selectedPlugin: null, assistantOpen: false, capabilities: [], availableModes: [], status: "empty", panels: { ...TESTUDO_PANELS_DEFAULT } };
+type TestudoCameraSnapshot = { center: [number, number]; zoom: number; bearing: number; pitch: number; renderer: "maplibre" | "cesium" };
+/**
+ * Renderer-aware camera access that never depends on a loaded plugin session (analysis-only packages have none).
+ * Cesium has no MapLibre map (getMap() is null) and mirrors its camera into the store's engine-neutral mapView, so
+ * the store is the camera of record there; MapLibre is read/written directly. Anything else fails loudly.
+ */
+function readTestudoCamera(app: GeoLibreAppAPI): TestudoCameraSnapshot {
+  if (useAppStore.getState().primaryRenderer === "cesium") {
+    const view = useAppStore.getState().mapView;
+    if (!view || ![view.center?.[0], view.center?.[1], view.zoom, view.bearing, view.pitch].every(Number.isFinite)) throw new Error("The Cesium camera is not ready yet.");
+    return { center: [view.center[0], view.center[1]], zoom: view.zoom, bearing: view.bearing, pitch: view.pitch, renderer: "cesium" };
+  }
+  const view = mapViewFromMapLibre(app.getMap?.());
+  if (!view) throw new Error("The map camera is not ready yet.");
+  return { center: view.center, zoom: view.zoom, bearing: view.bearing, pitch: view.pitch, renderer: "maplibre" };
+}
+function applyTestudoCamera(app: GeoLibreAppAPI, view: { center: [number, number]; zoom: number; bearing: number; pitch: number }): "maplibre" | "cesium" {
+  if (useAppStore.getState().primaryRenderer === "cesium") {
+    // The Cesium engine applies the store view to its camera.
+    useAppStore.getState().setMapView({ center: view.center, zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });
+    return "cesium";
+  }
+  const map = app.getMap?.();
+  if (!map) throw new Error("The map is not ready, so the camera cannot be applied.");
+  map.jumpTo({ center: view.center, zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });
+  return "maplibre";
+}
 function intervalSampleTimes(intervals: number[], timeline: { initialTimeSeconds: number | null; intervalDurationSeconds: number | null } | null | undefined) {
   if (timeline?.initialTimeSeconds == null || timeline.intervalDurationSeconds == null) return [];
   return intervals.filter(value => Number.isFinite(value) && value > 0).map(value => ({ value, timeSeconds: timeline.initialTimeSeconds! + (value - 1) * timeline.intervalDurationSeconds! }));
@@ -171,6 +205,21 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     let scenarioToPreserveOnPluginSelect: string | number | undefined;
     const persistentNetwork = new plugins.TestudoPersistentNetwork();
     const persistentNetworkMapWatch = setInterval(() => persistentNetwork.reconcileMap(app.getMap?.() as any ?? null), 200);
+    // Present data is framed once per package version, never after the user moved the map (see testudo-package-fit).
+    const packageFitter = new plugins.PackageFitter();
+    const fitPackageView = (key: string, rawManifest: unknown) => {
+      try {
+        const bounds = plugins.manifestBounds(rawManifest) ?? persistentNetwork.getGeometryBounds();
+        const cesium = useAppStore.getState().primaryRenderer === "cesium";
+        packageFitter.fit(key, bounds, {
+          map: cesium ? null : (app.getMap?.() as unknown as plugins.PackageFitMap | null) ?? null,
+          applyCamera: cesium ? camera => { applyTestudoCamera(app, { ...camera, bearing: 0, pitch: 0 }); } : undefined,
+          viewport: { width: window.innerWidth || 1280, height: window.innerHeight || 720 },
+        });
+      } catch { /* framing the package is best-effort and must never fail a package load */ }
+    };
+    // Mode switch (testudoSetPresentSuspended): Analyse suspends the Present plugin panel(s) and playback, Present resumes them.
+    let presentSuspended: { plugin: TestudoSelectablePluginId | null } | null = null;
     let comparisonDeclared = false;
     let standaloneEsriVisible = false;
     const scenarioAdapters = plugins.createScenarioSelectionAdapters({ setNetworkKpiScenario: plugins.setNetworkKpiScenario,
@@ -183,6 +232,23 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     const assertPackageOperation = (operation: number) => {
       if (!ownsPackageOperation(operation)) throw new Error("Package selection was superseded by a newer request.");
     };
+    // Analyse plugins open one at a time through PluginManager.openWithParams; reset() tears them down.
+    // Bundled drop-ins register asynchronously after startup, so wait (bounded) for the target to appear.
+    const analysisManager = getPluginManager();
+    const analysisHost = {
+      openWithParams: async (id: string, params: Record<string, string>, appApi: GeoLibreAppAPI) => {
+        if (!analysisManager.list().some(item => item.id === id)) {
+          await new Promise<void>(resolve => {
+            const stop = (): void => { clearTimeout(timer); unsubscribe(); resolve(); };
+            const unsubscribe = analysisManager.subscribe(() => { if (analysisManager.list().some(item => item.id === id)) stop(); });
+            const timer = setTimeout(stop, 15_000);
+          });
+        }
+        return analysisManager.openWithParams(id, params, appApi);
+      },
+      deactivate: (id: string, appApi: GeoLibreAppAPI) => analysisManager.deactivate(id, appApi),
+    };
+    const analysis = new TestudoAnalysisController(analysisHost, app, status => emit("testudoAnalysisStatus", status));
     const featureBridge = new plugins.TestudoFeatureBridge((packageBootstrap) => ({
       open: async (_bootstrap, context) => {
         plugins.setVehiclePlaybackLiveDiagnosticsGeneration(context.generation);
@@ -569,8 +635,28 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       } catch { /* Camera bounds are optional context; omit on map/read errors. */ }
       return context;
     };
-    const closeMapPlugins = () => { for (const id of ids) if (id !== "geoai") handlers[id].close(); };
-    const closeAllPlugins = () => { for (const id of ids) handlers[id].close(); };
+    const closeMapPlugins = () => { for (const id of handledIds) if (id !== "geoai") handlers[id].close(); };
+    const closeAllPlugins = () => { for (const id of handledIds) handlers[id].close(); };
+    const suspendPresent = () => {
+      if (presentSuspended) return;
+      presentSuspended = { plugin: current.selectedPlugin };
+      for (const stop of [() => plugins.setVehiclePlaybackSettings({ playing: false }), () => plugins.setNetworkKpiSettings({ intervalPlaying: false }),
+        () => plugins.setEmissionsH3Settings({ intervalPlaying: false }), () => { void Promise.resolve(featureBridge.playback("main", "pause")).catch(() => undefined); }]) {
+        try { stop(); } catch { /* no active session or plugin: nothing to pause */ }
+      }
+      // The independent GeoAI assistant panel is left alone. A plugin that was never opened (or has no session) may throw from close():
+      // isolate each one so suspending can never abort the mode switch.
+      for (const id of handledIds) { if (id === "geoai") continue; try { handlers[id].close(); } catch (error) { console.warn("[Testudo] suspend: closing " + id + " failed", error); } }
+      update({ presentSuspended: true });
+    };
+    const resumePresent = () => {
+      const held = presentSuspended;
+      if (!held) return;
+      presentSuspended = null;
+      // Reopen the panel from the data already loaded; never reloads the package.
+      if (held.plugin && directory && current.selectedPlugin === held.plugin && selectableIds.includes(held.plugin)) handlers[held.plugin].open(app);
+      update({ presentSuspended: false });
+    };
     const diagnosticWindow = window as Window & { __testudoLiveDiagnostics?: () => unknown };
     const liveDiagnosticsGetter = plugins.createTestudoLiveDiagnosticsGetter(
       plugins.testudoLiveDiagnosticsEnabled(import.meta.env.DEV || import.meta.env.MODE === 'test', window.location.search),
@@ -675,6 +761,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       const comparisonProbe = id === "scenario-comparison" && comparisonDeclared && !capability?.available;
       if (!capability?.available && !comparisonProbe) throw new Error(capability?.reason ?? "This plugin is unavailable for this package.");
       if (!directory) throw new Error("Select a package first.");
+      presentSuspended = null; // an explicit Present selection ends the Analyse suspension
       const version = generation;
       const selection = ++selectionGeneration;
       const leavingPaths = current.selectedMode === "paths" && id !== "path-analysis";
@@ -931,11 +1018,14 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       comparisonDeclared = false;
       preferredMode = undefined;
       declaredAvailableModes = [];
+      analysis.setPackage(null);
+      packageFitter.reset(); presentSuspended = null;
       closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; declaredScenarioRoster = []; declaredVariantScenarioRoster = []; environmentScenarioCoverage = { byScid: {}, packageEligible: true }; environmentPackageEligible = true;
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
       plugins.resetGeoAiBuildings();
-      update({ ...empty });
+      resetTestudoPanels();
+      update({ ...empty, panels: { ...TESTUDO_PANELS_DEFAULT } });
     };
     const load = async (payload: TestudoLoadPackage, operation: number) => {
       const packageLoadStartedAt = performance.now();
@@ -945,6 +1035,8 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (!candidate || containsCredentialField(payload) || (guestCredential && payload.challenge !== challenge)) throw new Error("Invalid Testudo package bootstrap");
       assertPackageOperation(operation);
       reset(); bootstrap = candidate;
+      packageFitter.begin(candidate.versionId); packageFitter.watch((app.getMap?.() as unknown as plugins.PackageFitMap | null) ?? null);
+      analysis.setPackage(guestCredential ? null : candidate.analysis, candidate.versionId);
       comparisonDeclared = candidate.capabilities.some(item => item.id === "scenario-comparison" && item.available);
       const getGuestEmbedToken = guestCredential ? () => {
         if (!guestCredential || guestCredential.expiresAt <= Date.now()) throw new Error("Guest demo access expired; refresh the package to continue.");
@@ -988,7 +1080,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             reason: parentOrigin && allowed.includes(parentOrigin) ? undefined : "The Testudo host has not enabled GeoAI request handling." }
           : capability);
       update({ package: { packageId: candidate.packageId, versionId: candidate.versionId, label: candidate.label, origin: "published" }, capabilities: safeCapabilities, status: "loading" });
-      const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai")?.id as TestudoSelectablePluginId | undefined ?? null;
+      const defaultPlugin = payload.selectedPlugin ?? safeCapabilities.find(item => item.available && item.id !== "geoai" && !isTestudoAnalysisCapabilityId(item.id))?.id as TestudoSelectablePluginId | undefined ?? null;
       tracePackageLoadStage("feature-session-install", "start");
       const featureContext = await installFeatureSession(candidate, defaultPlugin, "published");
       tracePackageLoadStage("feature-session-install", "complete");
@@ -1079,7 +1171,13 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         installedSession.scenarios = initialScenarioRoster;
         installedSession.selectedScenarioId = initialScenarioId;
       }
-      if (!initialPlugin) throw new Error("This package has no supported viewer data");
+      const viewerKind = resolveTestudoViewerKind(initialPlugin, guestCredential ? null : candidate.analysis);
+      if (viewerKind === "analysis-only" || !initialPlugin) {
+        // Analysis-only package: no map plugin to initialise; keep package identity and the analysis grant.
+        tracePackageLoadStage("initial-mode-and-plugin-selection", "complete");
+        update({ selectedPlugin: null, selectedMode: undefined, status: "ready", error: undefined });
+        return current;
+      }
       const modeForPlugin: Partial<Record<TestudoSelectablePluginId, TestudoDemoMode>> = { "vehicle-playback": "animation", "network-kpi": "results", "scenario-comparison": "comparison", "emissions-h3": "environment", "path-analysis": "paths" };
       const requestedMode = payload.selectedPlugin ? modeForPlugin[payload.selectedPlugin] : initialMode;
       tracePackageLoadStage("initial-mode-and-plugin-selection", "start");
@@ -1089,6 +1187,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       } else await select(initialPlugin, operation);
       tracePackageLoadStage("initial-mode-and-plugin-selection", "complete");
       assertPackageOperation(operation);
+      fitPackageView(candidate.versionId, raw);
       if (payload.presetId) {
         tracePackageLoadStage("preset-application", "start");
         await applyPreset(payload.presetId);
@@ -1115,15 +1214,17 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         // Local folder loads have no Testudo session (no origin or chat credential), so GeoAI
         // cannot reach the Testudo chat routes here — the alias intentionally never matches a
         // `pkg.capabilities` key, keeping "geoai" unavailable with a clear reason.
-        const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "", "geoai-buildings": "" };
+        const aliases: Record<TestudoCapabilityId, string> = { "vehicle-playback": "animation", "network-kpi": "results", "path-analysis": "paths", "emissions-h3": "results", "scenario-comparison": "results", "geoai": "", "geoai-buildings": "", "analysis-counts": "", "analysis-od": "", "analysis-journey-time": "" };
         const emissions = pkg.dataContracts.emissions as { status?: string; reason?: string } | undefined;
         const comparisonCount = pkg.scenarios.reduce((count, scenario) => count + Math.max(1, scenario.replications.length), 0);
-        let capabilities = ids.map(id => ({ id, available: id !== "geoai" && id !== "geoai-buildings" && pkg.capabilities[aliases[id]]?.state === "available"
+        let capabilities = ids.map(id => ({ id, available: id !== "geoai" && id !== "geoai-buildings" && !isTestudoAnalysisCapabilityId(id) && pkg.capabilities[aliases[id]]?.state === "available"
           && (id !== "emissions-h3" || emissions?.status === "available")
           && (id !== "scenario-comparison" || comparisonCount > 1), reason: id === "geoai"
             ? "GeoAI chat is only available for packages loaded from Testudo, not local folders."
             : id === "geoai-buildings"
             ? "GeoAI building detection is only available for packages loaded from Testudo, not local folders."
+            : isTestudoAnalysisCapabilityId(id)
+            ? "Analysis is only available for packages loaded from Testudo, not local folders."
             : id === "emissions-h3"
             ? emissions?.reason ?? pkg.capabilities[aliases[id]]?.reason ?? "No usable emissions data is declared for this package." : pkg.capabilities[aliases[id]]?.reason ?? "No compatible dataset declared." }));
         const initialResultsCapability = reconcileResultsCapability(capabilities, Boolean(pkg.viewModes.results));
@@ -1208,6 +1309,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         }
         await selectMode(initial, true, operation);
         assertPackageOperation(operation);
+        fitPackageView(`local:${current.package?.packageId ?? ""}`, raw);
       } catch (error) {
         if (ownsPackageOperation(operation)) {
           const detail = error instanceof Error ? error.message : String(error);
@@ -1317,11 +1419,33 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           return featureBridge.getTViews()[0];
         }
         if (request.type === "testudoGetTViews") return featureBridge.getTViews();
+        if (request.type === "testudoSetPanels") {
+          // Layout-only and idempotent (latest call wins): usable before a package loads and with selectedPlugin null.
+          if (!isSetPanelsPayload(request.payload)) throw new Error("testudoSetPanels needs boolean layers, plugins and comments (optional boolean layersCollapsed, hostGeoAi); unknown keys are rejected.");
+          const next = setTestudoPanels(testudoPanelsFromPayload(request.payload));
+          return update({ panels: { ...next } });
+        }
+        if (request.type === "testudoSetPresentSuspended") {
+          // Idempotent and not gated: it only opens/closes already loaded Present panels (never reloads data).
+          if (!isSetPresentSuspendedPayload(request.payload)) throw new Error("testudoSetPresentSuspended needs a boolean suspended (optional tviewId main); unknown keys are rejected.");
+          if (commandGate.packageBusy) throw new Error("The viewer is loading a package. Please wait.");
+          if (request.payload.suspended) suspendPresent(); else resumePresent();
+          return current;
+        }
         if (request.type === "testudoSetActiveTView") {
           if (request.payload?.tviewId !== "main") throw new Error("This Testudo shell exposes only the main TView.");
           return featureBridge.setActiveTView("main");
         }
         if (request.type === "testudoGetActiveTView") return featureBridge.getActiveTView();
+        if (request.type === "testudoOpenAnalysis" || request.type === "testudoCloseAnalysis" || request.type === "testudoRefreshAnalysisGrant") {
+          // Not under the command gate: closing must stay possible while an open is still loading.
+          if (commandGate.packageBusy) throw new Error("The viewer is loading a package. Please wait.");
+          if (guestCredential) throw new Error("Analysis is not available to guest sessions.");
+          if (request.type === "testudoCloseAnalysis") return analysis.close(request.payload);
+          if (request.type === "testudoRefreshAnalysisGrant") return analysis.refreshGrant(request.payload);
+          if (!current.package) throw new Error("Select a package first.");
+          return await analysis.open(request.payload);
+        }
         const commandOwner = commandGate.beginCommand(request.type);
         try {
           if (request.type === "testudoDestroyTView") {
@@ -1573,12 +1697,23 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
           if (request.type === "testudoSeekPlayback") return featureBridge.playback("main", "seek", Number(request.payload?.tick), request.payload?.generation);
           if (request.type === "testudoSetPlaybackSpeed") return featureBridge.playback("main", "speed", Number(request.payload?.speed), request.payload?.generation);
           if (request.type === "testudoGetPlaybackState") return featureBridge.getPlaybackState("main", request.payload?.generation);
-          if (request.type === "testudoSetCameraView") {
-            const view = request.payload?.view as TestudoCameraView;
-            await featureBridge.setCameraView("main", view, request.payload?.generation);
-            return featureBridge.getCameraView("main", request.payload?.generation);
+          if (request.type === "testudoSetCameraView" || request.type === "testudoGetCameraView") {
+            // Works for analysis-only packages (no session) and on either renderer; never a silent no-op.
+            if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Camera command targets an unsupported TView.");
+            const cameraGeneration = generation;
+            const assertCameraCurrent = () => {
+              if (disposed || generation !== cameraGeneration || (request.payload?.generation !== undefined && request.payload.generation !== cameraGeneration)) throw new Error("Camera command belongs to a stale package generation.");
+            };
+            assertCameraCurrent();
+            if (request.type === "testudoSetCameraView") {
+              const validated = validateTestudoCameraView(request.payload?.view);
+              applyTestudoCamera(app, validated);
+              assertCameraCurrent();
+            }
+            const camera = readTestudoCamera(app);
+            assertCameraCurrent();
+            return camera;
           }
-          if (request.type === "testudoGetCameraView") return featureBridge.getCameraView("main", request.payload?.generation);
           if (request.type === "testudoSetViewMode") return { mode: await featureBridge.setViewMode("main", request.payload?.mode, request.payload?.generation) };
           if (request.type === "testudoFeatureRequestInvestigation") return featureBridge.requestInvestigation("main", String(request.payload?.question ?? ""),
             typeof request.payload?.activeScenarioId === "string" ? request.payload.activeScenarioId : undefined);
@@ -1641,10 +1776,11 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     // its first command so that ordering cannot strand a healthy map.
     readyTimer = setInterval(ready, 500);
     const readyStop = setTimeout(() => clearInterval(readyTimer), 60_000);
-    return () => { removeLiveDiagnostics(); disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
+    return () => { removeLiveDiagnostics(); analysis.teardown(); disposed = true; generation++; guestCredential = null; parentOrigin = null; clearInterval(persistentNetworkMapWatch); clearInterval(mapControlsTimer); unsubscribeMapControls?.(); persistentNetwork.clear(); packageFitter.dispose(); void plugins.setTestudoResultsSessionKey(null); clearInterval(readyTimer); clearTimeout(readyStop); abort.abort(); picker.current = null; modeSelector.current = null; window.removeEventListener("message", message); window.removeEventListener("testudo-scenario-analysis-action", applyScenarioAnalysisAction); unsubscribeAssistantPanel(); unsubscribeBridgeGeoAI(); unsubscribeBridgeReplies(); unsubscribePlayback(); featureBridge.close("main"); closeAllPlugins(); plugins.resetGeoAiChat(); plugins.resetGeoAiBuildings(); };
   }, [app]);
 
-  const canOpenGeoAi = Boolean(app && state.capabilities.some(item => item.id === "geoai" && item.available));
+  const hostGeoAi = useTestudoPanels().hostGeoAi;
+  const canOpenGeoAi = Boolean(app && !hostGeoAi && state.capabilities.some(item => item.id === "geoai" && item.available));
   const hasVisibleStatus = state.status === "loading" || Boolean(state.error);
   if (!canOpenGeoAi && !hasVisibleStatus) return null;
 

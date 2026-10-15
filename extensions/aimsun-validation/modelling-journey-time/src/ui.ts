@@ -1,7 +1,7 @@
 /** Tiny DOM helpers + the package picker shared by both subpath plugins. All text goes through textContent. */
 import type { Translator } from "./i18n";
 
-type Attrs = Record<string, string | number | boolean | undefined>;
+type Attrs = Record<string, string | number | boolean | Record<string, string> | undefined>;
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -9,7 +9,9 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   ...children: Array<Node | string | null | undefined>
 ): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
+  const nested = attrs.attrs && typeof attrs.attrs === "object" ? attrs.attrs : {};
+  const values = { ...nested, ...Object.fromEntries(Object.entries(attrs).filter(([k]) => k !== "attrs")) } as Record<string, string | number | boolean | undefined>;
+  for (const [k, v] of Object.entries(values)) {
     if (v === undefined || v === false) continue;
     if (k === "class") e.className = String(v);
     else if (k === "text") e.textContent = String(v);
@@ -46,9 +48,11 @@ export function packageBar(o: {
   const { t } = o;
   const url = el("input", { type: "text", class: "avp-input", placeholder: "https://.../manifest.json", "aria-label": t("pkg.url", "Package manifest URL") });
   const load = el("button", { type: "button", class: "avp-btn", text: t("pkg.load", "Load") });
-  const folder = el("input", { type: "file", class: "avp-file", "aria-label": t("pkg.folder", "Package folder") });
+  const folder = el("input", { type: "file", class: "avp-file", "aria-label": t("pkg.folder", "Package folder"), "data-testid": "package-folder-input" });
   folder.setAttribute("webkitdirectory", "");
-  const files = el("input", { type: "file", multiple: true, class: "avp-file", accept: ".parquet,.json,.geojson", "aria-label": t("pkg.files", "Package files") });
+  folder.multiple = true;
+  folder.hidden = true;
+  const openFolder = el("button", { type: "button", class: "avp-btn", text: t("pkg.openFolder", "Open package folder..."), attrs: { "data-testid": "open-package-folder" } });
   const status = el("div", { class: "avp-status", role: "status", "aria-live": "polite" });
   load.addEventListener("click", () => url.value.trim() && o.onUrl(url.value.trim()));
   url.addEventListener("keydown", (e) => {
@@ -59,15 +63,14 @@ export function packageBar(o: {
     input.value = "";
     if (list.length) o.onFiles(list);
   };
+  openFolder.addEventListener("click", () => folder.click());
   folder.addEventListener("change", pick(folder));
-  files.addEventListener("change", pick(files));
   const root = el(
     "section",
     { class: "avp-section", "data-avp": "package" },
     el("h3", { class: "avp-h", text: t("pkg.title", "Package") }),
     el("div", { class: "avp-row" }, url, load),
-    el("label", { class: "avp-lbl" }, t("pkg.folder", "Package folder"), folder),
-    el("label", { class: "avp-lbl" }, t("pkg.files", "Package files"), files),
+    el("div", { class: "avp-row" }, openFolder, folder),
     el("p", { class: "avp-hint", text: o.hint }),
     status,
   );

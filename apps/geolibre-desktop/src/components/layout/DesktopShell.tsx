@@ -140,6 +140,7 @@ import { registerMbtilesProtocol } from "../../lib/mbtiles";
 import { hasReverseGeocodeConsent } from "../../lib/reverse-geocode-consent";
 import { hasKnowledgeCardConsent, recordKnowledgeCardConsent } from "../../lib/knowledge-consent";
 import { isTestudoLayout, TESTUDO_BLOCKED_PLUGIN_IDS } from "../../lib/testudo-mode";
+import { useTestudoPanels } from "../../lib/testudo-panels";
 import type { TestudoRendererReadiness, TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { wikipediaLang } from "../../lib/knowledge";
 import { registerXyzTileProtocol } from "../../lib/xyz-url";
@@ -843,8 +844,15 @@ export function DesktopShell({
   const autoCollapsedPanel = useAutoCollapsedPanel();
   // When set, a plugin panel is docked in a shared-rail mode and takes over the
   // Style (right) or Layers (left) sidebar surface (issue #765).
-  const replaceStylePanelId = useReplaceStylePanelId();
-  const replaceLayersPanelId = useReplaceLayersPanelId();
+  const rawReplaceStylePanelId = useReplaceStylePanelId();
+  const rawReplaceLayersPanelId = useReplaceLayersPanelId();
+  // layout=testudo: the host chooses which side panels exist (testudoSetPanels).
+  // Browser stays hidden; Comments is reachable independently of plugin docks.
+  const testudoShell = isTestudoLayout();
+  const testudoPanels = useTestudoPanels();
+  const showPluginDocks = !testudoShell || testudoPanels.plugins;
+  const showCommentsPanel = testudoShell ? testudoPanels.comments : true;
+  const testudoRightDockVisible = testudoPanels.plugins || testudoPanels.comments;
   const [pluginPanelWidth, setPluginPanelWidth] = useState(PLUGIN_PANEL_DEFAULT_WIDTH);
   // The active plugin panel's content lives in this one host element (created
   // once per app instance). The active dock slot adopts it via appendChild, so
@@ -872,11 +880,27 @@ export function DesktopShell({
   const rightPanelState = useRightPanelState();
   const activePanelId = rightPanelState.activeId;
   const replaceStylePanelIds = rightPanelState.visibleIds.filter(
-    (id) => rightPanelState.panelDocks[id] === "replace-style",
+    (id) =>
+      rightPanelState.panelDocks[id] === "replace-style" &&
+      (!testudoShell || (id === COMMENTS_PANEL_ID ? testudoPanels.comments : testudoPanels.plugins)),
   );
   const replaceLayersPanelIds = rightPanelState.visibleIds.filter(
-    (id) => rightPanelState.panelDocks[id] === "replace-layers",
+    (id) =>
+      rightPanelState.panelDocks[id] === "replace-layers" &&
+      (!testudoShell || (id !== BROWSER_PANEL_ID && testudoPanels.plugins)),
   );
+  const replaceStylePanelId =
+    rawReplaceStylePanelId && replaceStylePanelIds.includes(rawReplaceStylePanelId)
+      ? rawReplaceStylePanelId
+      : testudoShell
+        ? (replaceStylePanelIds[0] ?? null)
+        : rawReplaceStylePanelId;
+  const replaceLayersPanelId =
+    rawReplaceLayersPanelId && replaceLayersPanelIds.includes(rawReplaceLayersPanelId)
+      ? rawReplaceLayersPanelId
+      : testudoShell
+        ? (replaceLayersPanelIds[0] ?? null)
+        : rawReplaceLayersPanelId;
   const activePanel = activePanelId ? getRightPanel(activePanelId) : undefined;
   // The plugins in VIEWER_BLOCKED_PLUGIN_IDS paint drawing and editing controls
   // onto the map, which the read-only viewer preset cannot hide the way it
@@ -2682,7 +2706,7 @@ export function DesktopShell({
         {/* The Browser panel body is portaled into its dedicated content host
             (which the dock slots relocate between positions), so it shares the
             app's React context and the shell owns its dock chrome. */}
-        {activePanelId === BROWSER_PANEL_ID && !layoutOptions.panelsHidden && !layoutOptions.viewer
+        {activePanelId === BROWSER_PANEL_ID && !layoutOptions.panelsHidden && !layoutOptions.viewer && !testudoShell
           ? createPortal(
               <BrowserPanel
                 mapControllerRef={mapControllerRef}
@@ -2692,7 +2716,7 @@ export function DesktopShell({
               browserContentEl,
             )
           : null}
-        {activePanelId === COMMENTS_PANEL_ID && !layoutOptions.panelsHidden
+        {activePanelId === COMMENTS_PANEL_ID && !layoutOptions.panelsHidden && showCommentsPanel
           ? createPortal(
               <CommentsPanel
                 mapControllerRef={mapControllerRef}
@@ -2709,14 +2733,14 @@ export function DesktopShell({
         {/* Map-only / hidden-panels embeds show nothing but the map: skip the
             whole left side-dock (Layers, plugin panels, and the shared rail that
             hosts the Browser entry), not just the built-in Layers panel. */}
-        {layoutOptions.panelsHidden ? null : (
+        {layoutOptions.panelsHidden || (testudoShell && !testudoPanels.layers && !testudoPanels.plugins) ? null : (
           <>
             {/* The positional plugin docks flank whichever middle surface the
                 Layers side shows (the shared rail or the standalone Layers
                 panel): a panel moved to left/right-of-layers must stay
                 reachable while a shared-rail panel such as the Browser is
                 open. */}
-            {!layoutOptions.viewer ? (
+            {!layoutOptions.viewer && showPluginDocks ? (
               <SectionErrorBoundary
                 label="Plugin panel (left of Layers)"
                 displayName={t("shell.section.pluginPanelLeftOfLayers")}
@@ -2815,7 +2839,7 @@ export function DesktopShell({
                 )}
               </SectionErrorBoundary>
             ) : null}
-            {!layoutOptions.viewer ? (
+            {!layoutOptions.viewer && showPluginDocks ? (
               <SectionErrorBoundary
                 label="Plugin panel (right of Layers)"
                 displayName={t("shell.section.pluginPanelRightOfLayers")}
@@ -3073,24 +3097,26 @@ export function DesktopShell({
         </main>
         {/* Same as the left dock: a map-only / hidden-panels embed skips the
             entire right side-dock (Style, plugin panels, and their shared rail). */}
-        {layoutOptions.panelsHidden || layoutOptions.viewer ? null : (
+        {layoutOptions.panelsHidden || layoutOptions.viewer || (testudoShell && !testudoRightDockVisible) ? null : (
           <>
             {/* Shared-rail panels such as Comments must not remove the ordinary
                 positional docks: enabled Web Services panels still live in
                 left/right-of-style and need their vertical rail entries. Both
                 flank whichever middle surface applies, so they are rendered
                 once here rather than duplicated per branch. */}
-            <SectionErrorBoundary
-              label="Plugin panel (left of Style)"
-              displayName={t("shell.section.pluginPanelLeftOfStyle")}
-            >
-              <PluginRightPanel
-                dock="left-of-style"
-                contentEl={dockContentEl}
-                width={pluginPanelWidth}
-                onWidthChange={setPluginPanelWidth}
-              />
-            </SectionErrorBoundary>
+            {showPluginDocks ? (
+              <SectionErrorBoundary
+                label="Plugin panel (left of Style)"
+                displayName={t("shell.section.pluginPanelLeftOfStyle")}
+              >
+                <PluginRightPanel
+                  dock="left-of-style"
+                  contentEl={dockContentEl}
+                  width={pluginPanelWidth}
+                  onWidthChange={setPluginPanelWidth}
+                />
+              </SectionErrorBoundary>
+            ) : null}
             {replaceStylePanelId ? (
               <SectionErrorBoundary
                 label="Shared right sidebar"
@@ -3152,17 +3178,19 @@ export function DesktopShell({
                 />
               </SectionErrorBoundary>
             ) : null}
-            <SectionErrorBoundary
-              label="Plugin panel (right of Style)"
-              displayName={t("shell.section.pluginPanelRightOfStyle")}
-            >
-              <PluginRightPanel
-                dock="right-of-style"
-                contentEl={dockContentEl}
-                width={pluginPanelWidth}
-                onWidthChange={setPluginPanelWidth}
-              />
-            </SectionErrorBoundary>
+            {showPluginDocks ? (
+              <SectionErrorBoundary
+                label="Plugin panel (right of Style)"
+                displayName={t("shell.section.pluginPanelRightOfStyle")}
+              >
+                <PluginRightPanel
+                  dock="right-of-style"
+                  contentEl={dockContentEl}
+                  width={pluginPanelWidth}
+                  onWidthChange={setPluginPanelWidth}
+                />
+              </SectionErrorBoundary>
+            ) : null}
           </>
         )}
         {notebookOpen ? (

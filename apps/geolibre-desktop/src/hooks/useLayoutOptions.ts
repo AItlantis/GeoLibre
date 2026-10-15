@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useTestudoPanels, type TestudoPanelsState } from "../lib/testudo-panels";
 import { useDesktopSettingsStore, type DesktopLayoutSettings } from "./useDesktopSettings";
 
 export interface LayoutOptions {
@@ -35,10 +36,11 @@ export function useLayoutOptions(): LayoutOptions {
   // Shallow equality keeps unrelated desktop-settings updates (which always
   // rebuild the layout object) from re-rendering every layout consumer.
   const layoutSettings = useDesktopSettingsStore(useShallow((s) => s.desktopSettings.layout));
-  return useMemo(() => layoutOptionsFromLocation(layoutSettings), [layoutSettings]);
+  const testudoPanels = useTestudoPanels();
+  return useMemo(() => layoutOptionsFromLocation(layoutSettings, testudoPanels), [layoutSettings, testudoPanels]);
 }
 
-export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings): LayoutOptions {
+export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings, testudoPanels?: TestudoPanelsState): LayoutOptions {
   if (typeof window === "undefined") {
     return {
       attributePanelVisible: true,
@@ -67,20 +69,30 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
   // `showProjectInfo` to false below, which is harmless since the toolbar is
   // hidden, but any other consumer of `compact` sees `true` in map-only mode.
   const compact = mapOnly || viewer || COMPACT_LAYOUT_VALUES.has(layout);
-  const panelsHidden =
-    mapOnly ||
-    HIDDEN_PANEL_VALUES.has(panels) ||
-    normalizedParam(params.get("hidePanels")) === "true";
-  const panelsCollapsed = !panelsHidden && panels === "collapsed";
+  // layout=testudo: panels are hidden until the host sends testudoSetPanels
+  // (default = all hidden, as before). Style/attribute panels stay hidden.
+  const testudoPanelRequest = layout === "testudo" && testudoPanels ? testudoPanels : null;
+  const testudoAnyPanel = testudoPanelRequest !== null
+    && (testudoPanelRequest.layers || testudoPanelRequest.plugins || testudoPanelRequest.comments);
+  const panelsHidden = testudoPanelRequest
+    ? !testudoAnyPanel
+    : mapOnly ||
+      HIDDEN_PANEL_VALUES.has(panels) ||
+      normalizedParam(params.get("hidePanels")) === "true";
+  const panelsCollapsed = testudoPanelRequest
+    ? testudoPanelRequest.layers && testudoPanelRequest.layersCollapsed
+    : !panelsHidden && panels === "collapsed";
   const toolbarLabels =
     !compact && !ICON_TOOLBAR_VALUES.has(toolbar) ? layoutSettings.toolbarLabels : false;
   const showProjectInfo = compact ? false : layoutSettings.showProjectInfo;
-  const layerPanelVisible = panelsHidden ? false : viewer ? true : layoutSettings.layerPanelVisible;
-  const stylePanelVisible = panelsHidden || viewer ? false : layoutSettings.stylePanelVisible;
+  const layerPanelVisible = testudoPanelRequest
+    ? testudoPanelRequest.layers
+    : panelsHidden ? false : viewer ? true : layoutSettings.layerPanelVisible;
+  const stylePanelVisible = panelsHidden || viewer || testudoPanelRequest ? false : layoutSettings.stylePanelVisible;
   // The attribute table is hidden by default and opened on demand from a
   // vector layer's context menu, so it has no persisted settings toggle; it
   // only needs to be unmounted when the embed chrome is hidden.
-  const attributePanelVisible = !panelsHidden && !viewer;
+  const attributePanelVisible = !panelsHidden && !viewer && !testudoPanelRequest;
 
   return {
     attributePanelVisible,
