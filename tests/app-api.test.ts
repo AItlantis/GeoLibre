@@ -5,6 +5,7 @@ import { tool } from "@strands-agents/sdk";
 import { z } from "zod";
 import { getExternalNativePaintBridge, useAppStore } from "@geolibre/core";
 import type { MapEngine } from "@geolibre/map";
+import { tileRequestHeadersFor } from "@geolibre/map/tile-request-headers";
 import { createAppAPI, type AppApiHost } from "../apps/geolibre-desktop/src/lib/app-api";
 import { GEOMETRY_EDIT_QUEUE_WAIT_MS } from "../apps/geolibre-desktop/src/lib/geometry-edit-session";
 import {
@@ -946,6 +947,139 @@ describe("plugin app API layers", () => {
       );
     }
     assert.deepEqual(api.getLayers(), []);
+  });
+
+  it("sends a tile layer's request headers for the session only", () => {
+    const api = createAppAPI(undefined, fakeHost().host);
+    const template = "https://records.example.org/mvt/node/{z}/{x}/{y}.pbf";
+    const tile = "https://records.example.org/mvt/node/3/2/1.pbf";
+    const vector = api.addVectorTileLayer("Records", template, {
+      sourceLayers: ["node"],
+      headers: { Authorization: "Bearer first" },
+    });
+    assert.deepEqual(tileRequestHeadersFor(tile), { Authorization: "Bearer first" });
+    assert.equal(
+      JSON.stringify(useAppStore.getState().layers).includes("Bearer"),
+      false,
+      "headers never reach the store or a saved project",
+    );
+
+    assert.equal(api.setLayerRequestHeaders(vector, { Authorization: "Bearer second" }), true);
+    assert.deepEqual(tileRequestHeadersFor(tile), { Authorization: "Bearer second" });
+    assert.equal(api.setLayerRequestHeaders(vector, null), true);
+    assert.equal(tileRequestHeadersFor(tile), undefined);
+
+    const raster = api.addTileLayer("Raster", "https://tiles.example.com/{z}/{x}/{y}.png");
+    assert.equal(api.setLayerRequestHeaders(raster, { "X-Api-Key": "k" }), true);
+    assert.deepEqual(tileRequestHeadersFor("https://tiles.example.com/1/1/1.png"), {
+      "X-Api-Key": "k",
+    });
+    api.removeLayer(raster);
+    assert.equal(tileRequestHeadersFor("https://tiles.example.com/1/1/1.png"), undefined);
+
+    const points = api.addGeoJsonLayer("Points", { type: "FeatureCollection", features: [] });
+    assert.equal(api.setLayerRequestHeaders(points, { Authorization: "Bearer x" }), false);
+    assert.equal(api.setLayerRequestHeaders("missing", { Authorization: "Bearer x" }), false);
+    assert.throws(
+      () => api.setLayerRequestHeaders(vector, { Authorization: "Bearer x\r\nX-Injected: 1" }),
+      /header "Authorization"/,
+    );
+
+    api.setLayerRequestHeaders(vector, { Authorization: "Bearer third" });
+    useAppStore.getState().newProject({ name: "Next" });
+    assert.equal(tileRequestHeadersFor(tile), undefined, "another project starts without them");
+  });
+
+  it("drops a layer's headers however the layer is removed", () => {
+    const api = createAppAPI(undefined, fakeHost().host);
+    const tile = "https://records.example.org/mvt/node/3/2/1.pbf";
+    const vector = api.addVectorTileLayer(
+      "Records",
+      "https://records.example.org/mvt/node/{z}/{x}/{y}.pbf",
+      { sourceLayers: ["node"], headers: { Authorization: "Bearer token" } },
+    );
+    assert.ok(tileRequestHeadersFor(tile));
+
+    // As the Layers panel does: straight through the store, not the plugin API.
+    useAppStore.getState().removeLayer(vector);
+
+    assert.equal(tileRequestHeadersFor(tile), undefined);
+  });
+
+  it("keeps a layer's headers through a token refresh, but not a move to another URL", () => {
+    const api = createAppAPI(undefined, fakeHost().host);
+    const vector = api.addVectorTileLayer(
+      "Records",
+      "https://records.example.org/mvt/node/{z}/{x}/{y}.pbf?token=first",
+      { sourceLayers: ["node"], headers: { Authorization: "Bearer token" } },
+    );
+    const update = (tiles: string) => {
+      const layer = useAppStore.getState().layers.find((item) => item.id === vector);
+      useAppStore.getState().updateLayer(vector, { source: { ...layer!.source, tiles: [tiles] } });
+    };
+
+    // Only the query string after the placeholders changes: same prefix.
+    update("https://records.example.org/mvt/node/{z}/{x}/{y}.pbf?token=second");
+    assert.ok(tileRequestHeadersFor("https://records.example.org/mvt/node/3/2/1.pbf"));
+
+    update("https://elsewhere.example.com/mvt/node/{z}/{x}/{y}.pbf");
+    assert.equal(
+      tileRequestHeadersFor("https://records.example.org/mvt/node/3/2/1.pbf"),
+      undefined,
+    );
+    assert.equal(
+      tileRequestHeadersFor("https://elsewhere.example.com/mvt/node/3/2/1.pbf"),
+      undefined,
+    );
+  });
+
+  it("refuses headers that could reach other servers or repeat a name", () => {
+    const api = createAppAPI(undefined, fakeHost().host);
+    // A placeholder in the host leaves only "https://" to match on.
+    assert.throws(
+      () =>
+        api.addVectorTileLayer("Shards", "https://{z}.tiles.example.com/{x}/{y}.pbf", {
+          sourceLayers: ["a"],
+          headers: { Authorization: "Bearer token" },
+        }),
+      /fixed host and path/,
+    );
+    assert.deepEqual(api.getLayers(), [], "no layer is added");
+    const sharded = api.addTileLayer("Shards", "https://{z}.tiles.example.com/{x}/{y}.png");
+    assert.throws(
+      () => api.setLayerRequestHeaders(sharded, { Authorization: "Bearer token" }),
+      /fixed host and path/,
+    );
+    assert.equal(tileRequestHeadersFor("https://basemap.example.com/1/1/1.png"), undefined);
+    assert.equal(api.setLayerRequestHeaders(sharded, null), true, "clearing still works");
+
+    const vector = api.addVectorTileLayer("Records", "https://tiles.example.com/{z}/{x}/{y}.pbf", {
+      sourceLayers: ["a"],
+    });
+    assert.throws(
+      () =>
+        api.setLayerRequestHeaders(vector, {
+          Authorization: "Bearer a",
+          authorization: "Bearer b",
+        }),
+      /given more than once/,
+    );
+    for (const browserOwned of ["Cookie", "host", "Sec-Fetch-Mode", "Proxy-Authorization"]) {
+      assert.throws(
+        () => api.setLayerRequestHeaders(vector, { [browserOwned]: "x" }),
+        /the browser sets header/,
+        browserOwned,
+      );
+    }
+    assert.throws(
+      () => api.setLayerRequestHeaders(vector, { Authorization: "Bearer ✓" }),
+      /above U\+00FF/,
+    );
+    assert.equal(
+      api.setLayerRequestHeaders(vector, { "X-Api-Key": "café" }),
+      true,
+      "Latin-1 is fine",
+    );
   });
 
   it("keeps queryable: false on a WMS layer and leaves it out otherwise (#2887)", () => {

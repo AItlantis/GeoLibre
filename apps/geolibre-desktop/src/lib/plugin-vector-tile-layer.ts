@@ -2,6 +2,11 @@ import { useAppStore } from "@geolibre/core";
 import type { GeoLibreVectorTileLayerOptions } from "@geolibre/plugins";
 import { createBaseLayer } from "../components/layout/add-data/helpers";
 import { pluginLayerMetadata } from "./plugin-layer-metadata";
+import {
+  clearLayerRequestHeaders,
+  registerLayerRequestHeaders,
+  validateRequestHeaders,
+} from "./plugin-tile-request-headers";
 
 const METHOD = "addVectorTileLayer";
 const TILE_PLACEHOLDERS = ["{z}", "{x}", "{y}"];
@@ -138,7 +143,8 @@ function withoutRenderRouting(
  * @param name - The layer name shown in the Layers panel.
  * @param url - A tile URL template with `{z}`/`{x}`/`{y}`, or a TileJSON URL.
  * @param options - The source layers to draw and the optional extent, zoom
- *   range, visibility, opacity, position, and provenance metadata.
+ *   range, visibility, opacity, position, provenance metadata, and request
+ *   headers.
  * @returns The new layer's id.
  */
 export function addPluginVectorTileLayer(
@@ -162,6 +168,7 @@ export function addPluginVectorTileLayer(
     opacity,
     beforeLayerId,
     metadata: requestedMetadata,
+    headers: requestedHeaders,
   } = options ?? ({} as Partial<GeoLibreVectorTileLayerOptions>);
   const sourceLayers = validateSourceLayers(requestedSourceLayers);
   validateBounds(bounds);
@@ -174,6 +181,8 @@ export function addPluginVectorTileLayer(
   }
   validateOpacity(opacity);
   const metadata = pluginLayerMetadata(METHOD, requestedMetadata);
+  const headers =
+    requestedHeaders === undefined ? null : validateRequestHeaders(METHOD, requestedHeaders);
 
   // Source and metadata each get their own copies of the arrays: a plugin that
   // changes its array later, or an edit to one of the two, must not reach the
@@ -200,13 +209,21 @@ export function addPluginVectorTileLayer(
       tilesUrl: tileUrl,
     },
   );
-  useAppStore.getState().addLayer(
-    {
-      ...layer,
-      visible: visible ?? true,
-      opacity: opacity ?? 1,
-    },
-    beforeLayerId ?? null,
-  );
+  // Adding the source can request the TileJSON straight away, so the headers
+  // have to be in place first.
+  registerLayerRequestHeaders(METHOD, layer, headers);
+  try {
+    useAppStore.getState().addLayer(
+      {
+        ...layer,
+        visible: visible ?? true,
+        opacity: opacity ?? 1,
+      },
+      beforeLayerId ?? null,
+    );
+  } catch (error) {
+    clearLayerRequestHeaders(layer.id);
+    throw error;
+  }
   return layer.id;
 }
