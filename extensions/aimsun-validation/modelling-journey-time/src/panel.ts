@@ -143,7 +143,7 @@ export class JourneyTimeController {
     const s = value as Partial<SavedState>;
     const stat: Stat = s.stat === "median" ? "median" : "mean";
     const window = s.window && Number.isFinite(s.window.from) && Number.isFinite(s.window.to) && s.window.to > s.window.from
-      ? { from: Math.max(0, Math.min(1439, s.window.from)), to: Math.max(1, Math.min(1440, s.window.to)) }
+      ? { from: Math.max(0, s.window.from), to: Math.max(1, s.window.to) }
       : null;
     let criteria: Criteria = { ...DEFAULT_CRITERIA, bandEdges: [...DEFAULT_CRITERIA.bandEdges] };
     try { if (s.criteria) criteria = validateCriteria(s.criteria); } catch { /* discard invalid saved criteria and use defaults */ }
@@ -1159,7 +1159,8 @@ export class JourneyTimeController {
       return { pairs: toValidationPairs(r.pairs), obsOnly: r.obsOnlyRoutes, simOnly: r.simOnlyRoutes, noOverlap };
     }
     const obs = this.rows.filter((r) => r.source === this.source);
-    const sim = run ? this.simRows.filter((r) => r.run === run) : this.simRows;
+    const selectedRun = run ?? (this.hostManaged ? this.activeRun() : null);
+    const sim = selectedRun ? this.simRows.filter((r) => r.run === selectedRun) : this.simRows;
     return pairObsSim(obs, sim, "median", this.win, this.criteria);
   }
 
@@ -1276,7 +1277,10 @@ export class JourneyTimeController {
     body.append(el("section", { class: "avp-section" }, el("h3", { class: "avp-h", text: t("worst.title", "Worst subpaths by absolute error") }), top,
       el("div", { class: "avp-table-wrap" }, table)));
     const selected = rows.find((r) => r.key === this.selected);
-    if (selected) this.renderProfile(body, selected.route, selected.direction, this.simRows);
+    if (selected) {
+      const activeRun = this.hostManaged ? this.activeRun() : null;
+      this.renderProfile(body, selected.route, selected.direction, activeRun ? this.simRows.filter((r) => r.run === activeRun) : this.simRows);
+    }
     body.append(this.detailsBlock(detailsNotes, [periodInfoEl]));
     this.updateMap();
   }

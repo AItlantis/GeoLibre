@@ -17,11 +17,11 @@ export function cursorToBucketMin(cursor_s: number, bucketMin = JT_BUCKET_MIN): 
   return ((m % 1440) + 1440) % 1440;
 }
 
-/** Host window (seconds) -> minute-of-day window used by the validation pairing; null when it collapses. */
+/** Host window (seconds) -> absolute-minute window used by validation pairing; null when it collapses. */
 export function windowToMinutes(win: Pick<HostTimeWindow, "from_s" | "to_s">): { from: number; to: number } | null {
   if (!Number.isFinite(win.from_s) || !Number.isFinite(win.to_s)) return null;
-  const from = Math.max(0, Math.min(1439, Math.floor(win.from_s / 60)));
-  const to = Math.max(0, Math.min(1440, Math.ceil(win.to_s / 60)));
+  const from = Math.max(0, Math.floor(win.from_s / 60));
+  const to = Math.max(from + 1, Math.ceil(win.to_s / 60));
   return to > from ? { from, to } : null;
 }
 
