@@ -29,8 +29,8 @@ export function planHostWindow(win: HostTimeWindow, period: HostPeriodS, bucketO
   let to = lo + Math.ceil((Math.min(win.to_s, hi) - lo) / iv - 1e-9) * iv;
   if (to <= from) to = from + iv;
   if (to > hi) { to = hi; from = Math.max(lo, to - iv); }
-  const fromMin = Math.min(1439, Math.max(0, Math.round(from / 60)));
-  const toMin = Math.min(1440, Math.max(fromMin + 1, Math.round(to / 60)));
+  const fromMin = Math.max(0, Math.round(from / 60));
+  const toMin = Math.max(fromMin + 1, Math.round(to / 60));
   const wantS = autoBucketSeconds(from, to, iv);
   const numeric = bucketOptions.filter((b) => b !== WHOLE_PERIOD && b > 0).sort((a, b) => a - b);
   let bucket: number;

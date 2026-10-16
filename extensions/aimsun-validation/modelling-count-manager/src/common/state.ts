@@ -11,7 +11,7 @@ export interface PanelState {
   runs: string[];
   run: string | null;
   obsSource: ObsSource;
-  /** Time window [fromMin, toMin) in minutes since midnight of the reference day. */
+  /** Time window [fromMin, toMin) in absolute minutes since midnight; multi-day runs can exceed 1440. */
   fromMin: number;
   toMin: number;
   bucket: number;
@@ -69,10 +69,10 @@ export type Action =
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
-/** from in [0, 1439], to in [from + 1, 1440]; non-finite input keeps the previous bound. */
+/** Non-negative absolute-minute window; non-finite input keeps the previous bound. */
 export function normalizeWindow(fromMin: number, toMin: number, prev: [number, number] = [0, 1440]): [number, number] {
-  const f = clamp(Math.round(Number.isFinite(fromMin) ? fromMin : prev[0]), 0, 1439);
-  const t = clamp(Math.round(Number.isFinite(toMin) ? toMin : prev[1]), f + 1, 1440);
+  const f = Math.max(0, Math.round(Number.isFinite(fromMin) ? fromMin : prev[0]));
+  const t = Math.max(f + 1, Math.round(Number.isFinite(toMin) ? toMin : prev[1]));
   return [f, t];
 }
 

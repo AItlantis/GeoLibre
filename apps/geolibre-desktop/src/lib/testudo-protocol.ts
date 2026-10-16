@@ -203,7 +203,9 @@ export function isSetAnalysisTimePayload(payload: unknown): payload is TestudoSe
   const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
   return Object.keys(value).every(key => ["challenge", "plugin", "generation", "from_s", "to_s", "cursor_s"].includes(key))
     && isTestudoAnalysisPluginId(value.plugin) && Number.isSafeInteger(value.generation) && Number(value.generation) >= 1
-    && finite(value.from_s) && finite(value.to_s) && finite(value.cursor_s)
+    && finite(value.from_s) && value.from_s >= 0
+    && finite(value.to_s) && value.to_s >= 0
+    && finite(value.cursor_s) && value.cursor_s >= 0
     && value.from_s <= value.cursor_s && value.cursor_s < value.to_s;
 }
 
