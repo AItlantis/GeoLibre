@@ -14,6 +14,7 @@ import type { ObsSource } from "./sql.ts";
 import { assertStillOpen, isHostOpen, packageUiPlan } from "../../../_shared/src/host-managed.ts";
 import type { ComparisonRun } from "./comparison.ts";
 import { validateCriteria, type Criteria } from "./aggregate.ts";
+import type { HostAnalysisInfo, HostInfoCallback, HostTimeWindow } from "../../../_shared/src/host-time.ts";
 
 export interface Env {
   ctx: Ctx;
@@ -84,6 +85,42 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
   let hostManaged = false;
   let openTimer: ReturnType<typeof setTimeout> | null = null;
   let disposeTask: Promise<void> = Promise.resolve();
+  /** Host time window (C15), applied while host-managed; the host owns From/To/bucket then. */
+  let hostWin: HostTimeWindow | null = null;
+  let infoCb: HostInfoCallback | null = null;
+  let lastInfoSig = "";
+  let applyingWin = false;
+
+  const buildInfo = (): HostAnalysisInfo | null => {
+    const c = ctl;
+    if (!c) return null;
+    const period = c.state.phase === "ready" || c.period() ? c.period() : null;
+    return {
+      plugin: cfg.id,
+      run: c.state.run,
+      generation: 0, // stamped by the bridge
+      period,
+      bucket_s: period ? c.bucketSeconds() : null,
+      mode: activeMode,
+      cursorMode: "window",
+      busy: c.state.busy || c.state.phase === "loading",
+    };
+  };
+  const emitInfo = (): void => {
+    if (!infoCb) return;
+    const info = buildInfo();
+    if (!info) return;
+    const sig = JSON.stringify(info);
+    if (sig === lastInfoSig) return;
+    lastInfoSig = sig;
+    try { infoCb(info); } catch { /* host callback must never break the panel */ }
+  };
+  /** Map the host window onto the controller (no-op until the run is probed, and when nothing changes). */
+  const applyHostWin = (): void => {
+    if (!hostManaged || !hostWin || !ctl || applyingWin) return;
+    applyingWin = true;
+    try { ctl.setHostWindow(hostWin); } finally { applyingWin = false; }
+  };
 
   const dispose = (a: AppLike): void => {
     if (openTimer !== null) clearTimeout(openTimer);
@@ -106,6 +143,9 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
     sections = null;
     urlBox = null;
     app = null;
+    hostWin = null;
+    infoCb = null;
+    lastInfoSig = "";
   };
 
   /** Fit once per run/package to the detectors placed on the map (all detectors when none matched). */
@@ -177,6 +217,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
         if (ctx && currentLayer) sections = cfg.build({ ctx, layer: currentLayer, selectAndZoom: (id) => { c.ctl.select(id); const a = c.ctl.aggs.find((x) => x.id === id); const p = a ? locate(c.ctl.geo, a) : null; if (p) currentLayer.zoomTo(p.lon, p.lat); }, zoomToOid: (oid) => { const p = locateOid(c.ctl.geo, oid); if (p) currentLayer.zoomTo(p.lon, p.lat); }, rerender: () => { pushMap(); renderers.forEach((r) => r()); }, loadComparisonRuns: () => c.ctl.loadComparisonRuns(), selectComparisonDetector: (run, id) => c.ctl.selectComparisonDetector(run, id) }, activeMode);
         pushMap();
         renderers.forEach((r) => r());
+        emitInfo();
       };
       const mode = el("div", { class: "av-tabs", attrs: { role: "tablist", "aria-label": t("mode.label", "View mode"), "data-testid": "view-mode" } }, [
         el("button", { class: `av-tab${activeMode === "counts" ? " av-tab-active" : ""}`, text: t("mode.counts", "Counts"), attrs: { type: "button", role: "tab", "aria-selected": String(activeMode === "counts") }, on: { click: () => chooseMode("counts") } }),
@@ -254,8 +295,10 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
             activeMode = "counts";
             if (ctx && layer) sections = cfg.build({ ctx, layer, selectAndZoom: (id) => { controller.select(id); const a = controller.aggs.find((x) => x.id === id); const p = a ? locate(controller.geo, a) : null; if (p) layer?.zoomTo(p.lon, p.lat); }, zoomToOid: (oid) => { const p = locateOid(controller.geo, oid); if (p) layer?.zoomTo(p.lon, p.lat); }, rerender: () => { pushMap(); renderers.forEach((r) => r()); }, loadComparisonRuns: () => controller.loadComparisonRuns(), selectComparisonDetector: (run, id) => controller.selectComparisonDetector(run, id) }, activeMode);
           }
+          applyHostWin();
           pushMap();
           renderers.forEach((r) => r());
+          emitInfo();
         }),
       ];
       const stopLocale = a.onLocaleChange?.((loc) => {
@@ -292,6 +335,20 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       return true;
     },
 
+    /** Host-only time window (C15, seconds since midnight): maps to the controller window; ignored while standalone. */
+    setTimeWindow(win: HostTimeWindow): void {
+      if (!win || !Number.isFinite(win.from_s) || !Number.isFinite(win.to_s) || !(win.to_s > win.from_s)) return;
+      hostWin = { from_s: win.from_s, to_s: win.to_s, cursor_s: Number.isFinite(win.cursor_s) ? win.cursor_s : win.from_s };
+      applyHostWin();
+    },
+
+    /** Host-only info callback (period, auto bucket, tab, busy); null detaches. */
+    onHostInfo(cb: HostInfoCallback | null): void {
+      infoCb = cb;
+      lastInfoSig = "";
+      emitInfo();
+    },
+
     deactivate(a: AppLike) {
       hostManaged = false;
       dispose(a);
@@ -307,6 +364,7 @@ export function makeDetectorPlugin(cfg: HostConfig): PluginLike {
       if (hostManaged !== host) {
         hostManaged = host;
         renderers.forEach((r) => r());
+        applyHostWin();
       }
       urlBox?.setUrl(u);
       a.openRightPanel?.(panelId);

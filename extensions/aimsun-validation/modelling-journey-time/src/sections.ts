@@ -5,16 +5,10 @@
  * Both are optional; without them the plugin keeps drawing the single-colour route line.
  */
 import type { GeoJSONFC, GeoJSONFeature } from "./host";
-import { NO_DATA_COLOUR, rampColour } from "./profile";
+import { NO_DATA_COLOUR } from "./profile";
 
-export type SectionMetric = "delay_s" | "delay_ratio" | "speed_kmh" | "ttime_s";
-
-export const SECTION_METRICS: ReadonlyArray<{ id: SectionMetric; label: string; unit: string; digits: number; reverse: boolean }> = [
-  { id: "delay_s", label: "Delay (s)", unit: " s", digits: 0, reverse: false },
-  { id: "delay_ratio", label: "Delay ratio (delay / travel time)", unit: "", digits: 2, reverse: false },
-  { id: "speed_kmh", label: "Speed (km/h)", unit: " km/h", digits: 0, reverse: true },
-  { id: "ttime_s", label: "Travel time (s)", unit: " s", digits: 0, reverse: false },
-];
+/** The section layer shows speed only; delay / delay ratio / travel time stay in the hover tooltip. */
+export const SECTION_LINE_WIDTH = 6;
 
 export interface SecRow {
   subpath_oid: string;
@@ -86,35 +80,46 @@ export function sectionValuesAt(rows: readonly SecRow[], oid: string, run: strin
   return out;
 }
 
-export function metricValue(v: SectionValue | undefined, m: SectionMetric): number | null {
-  if (!v) return null;
-  return m === "delay_s" ? v.dtime_s : m === "delay_ratio" ? v.delay_ratio : m === "speed_kmh" ? v.speed_kmh : v.ttime_s;
-}
+/** Red (slow) -> yellow -> green (fast); one colour per 25 % breakpoint of the route's max section speed. */
+export const SPEED_STOPS: readonly string[] = ["#d73027", "#f46d43", "#fdd835", "#a6d96a", "#1a9850"];
+export const SPEED_BREAKS: readonly number[] = [0, 0.25, 0.5, 0.75, 1];
 
-export interface SectionScale {
+const hex2rgb = (h: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+const rgb2hex = (c: number[]): string => `#${c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
+
+export interface SpeedScale {
+  /** Smallest / largest section speed of the route at the bucket (informational). */
   min: number;
   max: number;
-  metric: SectionMetric;
-  unit: string;
-  digits: number;
-  reverse: boolean;
+  /** Speeds (km/h) at the 0/25/50/75/100 % breakpoints of max. */
+  breaks: number[];
+  /** Colour at each breakpoint. */
+  stops: readonly string[];
   colour(v: number | null): string;
 }
 
-/** Linear ramp over the values of the selected route at the selected bucket (low speed is the bad end). */
-export function sectionScale(values: ReadonlyArray<number | null>, metric: SectionMetric): SectionScale {
-  const def = SECTION_METRICS.find((m) => m.id === metric)!;
+/** Fixed-breakpoint speed scale: 0 -> red, max -> green, linear in between (breakpoints at 0/25/50/75/100 % of max). */
+export function speedScale(values: ReadonlyArray<number | null>): SpeedScale {
   const v = values.filter((x): x is number => x !== null && Number.isFinite(x));
   const min = v.length ? Math.min(...v) : 0;
-  const max = v.length ? Math.max(...v) : 1;
+  const max = v.length ? Math.max(...v) : 0;
   return {
-    min, max, metric, unit: def.unit, digits: def.digits, reverse: def.reverse,
+    min, max, breaks: SPEED_BREAKS.map((b) => b * max), stops: SPEED_STOPS,
     colour: (x) => {
       if (x === null || !Number.isFinite(x)) return NO_DATA_COLOUR;
-      const t = max === min ? 0.5 : (x - min) / (max - min);
-      return rampColour(def.reverse ? 1 - t : t);
+      const f = max > 0 ? Math.min(1, Math.max(0, x / max)) : 1;
+      const pos = f * (SPEED_STOPS.length - 1);
+      const i = Math.min(SPEED_STOPS.length - 2, Math.floor(pos));
+      const a = hex2rgb(SPEED_STOPS[i]);
+      const c = hex2rgb(SPEED_STOPS[i + 1]);
+      return rgb2hex(a.map((q, j) => q + (c[j] - q) * (pos - i)));
     },
   };
+}
+
+/** CSS gradient of the legend ramp (same stops, same positions as the map colours). */
+export function speedGradient(): string {
+  return `linear-gradient(90deg, ${SPEED_STOPS.map((c, i) => `${c} ${SPEED_BREAKS[i] * 100}%`).join(", ")})`;
 }
 
 /** Section geometry features of one subpath, ordered by seq. Matches subpath_oid (string compare). */
@@ -135,18 +140,17 @@ const f1 = (v: number | null, d = 1): string => (v === null || !Number.isFinite(
 export interface SectionFeatureInput {
   geometry: GeoJSONFeature[];
   values: ReadonlyMap<number, SectionValue>;
-  metric: SectionMetric;
-  scale: SectionScale;
+  scale: SpeedScale;
   bucketLabel: string;
   routeName: string;
 }
 
-/** One coloured line per section; simplestyle `stroke` is set so a Layers-panel snapshot is styled too. */
+/** One line per section coloured by speed (km/h); simplestyle `stroke` is set so a Layers-panel snapshot is styled too. */
 export function sectionFeatures(inp: SectionFeatureInput): GeoJSONFC {
   const features: GeoJSONFeature[] = inp.geometry.map((g) => {
     const seq = Number(g.properties?.seq ?? 0);
     const v = inp.values.get(seq);
-    const val = metricValue(v, inp.metric);
+    const val = v?.speed_kmh ?? null;
     const sectionId = String(g.properties?.section_id ?? v?.section_id ?? "");
     return {
       type: "Feature",
@@ -158,7 +162,7 @@ export function sectionFeatures(inp: SectionFeatureInput): GeoJSONFC {
         bucket: inp.bucketLabel,
         ttime_s: v?.ttime_s ?? null, dtime_s: v?.dtime_s ?? null, speed_kmh: v?.speed_kmh ?? null, delay_ratio: v?.delay_ratio ?? null,
         value: val,
-        stroke: inp.scale.colour(val), "stroke-width": 6, "stroke-opacity": 1,
+        stroke: inp.scale.colour(val), "stroke-width": SECTION_LINE_WIDTH, "stroke-opacity": 1,
         tooltip: `Section ${sectionId} (#${seq}); travel time ${f1(v?.ttime_s ?? null)} s; delay ${f1(v?.dtime_s ?? null)} s; speed ${f1(v?.speed_kmh ?? null)} km/h`,
       },
     };
@@ -166,19 +170,25 @@ export function sectionFeatures(inp: SectionFeatureInput): GeoJSONFC {
   return { type: "FeatureCollection", features };
 }
 
-export interface WorstSection {
+export interface SlowestSection {
   seq: number;
   section_id: string;
-  delay_s: number;
+  speed_kmh: number;
+  length_m: number | null;
 }
 
-/** Top-n sections by delay (seconds) at the bucket. */
-export function worstSections(values: ReadonlyMap<number, SectionValue>, n = 3): WorstSection[] {
+/** The n slowest sections (km/h) at the bucket, with the section length taken from the geometry. */
+export function slowestSections(values: ReadonlyMap<number, SectionValue>, geometry: readonly GeoJSONFeature[], n = 3): SlowestSection[] {
+  const length = new Map<number, number | null>();
+  for (const g of geometry) {
+    const l = Number(g.properties?.length_m);
+    length.set(Number(g.properties?.seq ?? 0), g.properties?.length_m === null || g.properties?.length_m === undefined || !Number.isFinite(l) ? null : l);
+  }
   return [...values.values()]
-    .filter((v) => v.dtime_s !== null)
-    .sort((a, b) => (b.dtime_s as number) - (a.dtime_s as number) || a.seq - b.seq)
+    .filter((v) => v.speed_kmh !== null && Number.isFinite(v.speed_kmh))
+    .sort((a, b) => (a.speed_kmh as number) - (b.speed_kmh as number) || a.seq - b.seq)
     .slice(0, n)
-    .map((v) => ({ seq: v.seq, section_id: v.section_id, delay_s: v.dtime_s as number }));
+    .map((v) => ({ seq: v.seq, section_id: v.section_id, speed_kmh: v.speed_kmh as number, length_m: length.get(v.seq) ?? null }));
 }
 
 /** Parse subpath_sections.geojson: LineString / MultiLineString features with a subpath_oid; others are skipped and counted. */

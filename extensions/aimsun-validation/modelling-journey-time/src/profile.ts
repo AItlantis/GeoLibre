@@ -205,14 +205,25 @@ export function rampColour(t: number): string {
 export interface ColourScale {
   min: number;
   max: number;
+  /** Number of finite values the scale was built from. */
+  count?: number;
   colour(v: number | null): string;
+}
+
+/**
+ * A route legend is only meaningful when the scale spans a real range: at least two values and,
+ * for seconds, a spread of one second or more (never a degenerate "0 s - 1 s" / single-value ramp).
+ */
+export function legendUsable(scale: ColourScale, unit: "seconds" | "ratio"): boolean {
+  if ((scale.count ?? 0) < 2 || !Number.isFinite(scale.min) || !Number.isFinite(scale.max)) return false;
+  return scale.max - scale.min >= (unit === "seconds" ? 1 : 0.01);
 }
 
 export function colourScale(values: ReadonlyArray<number | null>): ColourScale {
   const v = values.filter((x): x is number => x !== null && Number.isFinite(x));
   const min = v.length ? Math.min(...v) : 0;
   const max = v.length ? Math.max(...v) : 1;
-  return { min, max, colour: (x) => (x === null || !Number.isFinite(x) ? NO_DATA_COLOUR : rampColour(max === min ? 0.5 : (x - min) / (max - min))) };
+  return { min, max, count: v.length, colour: (x) => (x === null || !Number.isFinite(x) ? NO_DATA_COLOUR : rampColour(max === min ? 0.5 : (x - min) / (max - min))) };
 }
 
 export interface OverlayInput {

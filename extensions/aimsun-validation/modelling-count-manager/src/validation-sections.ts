@@ -23,7 +23,7 @@ function complianceBlock(ctx: Env["ctx"], k: Kpis, rows: readonly ValRow[]): HTM
     { label: t("status.pass", "Pass"), value: percent(shares.pass), color: STATUS_COLORS.pass },
     { label: t("status.warn", "Warn"), value: percent(shares.warn), color: STATUS_COLORS.warn },
     { label: t("status.fail", "Fail"), value: percent(shares.fail), color: STATUS_COLORS.fail },
-  ], criteria.targetPct, t("validation.compliance", "GEH compliance")));
+  ], criteria.targetPct, t("validation.compliance", "GEH compliance"), { xTitle: t("validation.shareAxis", "Share of detectors (%)"), targetLabel: t("validation.targetMarker", "Target {{target}}%", { target: criteria.targetPct }) }));
   section.append(chart);
   return section;
 }

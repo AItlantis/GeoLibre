@@ -9,7 +9,7 @@ import type { DuckDbHandle } from "../../_shared/src/duckdb.ts";
 import type { HostApp, HostMapLike } from "../src/host.ts";
 import { canonicalTable, loadFromManifestUrl, manifestCapabilityReason, planFiles } from "../src/pkg.ts";
 import { SectionOverlay, SECTIONS_CASING, SECTIONS_LINE, SECTIONS_SRC } from "../src/sectionOverlay.ts";
-import { metricValue, parseSectionGeoJson, sectionFeatures, sectionGeometry, sectionOids, sectionScale, sectionValuesAt, toSecRows, worstSections } from "../src/sections.ts";
+import { parseSectionGeoJson, SECTION_LINE_WIDTH, sectionFeatures, sectionGeometry, sectionOids, sectionValuesAt, slowestSections, speedGradient, speedScale, SPEED_STOPS, toSecRows } from "../src/sections.ts";
 import { openSession } from "../src/session.ts";
 import { H, JUMEIRA, SRC, SYNTH, sectionGeo, sectionTt } from "./fixtures/c11c12.ts";
 
@@ -36,43 +36,58 @@ test("sectionValuesAt: mean over the buckets overlapping the slider bucket; run 
   assert.equal(sectionValuesAt(rows.map((r) => ({ ...r, run: null })), String(OID), "AM", 9 * H, 9 * H + 900).get(1)!.n, 6);
 });
 
-test("metrics: delay_s / delay_ratio / speed_kmh / ttime_s; ramp is reversed for speed; nulls are grey", () => {
+test("speed scale: fixed breakpoints at 0/25/50/75/100 % of the route max, red (slow) to green (fast), nulls grey", () => {
   const v = sectionValuesAt(sectionTt(OID, 3, 9 * H, 9 * H + 300, "AM"), String(OID), null, 9 * H, 9 * H + 900);
-  assert.deepEqual([1, 2, 3].map((i) => metricValue(v.get(i), "delay_s")), [10, 20, 30]);
-  assert.deepEqual([1, 2, 3].map((i) => metricValue(v.get(i), "speed_kmh")), [45, 40, 35]);
-  assert.equal(metricValue(undefined, "delay_s"), null);
-  const d = sectionScale([10, 20, 30], "delay_s");
-  assert.deepEqual([d.min, d.max, d.unit, d.reverse], [10, 30, " s", false]);
-  const sp = sectionScale([35, 40, 45], "speed_kmh");
-  assert.equal(sp.reverse, true);
-  assert.notEqual(d.colour(10), d.colour(30));
-  assert.equal(sp.colour(35), d.colour(30)); // slowest = worst = darkest, same as the highest delay
-  assert.equal(sp.colour(45), d.colour(10));
-  assert.equal(d.colour(null), "#9ca3af");
-  assert.equal(sectionScale([5, 5], "delay_ratio").colour(5), sectionScale([1, 9], "delay_ratio").colour(5));
+  assert.deepEqual([1, 2, 3].map((i) => v.get(i)!.speed_kmh), [45, 40, 35]);
+  const sc = speedScale([45, 40, 35, null]);
+  assert.deepEqual([sc.min, sc.max], [35, 45]);
+  assert.deepEqual(sc.breaks, [0, 11.25, 22.5, 33.75, 45]);
+  assert.equal(sc.colour(0), SPEED_STOPS[0]);
+  assert.equal(sc.colour(45), SPEED_STOPS[4]);
+  assert.equal(sc.colour(22.5), SPEED_STOPS[2]);
+  assert.equal(sc.colour(11.25), SPEED_STOPS[1]);
+  assert.equal(sc.colour(33.75), SPEED_STOPS[3]);
+  assert.equal(sc.colour(null), "#9ca3af");
+  // red -> yellow -> green: the red channel falls, the green channel of the slow end is lower than the fast end
+  const rgb = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  assert.ok(rgb(sc.colour(0))[0] > 200 && rgb(sc.colour(0))[1] < 90, "slow is red");
+  assert.ok(rgb(sc.colour(22.5))[0] > 200 && rgb(sc.colour(22.5))[1] > 200, "middle is yellow");
+  assert.ok(rgb(sc.colour(45))[1] > rgb(sc.colour(45))[0], "fast is green");
+  // the scale is anchored at 0, not at the route minimum: a uniformly slow route is not painted green
+  assert.equal(speedScale([10, 10]).colour(10), SPEED_STOPS[4]);
+  assert.notEqual(speedScale([10, 40]).colour(10), speedScale([10, 10]).colour(10));
+  assert.match(speedGradient(), /^linear-gradient\(90deg, #d73027 0%.*#1a9850 100%\)$/);
+  // no data at all
+  assert.equal(speedScale([null]).max, 0);
 });
 
-test("worst sections: top 3 by delay with seq and section id; features carry value, colour and tooltip", () => {
+test("slowest sections: 3 lowest speeds with seq, section id, speed and length; features carry speed value, colour and tooltip", () => {
   const rows = sectionTt(OID, 5, 9 * H, 9 * H + 300, "AM");
   const v = sectionValuesAt(rows, String(OID), "AM", 9 * H, 9 * H + 900);
-  assert.deepEqual(worstSections(v, 3), [
-    { seq: 5, section_id: "1004", delay_s: 50 },
-    { seq: 4, section_id: "1003", delay_s: 40 },
-    { seq: 3, section_id: "1002", delay_s: 30 },
-  ]);
   const geo = sectionGeo(OID, 5);
-  const fc = sectionFeatures({ geometry: sectionGeometry(geo, String(OID)), values: v, metric: "delay_s", scale: sectionScale([10, 50], "delay_s"), bucketLabel: "09:00", routeName: "Route 01" });
+  const geometry = sectionGeometry(geo, String(OID));
+  const slow = slowestSections(v, geometry, 3);
+  assert.deepEqual(slow.map((x) => [x.seq, x.section_id, x.speed_kmh]), [[5, "1004", 25], [4, "1003", 30], [3, "1002", 35]]);
+  assert.ok(slow.every((x) => x.length_m === null || Number.isFinite(x.length_m)));
+  assert.equal(slowestSections(v, geometry, 1).length, 1);
+  const scale = speedScale([...v.values()].map((x) => x.speed_kmh));
+  const fc = sectionFeatures({ geometry, values: v, scale, bucketLabel: "09:00", routeName: "Route 01" });
   assert.equal(fc.features.length, 5);
   assert.deepEqual(fc.features.map((f) => f.properties!.seq), [1, 2, 3, 4, 5]);
   const f5 = fc.features[4].properties!;
-  assert.equal(f5.value, 50);
+  assert.equal(f5.value, 25);
   assert.equal(f5.section_id, "1004");
   assert.match(String(f5.tooltip), /Section 1004 \(#5\).*travel time 110\.0 s.*delay 50\.0 s.*speed 25\.0 km\/h/);
   assert.notEqual(fc.features[0].properties!.stroke, f5.stroke);
-  assert.equal(f5["stroke-width"], 6);
+  assert.equal(f5.stroke, scale.colour(25));
+  // constant line width on every section (length is visible on the map)
+  assert.ok(fc.features.every((f) => f.properties!["stroke-width"] === SECTION_LINE_WIDTH));
   // a section without simulated values is drawn grey
-  const partial = sectionFeatures({ geometry: sectionGeometry(geo, String(OID)), values: new Map([...v].filter(([k]) => k !== 3)), metric: "delay_s", scale: sectionScale([10, 50], "delay_s"), bucketLabel: "09:00", routeName: "R" });
+  const partial = sectionFeatures({ geometry, values: new Map([...v].filter(([k]) => k !== 3)), scale, bucketLabel: "09:00", routeName: "R" });
   assert.equal(partial.features[2].properties!.stroke, "#9ca3af");
+  // lengths come from the geometry properties
+  const withLen = geometry.map((g) => ({ ...g, properties: { ...g.properties, length_m: 120 + Number(g.properties!.seq) } }));
+  assert.equal(slowestSections(v, withLen, 1)[0].length_m, 125);
 });
 
 test("geometry helpers: geometry per subpath ordered by seq; parse skips features without line geometry / oid / seq", () => {
@@ -117,7 +132,7 @@ test("SectionOverlay: own source + casing/line layers, redrawn in place, re-adde
   const fm = fakeMap();
   const app = { addGeoJsonLayer: () => "x", getMap: () => fm.map } as unknown as HostApp;
   const ov = new SectionOverlay(() => app);
-  const fc = sectionFeatures({ geometry: sectionGeometry(sectionGeo(OID, 2), String(OID)), values: new Map(), metric: "delay_s", scale: sectionScale([], "delay_s"), bucketLabel: "09:00", routeName: "R" });
+  const fc = sectionFeatures({ geometry: sectionGeometry(sectionGeo(OID, 2), String(OID)), values: new Map(), scale: speedScale([]), bucketLabel: "09:00", routeName: "R" });
   assert.equal(ov.set(fc), true);
   assert.deepEqual(fm.layers, [SECTIONS_CASING, SECTIONS_LINE]);
   assert.ok(fm.sources.has(SECTIONS_SRC));

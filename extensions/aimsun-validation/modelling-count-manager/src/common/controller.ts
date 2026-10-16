@@ -26,6 +26,8 @@ import {
   type PackageIndex,
   type RunEntry,
 } from "./package-source.ts";
+import { planHostWindow, type HostWindowPlan } from "./host-window.ts";
+import type { HostTimeWindow } from "../../../_shared/src/host-time.ts";
 import { initialState, reduce, type Action, type PanelState } from "./state.ts";
 import type { ComparisonRun } from "./comparison.ts";
 import {
@@ -107,6 +109,8 @@ export class DetController {
   sources: ResolvedSource[] | null = null;
   /** Reports listed by the run's manifest (`reports`): exposed read-only, never loaded as tables. */
   reports: ReportRef[] = [];
+  /** Legacy packages: the observed files (validation / calibration) that really hold rows; null = unknown or v2 package. */
+  legacyObsSources: Array<"validation" | "calibration"> | null = null;
   /** Simulated eids shared by several simulated oids -> how many (C8); the others are absent. */
   sharedEids: Map<string, number> = new Map();
   /** Columns of the loaded raw observed table (extended mode). */
@@ -370,6 +374,7 @@ export class DetController {
       this.observed = observed;
       this.sources = meta.sources ? resolveSources(meta.sources, observed) : null;
       this.reports = meta.reports;
+      this.legacyObsSources = null;
       this.obsColumns = [];
       this.probeInfo = null;
       this.sharedEids = new Map();
@@ -395,6 +400,17 @@ export class DetController {
         this.obsColumns = await withLock(async () =>
           (await db.query<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_name = '${t.obs}'`)).map((r) => String(r.column_name)),
         );
+      }
+      if (!this.sources && e.obs) {
+        this.legacyObsSources = await withLock(async () => {
+          try {
+            const rows = await db.query<{ s: string }>(`SELECT DISTINCT source_file AS s FROM ${t.obs} WHERE flow IS NOT NULL`);
+            const have = new Set(rows.map((r) => String(r.s)));
+            return (["validation", "calibration"] as const).filter((k) => have.has(k));
+          } catch {
+            return null;
+          }
+        });
       }
       // keep the user's observed source across runs when the run offers it, else its default
       if (this.sources) {
@@ -498,6 +514,30 @@ export class DetController {
   setWindow(fromMin: number, toMin: number): void {
     this.dispatch({ type: "set-window", fromMin, toMin });
     void this.refresh();
+  }
+
+  /** Period (seconds) spanned by the detector intervals (min/max) and the interval length; null before the run is probed. */
+  period(): { start_s: number; end_s: number; interval_s: number } | null {
+    const p = this.probeInfo;
+    return p ? { start_s: p.start * 60, end_s: p.end * 60, interval_s: p.dur * 60 } : null;
+  }
+
+  /** Host-managed window: map seconds to the window (snapped to the data interval) plus the auto bucket; one refresh. Returns the plan applied (null while not probed). */
+  setHostWindow(win: HostTimeWindow): HostWindowPlan | null {
+    const period = this.period();
+    if (!period || this.state.phase !== "ready") return null;
+    const plan = planHostWindow(win, period, this.state.bucketOptions);
+    const s = this.state;
+    if (plan.fromMin === s.fromMin && plan.toMin === s.toMin && plan.bucket === s.bucket) return plan;
+    this.dispatch({ type: "set-bucket", bucket: plan.bucket });
+    this.setWindow(plan.fromMin, plan.toMin);
+    return plan;
+  }
+
+  /** Bucket length (s) currently in effect. */
+  bucketSeconds(): number {
+    const s = this.state;
+    return s.bucket === WHOLE_PERIOD ? (s.toMin - s.fromMin) * 60 : s.bucket * 60;
   }
 
   setBucket(bucket: number): void {

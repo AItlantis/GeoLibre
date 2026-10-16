@@ -1,5 +1,6 @@
 import { getDuckDbInline } from "../../_shared/src/browser";
 import type { HostApp, HostPlugin } from "./host";
+import type { HostInfoCallback } from "../../_shared/src/host-time";
 import { makeTranslator } from "./i18n";
 import pkg from "../package.json";
 import { assertStillOpen, isHostOpen } from "../../_shared/src/host-managed";
@@ -10,6 +11,7 @@ let stopLocale: (() => void) | null = null;
 let unregister: (() => void) | null = null;
 let controller: JourneyTimeController | null = null;
 let pendingState: SavedState | null = null;
+let hostInfoCb: HostInfoCallback | null = null;
 let openTimer: ReturnType<typeof setTimeout> | null = null;
 
 const t = makeTranslator(PLUGIN_ID, () => app);
@@ -26,6 +28,7 @@ const plugin: HostPlugin = {
     controller = new JourneyTimeController({ getApp: () => app, getDuck: () => getDuckDbInline(), t, initial: pendingState });
     pendingState = null;
     const c = controller;
+    if (hostInfoCb) c.onHostInfo(hostInfoCb);
     unregister = a.registerRightPanel?.({
       id: PLUGIN_ID,
       title,
@@ -46,6 +49,7 @@ const plugin: HostPlugin = {
     unregister?.();
     unregister = null;
     a.unregisterRightPanel?.(PLUGIN_ID);
+    controller?.onHostInfo(null);
     controller?.dispose();
     controller = null;
     app = null;
@@ -57,12 +61,32 @@ const plugin: HostPlugin = {
     if (!url || !c) return false;
     app = a;
     c.setHostManaged(isHostOpen(params));
+    const wantedRun = params.get("aimsunRun");
     a.openRightPanel?.(PLUGIN_ID);
     // Resolves true only once the package finished loading; rejects with the load error message otherwise.
     const loaded = await c.loadUrl(url);
     assertStillOpen(c, controller);
     if (!loaded) throw new Error(c.loadError ?? "The analysis package could not be loaded.");
+    if (wantedRun) await c.setRun(wantedRun);
+    assertStillOpen(c, controller);
     return true;
+  },
+
+  /** Host-only run switch (Testudo); no-op unless the host opened this plugin. */
+  async setRun(run) {
+    const c = controller;
+    return c ? c.setRun(run) : false;
+  },
+
+  /** Host-driven window + cursor (C15). */
+  setTimeWindow(win) {
+    controller?.setTimeWindow(win);
+  },
+
+  /** The host receives period / bucket / tab / busy info through this callback (C15). */
+  onHostInfo(cb) {
+    hostInfoCb = cb;
+    controller?.onHostInfo(cb);
   },
 
   getProjectState: () => controller?.getState() ?? pendingState ?? undefined,

@@ -44,7 +44,20 @@ export interface TestudoRefreshAnalysisGrant { baseUrl: string; expiresAt: numbe
  * Reply/event of the Analyse commands. `open`/`closed`/`error` answer open and close
  * (`plugin` set); `refreshed`/`error` answer testudoRefreshAnalysisGrant (`plugin` absent, `expiresAt` in epoch ms).
  */
-export interface TestudoAnalysisStatus { plugin?: TestudoAnalysisPluginId; status: "open" | "closed" | "error" | "refreshed"; run?: string; generation?: number; expiresAt?: number; error?: string }
+/** testudoSetAnalysisTime payload (contract C15). Times are seconds since midnight; from_s <= cursor_s < to_s; `generation` must be the open one. */
+export interface TestudoSetAnalysisTime { plugin: TestudoAnalysisPluginId; generation: number; from_s: number; to_s: number; cursor_s: number }
+/** testudoAnalysisInfo event payload (contract C15): what the open plugin can show and how it is bucketed. */
+export interface TestudoAnalysisInfo {
+  plugin: TestudoAnalysisPluginId;
+  run: string | null;
+  generation: number;
+  period: { start_s: number; end_s: number; interval_s: number } | null;
+  bucket_s: number | null;
+  mode: string | null;
+  cursorMode: "window" | "cursor";
+  busy: boolean;
+}
+export interface TestudoAnalysisStatus { plugin?: TestudoAnalysisPluginId; status: "loading" | "open" | "closed" | "error" | "refreshed"; run?: string; generation?: number; expiresAt?: number; error?: string }
 export interface TestudoBootstrap {
   packageId: string;
   versionId: string;

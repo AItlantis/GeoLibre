@@ -274,19 +274,42 @@ export function timeSeriesSvg(series: DayProfileSeries, o: TimeSeriesOptions = {
 }
 
 export interface ShareDatum { label: string; value: number; color: string }
-/** Stacked horizontal share bar with a percent target marker. */
-export function stackedBarSvg(data: readonly ShareDatum[], target = 85, label = "Compliance shares"): string {
-  const y = 34, x = M.left, w = IW;
+export interface StackedBarOptions { xTitle?: string; targetLabel?: string }
+/** Share chart height (viewBox units): one bar, an x axis with ticks, a title and a legend row. */
+export const SHARE_H = 104;
+/**
+ * Stacked horizontal share bar: x axis 0-100% with ticks every 25, axis title, legend swatches with
+ * values and a labelled target marker. The SVG is only SHARE_H tall (not the 300 of the other charts).
+ */
+export function stackedBarSvg(data: readonly ShareDatum[], target = 85, label = "Compliance shares", o: StackedBarOptions = {}): string {
+  const x = M.left, w = IW, barY = 22, barH = 20, axisY = barY + barH + 4;
   let offset = 0, body = "";
   for (const d of data) {
     const width = Math.max(0, Math.min(100 - offset, d.value)) / 100 * w;
-    body += `<rect x="${f(x + offset / 100 * w)}" y="${y}" width="${f(width)}" height="24" fill="${esc(d.color)}"><title>${esc(`${d.label}: ${formatTick(d.value)}%`)}</title></rect>`;
+    body += `<rect x="${f(x + offset / 100 * w)}" y="${barY}" width="${f(width)}" height="${barH}" fill="${esc(d.color)}"><title>${esc(`${d.label}: ${formatTick(d.value)}%`)}</title></rect>`;
     offset += d.value;
   }
-  const tx = x + Math.max(0, Math.min(100, target)) / 100 * w;
-  body += `<line x1="${f(tx)}" y1="${y - 8}" x2="${f(tx)}" y2="${y + 32}" stroke="${ACCENT}" stroke-width="2"><title>${esc(`${formatTick(target)}% target`)}</title></line>`;
-  body += `<text x="${x}" y="${y + 45}" font-size="10" fill="${TICK}">0%</text><text x="${x + w}" y="${y + 45}" text-anchor="end" font-size="10" fill="${TICK}">100%</text>`;
-  return frame(label, body, "Share (%)");
+  // x axis 0-100 with ticks every 25
+  body += `<line x1="${x}" y1="${axisY}" x2="${x + w}" y2="${axisY}" stroke="${AXIS}"/>`;
+  for (const t of [0, 25, 50, 75, 100]) {
+    const tx = x + t / 100 * w;
+    body += `<line x1="${f(tx)}" y1="${axisY}" x2="${f(tx)}" y2="${axisY + 4}" stroke="${AXIS}"/><text x="${f(tx)}" y="${axisY + 14}" text-anchor="middle" font-size="10" fill="${TICK}">${t}</text>`;
+  }
+  body += `<text x="${x + w / 2}" y="${axisY + 27}" text-anchor="middle" font-size="11" fill="${TICK}">${esc(o.xTitle ?? "Share of detectors (%)")}</text>`;
+  // labelled target marker
+  const clamped = Math.max(0, Math.min(100, target));
+  const mx = x + clamped / 100 * w;
+  const targetText = o.targetLabel ?? `Target ${formatTick(target)}%`;
+  body += `<line x1="${f(mx)}" y1="${barY - 6}" x2="${f(mx)}" y2="${barY + barH + 4}" stroke="${ACCENT}" stroke-width="2"><title>${esc(`${formatTick(target)}% target`)}</title></line>`;
+  body += `<text x="${f(mx)}" y="${barY - 9}" text-anchor="${clamped > 70 ? "end" : "middle"}" font-size="10" fill="${ACCENT}">${esc(targetText)}</text>`;
+  // legend: swatch + "Label value%"
+  const legendY = axisY + 40;
+  const slot = w / Math.max(1, data.length);
+  data.forEach((d, i) => {
+    const lx = x + i * slot;
+    body += `<rect x="${f(lx)}" y="${legendY - 9}" width="10" height="10" fill="${esc(d.color)}"/><text x="${f(lx + 14)}" y="${legendY}" font-size="10" fill="${TICK}">${esc(`${d.label} ${formatTick(Math.round(d.value * 10) / 10)}%`)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${CHART_W} ${SHARE_H}" width="100%" role="img" aria-label="${esc(label)}" style="height:auto;inline-size:100%" preserveAspectRatio="xMidYMid meet">${body}</svg>`;
 }
 
 export interface GroupedBarDatum { label: string; value: number; n?: number; color: string }

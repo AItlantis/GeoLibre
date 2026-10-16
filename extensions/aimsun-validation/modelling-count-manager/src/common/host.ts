@@ -81,6 +81,9 @@ export interface PluginLike {
   handleUrlParameters?: (app: AppLike, params: URLSearchParams) => void | boolean | Promise<void | boolean>;
   /** Host-only run switch (Testudo analysis bridge); resolves false unless the host opened the plugin. */
   setRun?: (run: string) => Promise<boolean>;
+  /** Host-only time window / info hooks (Testudo analysis bridge, contract C15). */
+  setTimeWindow?: (win: { from_s: number; to_s: number; cursor_s: number }) => void;
+  onHostInfo?: (cb: ((info: any) => void) | null) => void;
   getProjectState?: () => unknown;
   applyProjectState?: (app: AppLike, state: unknown) => boolean | void;
 }

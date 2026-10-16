@@ -1,11 +1,20 @@
-import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisPluginId, TestudoAnalysisStatus, TestudoCloseAnalysis, TestudoOpenAnalysis, TestudoRefreshAnalysisGrant } from "@geolibre/embed";
-import { analysisExpiryMs, isTestudoAnalysisPluginId, parseAnalysisUrl, TESTUDO_ANALYSIS_CAPABILITY_IDS, TESTUDO_ANALYSIS_PLUGIN_IDS } from "./testudo-protocol";
+import type { TestudoAnalysisBootstrap, TestudoAnalysisCapabilityId, TestudoAnalysisInfo, TestudoAnalysisPluginId, TestudoAnalysisStatus, TestudoCloseAnalysis, TestudoOpenAnalysis, TestudoRefreshAnalysisGrant, TestudoSetAnalysisTime } from "@geolibre/embed";
+import { analysisExpiryMs, isSetAnalysisTimePayload, isTestudoAnalysisPluginId, parseAnalysisUrl, TESTUDO_ANALYSIS_CAPABILITY_IDS, TESTUDO_ANALYSIS_PLUGIN_IDS } from "./testudo-protocol";
 
 /** The slice of `PluginManager` the Analyse bridge needs (kept structural so tests can stub it). */
 export interface TestudoAnalysisHost<App> {
   /** Activate (if needed) and run only that plugin's URL handler. `ok` is true only after the package finished loading. */
   openWithParams(id: string, params: Record<string, string>, app: App): Promise<{ ok: boolean; error?: string }>;
   deactivate(id: string, app: App): void;
+  /** The registered plugin object (for its optional setRun / setTimeWindow / onHostInfo hooks); null/absent when unknown. */
+  getPlugin?(id: string): unknown;
+}
+
+/** Optional hooks a plugin may expose to the bridge (contract C15). All are best effort: a plugin without them is simply skipped. */
+interface AnalysisPluginHooks {
+  setRun?: (run: string) => Promise<boolean> | boolean;
+  setTimeWindow?: (win: { from_s: number; to_s: number; cursor_s: number }) => void;
+  onHostInfo?: (cb: ((info: TestudoAnalysisInfo) => void) | null) => void;
 }
 
 export class StaleAnalysisGenerationError extends Error {
@@ -59,14 +68,60 @@ export class TestudoAnalysisController<App> {
   private generations = new Map<TestudoAnalysisPluginId, number>();
   private epochs = new Map<TestudoAnalysisPluginId, number>();
   private wanted = new Map<TestudoAnalysisPluginId, boolean>();
-  private opened = new Map<TestudoAnalysisPluginId, { run: string; generation: number }>();
+  private opened = new Map<TestudoAnalysisPluginId, { run: string; generation: number; manifestUrl: string }>();
+  /** Latest host time window per plugin, replayed once an open (or run switch) completes. */
+  private windows = new Map<TestudoAnalysisPluginId, Pick<TestudoSetAnalysisTime, "from_s" | "to_s" | "cursor_s">>();
 
   constructor(
     private readonly host: TestudoAnalysisHost<App>,
     private readonly app: App,
     private readonly emit: (status: TestudoAnalysisStatus) => void = () => undefined,
     private readonly now: () => number = Date.now,
+    private readonly emitInfo: (info: TestudoAnalysisInfo) => void = () => undefined,
   ) {}
+
+  private hooks(plugin: TestudoAnalysisPluginId): AnalysisPluginHooks | null {
+    const found = this.host.getPlugin?.(plugin);
+    return found && typeof found === "object" ? found as AnalysisPluginHooks : null;
+  }
+
+  /** Register (or clear) the plugin's info callback; stale generations are dropped and plugin/generation are stamped by the bridge. */
+  private bindInfo(plugin: TestudoAnalysisPluginId, epoch: number, generation: number, run: string): void {
+    const hooks = this.hooks(plugin);
+    if (!hooks?.onHostInfo) return;
+    try {
+      hooks.onHostInfo(info => {
+        if (this.epochs.get(plugin) !== epoch || !this.wanted.get(plugin) || !info || typeof info !== "object") return;
+        this.emitInfo({ ...info, plugin, generation, run: info.run ?? run });
+      });
+    } catch { /* a misbehaving plugin hook must not break open/close */ }
+  }
+
+  private unbindInfo(plugin: TestudoAnalysisPluginId): void {
+    try { this.hooks(plugin)?.onHostInfo?.(null); } catch { /* ignore */ }
+  }
+
+  private applyWindow(plugin: TestudoAnalysisPluginId): void {
+    const win = this.windows.get(plugin);
+    if (!win) return;
+    try { this.hooks(plugin)?.setTimeWindow?.({ from_s: win.from_s, to_s: win.to_s, cursor_s: win.cursor_s }); } catch { /* ignore */ }
+  }
+
+  /**
+   * testudoSetAnalysisTime: forward the host window/cursor to the plugin's optional `setTimeWindow`.
+   * The plugin must be the open (or opening) one and the generation must match; a plugin without the hook ignores it.
+   */
+  setTime(payload: TestudoSetAnalysisTime): TestudoAnalysisStatus {
+    if (!isSetAnalysisTimePayload(payload)) throw new Error("Invalid analysis time window.");
+    const { plugin, generation } = payload;
+    const latest = this.generations.get(plugin) ?? 0;
+    if (!this.wanted.get(plugin) && !this.opened.has(plugin)) throw new Error(`Analysis plugin ${plugin} is not open.`);
+    if (generation !== latest) throw new StaleAnalysisGenerationError(plugin, generation, latest);
+    this.windows.set(plugin, { from_s: payload.from_s, to_s: payload.to_s, cursor_s: payload.cursor_s });
+    this.applyWindow(plugin);
+    const open = this.opened.get(plugin);
+    return open ? { plugin, status: "open", run: open.run, generation } : { plugin, status: "loading", generation };
+  }
 
   /** Package switch: close everything and adopt the new package's analysis block (or none). */
   setPackage(analysis: TestudoAnalysisBootstrap | null | undefined, versionId: string | null = null): void {
@@ -125,11 +180,21 @@ export class TestudoAnalysisController<App> {
     this.generations.set(plugin, generation);
     const epoch = this.bump(plugin);
     this.wanted.set(plugin, true);
+    this.windows.delete(plugin); // a new open/run switch starts from the host default window
+    this.emit({ plugin, status: "loading", run, generation });
     try {
       this.authorize(plugin, manifestUrl, run);
+      const previous = this.opened.get(plugin);
       let opened: { ok: boolean; error?: string };
       try {
-        opened = await this.host.openWithParams(plugin, { aimsunPackage: manifestUrl, aimsunRun: run, aimsunHost: "testudo" }, this.app);
+        this.bindInfo(plugin, epoch, generation, run);
+        // Run switch on an already-open plugin over the same manifest: use its host-only setRun when present.
+        const setRun = previous && previous.manifestUrl === manifestUrl && previous.run !== run ? this.hooks(plugin)?.setRun : undefined;
+        const switched = setRun ? await this.hooks(plugin)!.setRun!(run) : false;
+        opened = switched === true
+          ? { ok: true }
+          : await this.host.openWithParams(plugin, { aimsunPackage: manifestUrl, aimsunRun: run, aimsunHost: "testudo" }, this.app);
+        this.bindInfo(plugin, epoch, generation, run); // the plugin may only exist (or have reset its callback) after the open
       } catch (error) {
         opened = { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -140,6 +205,7 @@ export class TestudoAnalysisController<App> {
       }
       if (!opened.ok) {
         // The plugin activated but its package failed to load: tear the half-open panel down.
+        this.unbindInfo(plugin);
         this.host.deactivate(plugin, this.app);
         throw new Error(opened.error || `Analysis plugin ${plugin} could not be opened.`);
       }
@@ -150,7 +216,8 @@ export class TestudoAnalysisController<App> {
       }
       throw error;
     }
-    this.opened.set(plugin, { run, generation });
+    this.opened.set(plugin, { run, generation, manifestUrl });
+    this.applyWindow(plugin);
     const status: TestudoAnalysisStatus = { plugin, status: "open", run, generation };
     this.emit(status);
     return status;
@@ -166,6 +233,8 @@ export class TestudoAnalysisController<App> {
     this.bump(plugin);
     this.wanted.set(plugin, false);
     this.opened.delete(plugin);
+    this.windows.delete(plugin);
+    this.unbindInfo(plugin);
     this.host.deactivate(plugin, this.app);
     const status: TestudoAnalysisStatus = { plugin, status: "closed" };
     this.emit(status);
