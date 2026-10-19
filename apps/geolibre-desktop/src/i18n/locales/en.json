@@ -2485,9 +2485,32 @@
       "load": "Load",
       "loadFolder": "Load folder",
       "tabs": {
+        "dashboard": "Dashboard",
         "dataSource": "Data Source",
         "style": "Style",
         "playback": "Playback"
+      },
+      "dashboard": {
+        "title": "Results dashboard",
+        "scope": "Perspective",
+        "selected": "Selected section",
+        "viewport": "Sections in viewport",
+        "network": "Whole network",
+        "selectSection": "Select a section on the map to view its results.",
+        "loading": "Loading dashboard data…",
+        "error": "Dashboard data could not be loaded: {{error}}",
+        "emptyViewport": "No sections are in the current viewport.",
+        "noValues": "No result values are available for this perspective.",
+        "noMetricValues": "No values are available for this metric.",
+        "noPairedValues": "No paired values are available for this interval set.",
+        "formula": "Flow is the sum of section link flows. Density is weighted by road length; speed is weighted by flow. These are network summaries, not boundary throughput.",
+        "singleFormula": "Values are reported for this section. The network-level weighting formulas do not change the section values.",
+        "coverage": "Coverage: {{flow}} of {{sections}} flow values, {{density}} density values across {{lengthKm}} of {{scopeLengthKm}} km, {{speed}} speed values ({{flowWeight}} of {{flowTotal}} veh/h flow weight); {{missingGeometry}} sections lack usable geometry or CRS.",
+        "periodAggregate": "This package contains a whole-period aggregate only; no interval time series is available.",
+        "dataTable": "View chart values",
+        "dataTableCaption": "Flow, density, and speed values by interval",
+        "overTime": "{{metric}} over time",
+        "flowVs": "Flow vs {{metric}}"
       }
     },
     "pathAnalysis": {

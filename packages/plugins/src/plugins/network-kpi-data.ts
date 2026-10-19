@@ -53,6 +53,8 @@ export interface NetworkKpiManifest {
   geometry: NetworkKpiGeometrySources;
   /** Package extent in WGS84, when the manifest declares one. */
   bounds: [number, number, number, number] | null;
+  /** CRS of the packaged section geometry. Unknown means length weighting is unavailable. */
+  geometryEpsg: number | null;
   /** Manifest-provided ramps, keyed by metric, when available. */
   ramps: Partial<Record<NetworkKpiMetric, KpiRamp>>;
   package: GeolibrePackage | null;
@@ -257,6 +259,13 @@ export function parseNetworkKpiManifest(
   const geometryBlock = { ...rootGeometry, ...(scope.geometry as Record<string, unknown> | undefined), ...scenarioBlock };
   const scenarioId = selectedScenario && (selectedScenario.scid ?? selectedScenario.scenario_id);
   const metadata = { ...((root.metadata ?? {}) as Record<string, unknown>), ...((scope.metadata ?? {}) as Record<string, unknown>) };
+  const rawCrs = metadata.geometry_crs ?? metadata.dest_epsg ?? metadata.geometry_epsg ?? metadata.crs ?? rootGeometry.crs;
+  const rawCrsValue = typeof rawCrs === "object" && rawCrs !== null
+    ? ((rawCrs as Record<string, unknown>).epsg ?? (rawCrs as Record<string, unknown>).name ?? ((rawCrs as Record<string, unknown>).properties as Record<string, unknown> | undefined)?.name)
+    : rawCrs;
+  const rawGeometryEpsg = typeof rawCrsValue === "string"
+    ? Number(/EPSG(?:::|:|\/)(\d{4,6})$/i.exec(rawCrsValue.trim())?.[1] ?? rawCrsValue)
+    : Number(rawCrsValue);
   const rawBounds = (metadata.bounds ?? null) as Record<string, unknown> | null;
   const bounds: [number, number, number, number] | null = rawBounds
     ? [
@@ -287,6 +296,7 @@ export function parseNetworkKpiManifest(
         : null,
     },
     bounds: bounds && bounds.every(Number.isFinite) ? bounds : null,
+    geometryEpsg: Number.isSafeInteger(rawGeometryEpsg) && rawGeometryEpsg > 0 ? rawGeometryEpsg : null,
     ramps: parseManifestRamps(root.default_ramps),
     package: pkg,
   };
@@ -563,6 +573,162 @@ export interface KpiRow {
 /** A section's values at one persisted simulation interval (`ent`). */
 export interface NetworkKpiSectionSample extends KpiRow {
   interval: number;
+}
+
+export interface NetworkKpiDashboardPair {
+  flow: number | null;
+  metric: number | null;
+  contributors: number;
+}
+
+export interface NetworkKpiDashboardSample extends NetworkKpiSectionSample {
+  flowContributors: number;
+  densityContributors: number;
+  densityLengthKm: number;
+  densityScopeLengthKm: number;
+  speedContributors: number;
+  speedFlowWeight: number;
+  flowDensity: NetworkKpiDashboardPair;
+  flowSpeed: NetworkKpiDashboardPair;
+}
+
+export type NetworkKpiDashboardScope = "selected" | "viewport" | "network";
+
+export interface NetworkKpiDashboardSeries {
+  scope: NetworkKpiDashboardScope;
+  samples: NetworkKpiDashboardSample[];
+  sectionCount: number;
+  intervalCount: number;
+  periodAggregate: boolean;
+  geometryMissingCount: number;
+}
+
+export interface NetworkKpiSectionSeries {
+  sectionId: number;
+  samples: NetworkKpiSectionSample[];
+}
+
+/** Sum line length over verified WGS84 or WGS84 UTM coordinates. */
+export function networkSectionLengthKm(feature: NetworkFeature, geometryEpsg: number | null): number | null {
+  if (!geometryEpsg || !feature.geometry) return null;
+  const geographic = geometryEpsg === 4326;
+  const utm = (geometryEpsg >= 32601 && geometryEpsg <= 32660) || (geometryEpsg >= 32701 && geometryEpsg <= 32760);
+  if (!geographic && !utm) return null;
+  const coordinates = feature.geometry.coordinates;
+  const lines: unknown[][] = feature.geometry.type === "LineString"
+    ? [Array.isArray(coordinates) ? coordinates : []]
+    : feature.geometry.type === "MultiLineString" && Array.isArray(coordinates)
+      ? coordinates.filter(Array.isArray) as unknown[][]
+      : [];
+  if (!lines.length) return null;
+  const radiusKm = 6371.0088;
+  let length = 0;
+  let found = false;
+  for (const line of lines) {
+    for (let i = 1; i < line.length; i += 1) {
+      const a = line[i - 1]; const b = line[i];
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length < 2 || b.length < 2) continue;
+      const lon1 = Number(a[0]); const lat1 = Number(a[1]);
+      const lon2 = Number(b[0]); const lat2 = Number(b[1]);
+      if (![lon1, lat1, lon2, lat2].every(Number.isFinite)) return null;
+      if (geographic) {
+        if (Math.abs(lon1) > 180 || Math.abs(lon2) > 180 || Math.abs(lat1) > 90 || Math.abs(lat2) > 90) return null;
+        const toRad = Math.PI / 180;
+        const dLat = (lat2 - lat1) * toRad;
+        const dLon = (lon2 - lon1) * toRad;
+        const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+        length += 2 * radiusKm * Math.asin(Math.min(1, Math.sqrt(h)));
+      } else {
+        // EPSG:326xx/327xx are WGS84 UTM with meter units, so their line
+        // lengths can be measured in the projected coordinates directly.
+        length += Math.hypot(lon2 - lon1, lat2 - lat1) / 1000;
+      }
+      found = true;
+    }
+  }
+  return found && Number.isFinite(length) && length > 0 ? length : null;
+}
+
+/** Aggregate section rows by interval using the approved dashboard semantics. */
+export function aggregateNetworkKpiDashboardSeries(
+  sections: readonly NetworkKpiSectionSeries[],
+  lengthsKm: ReadonlyMap<number, number>,
+  scope: NetworkKpiDashboardScope,
+  periodAggregate = false,
+): NetworkKpiDashboardSeries {
+  const byInterval = new Map<number, Array<{ sectionId: number; sample: NetworkKpiSectionSample }>>();
+  const unique = new Map<number, NetworkKpiSectionSeries>();
+  for (const section of sections) {
+    if (!Number.isSafeInteger(section.sectionId) || unique.has(section.sectionId)) continue;
+    unique.set(section.sectionId, section);
+    for (const sample of section.samples) {
+      const rows = byInterval.get(sample.interval) ?? [];
+      rows.push({ sectionId: section.sectionId, sample });
+      byInterval.set(sample.interval, rows);
+    }
+  }
+  const sectionCount = unique.size;
+  const allLength = [...unique.keys()].reduce((total, oid) => total + (lengthsKm.get(oid) ?? 0), 0);
+  const samples: NetworkKpiDashboardSample[] = [...byInterval.entries()].sort((a, b) => a[0] - b[0]).map(([interval, entries]) => {
+    const rows = entries.map(entry => entry.sample);
+    if (scope === "selected") {
+      const row = rows[0]!;
+      const sectionLength = lengthsKm.get(entries[0]!.sectionId) ?? 0;
+      const hasFlowDensity = row.flow !== null && row.density !== null;
+      const hasFlowSpeed = row.flow !== null && row.speed !== null;
+      return {
+        ...row,
+        flowContributors: row.flow === null ? 0 : 1,
+        densityContributors: row.density === null ? 0 : 1,
+        densityLengthKm: sectionLength,
+        densityScopeLengthKm: sectionLength,
+        speedContributors: row.speed === null ? 0 : 1,
+        speedFlowWeight: row.flow ?? 0,
+        flowDensity: { flow: hasFlowDensity ? row.flow : null, metric: hasFlowDensity ? row.density : null, contributors: hasFlowDensity ? 1 : 0 },
+        flowSpeed: { flow: hasFlowSpeed ? row.flow : null, metric: hasFlowSpeed ? row.speed : null, contributors: hasFlowSpeed ? 1 : 0 },
+      };
+    }
+    const flowRows = rows.filter(row => row.flow !== null && Number.isFinite(row.flow) && row.flow >= 0);
+    const densityRows = entries.flatMap(({ sectionId, sample }) => {
+      const length = lengthsKm.get(sectionId);
+      return sample.density !== null && Number.isFinite(sample.density) && sample.density >= 0 && length != null && length > 0 ? [{ row: sample, length }] : [];
+    });
+    const speedRows = rows.filter(row => row.flow !== null && row.flow > 0 && Number.isFinite(row.flow) && row.speed !== null && Number.isFinite(row.speed) && row.speed >= 0);
+    const pairDensityRows = entries.flatMap(({ sectionId, sample }) => {
+      const length = lengthsKm.get(sectionId);
+      return sample.flow !== null && Number.isFinite(sample.flow) && sample.flow >= 0 && sample.density !== null && Number.isFinite(sample.density) && sample.density >= 0 && length != null && length > 0 ? [{ row: sample, length }] : [];
+    });
+    const pairSpeedRows = speedRows;
+    const flow = flowRows.length ? flowRows.reduce((sum, row) => sum + row.flow!, 0) : null;
+    const densityLengthKm = densityRows.reduce((sum, item) => sum + item.length, 0);
+    const density = densityLengthKm > 0
+      ? densityRows.reduce((sum, item) => sum + item.row.density! * item.length, 0) / densityLengthKm
+      : null;
+    const speedFlowWeight = speedRows.reduce((sum, row) => sum + row.flow!, 0);
+    const speed = speedFlowWeight > 0 ? speedRows.reduce((sum, row) => sum + row.flow! * row.speed!, 0) / speedFlowWeight : null;
+    const densityPairWeight = pairDensityRows.reduce((sum, item) => sum + item.length, 0);
+    const speedPairWeight = pairSpeedRows.reduce((sum, row) => sum + row.flow!, 0);
+    return {
+      interval, flow, density, speed, delay: null,
+      flowContributors: flowRows.length,
+      densityContributors: densityRows.length,
+      densityLengthKm,
+      densityScopeLengthKm: allLength,
+      speedContributors: speedRows.length,
+      speedFlowWeight,
+      flowDensity: {
+        flow: pairDensityRows.length ? pairDensityRows.reduce((sum, item) => sum + item.row.flow!, 0) : null,
+        metric: densityPairWeight > 0 ? pairDensityRows.reduce((sum, item) => sum + item.row.density! * item.length, 0) / densityPairWeight : null,
+        contributors: pairDensityRows.length,
+      },
+      flowSpeed: {
+        flow: pairSpeedRows.length ? pairSpeedRows.reduce((sum, row) => sum + row.flow!, 0) : null,
+        metric: speedPairWeight > 0 ? pairSpeedRows.reduce((sum, row) => sum + row.flow! * row.speed!, 0) / speedPairWeight : null,
+        contributors: pairSpeedRows.length,
+      },
+    };
+  });
+  return { scope, samples, sectionCount, intervalCount: samples.length, periodAggregate, geometryMissingCount: scope === "selected" ? 0 : [...unique.keys()].filter(oid => !lengthsKm.has(oid)).length };
 }
 
 /**

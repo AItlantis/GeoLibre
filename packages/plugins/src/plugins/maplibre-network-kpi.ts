@@ -15,6 +15,9 @@ import {
   resolveNetworkKpiScenarioReplication,
   readNetworkKpiScenarioResults,
   resolveNetworkKpiReplicationDid,
+  aggregateNetworkKpiDashboardSeries,
+  featureSectionId,
+  networkSectionLengthKm,
   commitNetworkKpiReadIfCurrent,
   assertNetworkKpiExplicitDid,
   isCurrentNetworkKpiRead,
@@ -23,6 +26,9 @@ import {
   type NetworkKpiManifest,
   type NetworkKpiResults,
   type NetworkFeatureCollection,
+  type NetworkFeature,
+  type NetworkKpiDashboardScope,
+  type NetworkKpiDashboardSeries,
 } from "./network-kpi-data";
 import { ParquetResultsDatabase } from "./network-kpi-parquet-data";
 import type { SimulationTimeline } from "../shared/simulation-timeline";
@@ -273,9 +279,30 @@ const IDLE_STATUS: NetworkKpiStatus = {
 /** The geometry + results a loaded package contributes to the engine. */
 export interface NetworkKpiPackage {
   geometry: NetworkKpiGeometry;
+  geometryEpsg: number | null;
   results: NetworkKpiResults | null;
   ramps?: KpiRampOverrides;
 }
+
+export interface NetworkKpiDashboardSnapshot {
+  scope: NetworkKpiDashboardScope;
+  selectedSectionId: number | null;
+  selectedSectionName: string | null;
+  loading: boolean;
+  error: string | null;
+  series: NetworkKpiDashboardSeries | null;
+  viewportSectionCount: number;
+}
+
+const EMPTY_DASHBOARD: NetworkKpiDashboardSnapshot = {
+  scope: "selected",
+  selectedSectionId: null,
+  selectedSectionName: null,
+  loading: false,
+  error: null,
+  series: null,
+  viewportSectionCount: 0,
+};
 
 class NetworkKpiEngine {
   private readonly map: MapLibreMap;
@@ -306,14 +333,42 @@ class NetworkKpiEngine {
   private valueIndex: Map<string, number | null> = new Map();
   private networkVisible = true;
   private readonly networkClickHandlers = new Map<string, (event: any) => void>();
+  private selectedSectionId: number | null = null;
+  private readonly handleMoveEnd: () => void;
 
   highlightSection(sectionId: string | number): boolean {
-    const rows = this.map.queryRenderedFeatures(undefined, { layers: ["network-kpi-sections"] });
-    const feature = rows.find((row: any) => String(row.properties?.oid ?? row.properties?.section_id ?? row.properties?.sectionId ?? row.id) === String(sectionId));
+    const id = Number(sectionId);
+    if (!Number.isSafeInteger(id)) return false;
+    this.selectedSectionId = id;
+    const feature = this.sectionFeature(id);
     if (!feature) return false;
+    return this.applySelectedSection();
+  }
+
+  private sectionFeature(sectionId: number): NetworkFeature | null {
+    return this.loaded?.geometry.sections?.features.find(feature => featureSectionId(feature) === sectionId) ?? null;
+  }
+
+  private applySelectedSection(): boolean {
     const source = this.map.getSource("network-kpi-selection") as { setData?: (data: unknown) => void } | undefined;
-    source?.setData?.({ type: "FeatureCollection", features: [feature] });
-    return true;
+    const feature = this.selectedSectionId == null ? null : this.sectionFeature(this.selectedSectionId);
+    source?.setData?.({ type: "FeatureCollection", features: feature ? [feature] : [] });
+    return Boolean(feature && source?.setData);
+  }
+
+  getViewportSectionIds(): number[] {
+    const features = this.loaded?.geometry.sections?.features ?? [];
+    let bounds: { getWest(): number; getSouth(): number; getEast(): number; getNorth(): number };
+    try { bounds = this.map.getBounds(); } catch { return []; }
+    const west = bounds.getWest(); const south = bounds.getSouth();
+    const east = bounds.getEast(); const north = bounds.getNorth();
+    const ids = new Set<number>();
+    for (const feature of features) {
+      const id = featureSectionId(feature);
+      if (id == null || !feature.geometry || !geometryIntersectsViewport(feature.geometry, west, south, east, north)) continue;
+      ids.add(id);
+    }
+    return [...ids].sort((a, b) => a - b);
   }
 
   constructor(
@@ -326,6 +381,7 @@ class NetworkKpiEngine {
     this.settings = settings;
     this.loaded = loaded;
     this.getDeck = getDeck;
+    this.selectedSectionId = dashboardState.selectedSectionId;
 
     // A basemap style swap wipes the shared deck overlay's mount; re-render once
     // the new style settles, the same idiom vehicle-playback uses.
@@ -353,8 +409,16 @@ class NetworkKpiEngine {
       if (this.resolveDetailed() === this.detailed) return;
       this.render();
     };
+    this.handleMoveEnd = () => {
+      if (dashboardState.scope !== "viewport") return;
+      const ids = this.getViewportSectionIds();
+      dashboardState = { ...dashboardState, viewportSectionCount: ids.length };
+      notifyDashboard();
+      void refreshDashboardSeries(ids);
+    };
     this.map.on("styledata", this.handleStyleData);
     this.map.on("zoom", this.handleZoom);
+    this.map.on("moveend", this.handleMoveEnd);
     this.rebuildGeometryRows();
     this.rebuildValueIndex();
     // A reattach (panel reopened, plugin reactivated) constructs a fresh
@@ -394,14 +458,17 @@ class NetworkKpiEngine {
   setPackage(loaded: NetworkKpiPackage | null): void {
     const geometryChanged = loaded?.geometry !== this.loaded?.geometry;
     this.loaded = loaded;
+    if (!loaded) this.selectedSectionId = null;
     if (geometryChanged) this.rebuildGeometryRows();
     this.rebuildValueIndex();
     this.syncNetworkLayers();
+    this.applySelectedSection();
     if (!loaded) {
       this.clearDeck();
       return;
     }
     this.render();
+    refreshDashboardForContextChange();
   }
 
   applySettings(settings: NetworkKpiSettings): void {
@@ -442,6 +509,7 @@ class NetworkKpiEngine {
     this.removeNetworkLayers();
     this.map.off("styledata", this.handleStyleData);
     this.map.off("zoom", this.handleZoom);
+    this.map.off("moveend", this.handleMoveEnd);
     this.destroyed = true;
   }
 
@@ -561,8 +629,16 @@ class NetworkKpiEngine {
     // it, and no later event ever set it back to "visible".
     if (!this.map.isStyleLoaded()) return;
     const geometry = this.loaded?.geometry;
-    (this.map.getSource("network-kpi-selection") as { setData?: (value: never) => void } | undefined)?.setData?.({ type: "FeatureCollection", features: [] } as never);
-    if (!geometry || !this.settings.showNetwork) {
+    const highlightSource = "network-kpi-selection";
+    if (!geometry) {
+      this.networkVisible = false;
+      for (const id of ["network-kpi-sections", "network-kpi-lanes", "network-kpi-turns", "network-kpi-nodes"]) {
+        if (this.map.getLayer(id)) this.map.setLayoutProperty(id, "visibility", "none");
+      }
+      return;
+    }
+    if (!this.settings.showNetwork) {
+      this.ensureSelectionOverlay();
       this.networkVisible = false;
       for (const id of ["network-kpi-sections", "network-kpi-lanes", "network-kpi-turns", "network-kpi-nodes"]) {
         if (this.map.getLayer(id)) this.map.setLayoutProperty(id, "visibility", "none");
@@ -584,20 +660,25 @@ class NetworkKpiEngine {
     add("network-kpi-lanes-source", "network-kpi-lanes", geometry.lanes, "line");
     add("network-kpi-turns-source", "network-kpi-turns", geometry.turns, "line");
     add("network-kpi-nodes-source", "network-kpi-nodes", geometry.nodes, "fill");
+    this.ensureSelectionOverlay();
     for (const [id, visible] of [["network-kpi-sections", this.settings.showSections], ["network-kpi-nodes", this.settings.showNodes], ["network-kpi-lanes", this.settings.showLanes], ["network-kpi-turns", this.settings.showTurns]] as const) {
       if (this.map.getLayer(id)) this.map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
     }
-    const highlightSource = "network-kpi-selection";
-    if (!this.map.getSource(highlightSource)) this.map.addSource(highlightSource, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    if (!this.map.getLayer(`${highlightSource}-line`)) this.map.addLayer({ id: `${highlightSource}-line`, type: "line", source: highlightSource, paint: { "line-color": "#facc15", "line-width": 4 } });
-    if (!this.map.getLayer(`${highlightSource}-fill`)) this.map.addLayer({ id: `${highlightSource}-fill`, type: "fill", source: highlightSource, paint: { "fill-color": "#facc15", "fill-opacity": 0.75, "fill-outline-color": "#fff" } });
-    if (!this.map.getLayer(`${highlightSource}-circle`)) this.map.addLayer({ id: `${highlightSource}-circle`, type: "circle", source: highlightSource, paint: { "circle-color": "#facc15", "circle-radius": 6, "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
     for (const [id, name] of [["network-kpi-sections", "Sections"], ["network-kpi-lanes", "Lanes"], ["network-kpi-turns", "Turns"], ["network-kpi-nodes", "Nodes"]] as const) {
       if (this.networkClickHandlers.has(id)) continue;
       const handler = (event: any) => {
         const feature = event.features?.[0];
         if (!feature) return;
-        (this.map.getSource(highlightSource) as any)?.setData({ type: "FeatureCollection", features: [feature] });
+        const sectionId = featureSectionId(feature as NetworkFeature);
+        if ((id === "network-kpi-sections" || id === "network-kpi-lanes") && sectionId != null) {
+          const sectionFeature = this.sectionFeature(sectionId);
+          this.selectedSectionId = sectionId;
+          this.applySelectedSection();
+          const sectionName = String(sectionFeature?.properties?.name ?? sectionFeature?.properties?.section_name ?? feature.properties?.name ?? "");
+          selectNetworkKpiDashboardSection(sectionId, sectionName);
+        } else {
+          (this.map.getSource(highlightSource) as any)?.setData({ type: "FeatureCollection", features: [feature] });
+        }
         const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat(event.lngLat);
         if (id !== "network-kpi-sections") {
           popup.setDOMContent(createIdentifyPopupElement(name, feature.properties ?? {}, feature.id)).addTo(this.map);
@@ -634,10 +715,25 @@ class NetworkKpiEngine {
     for (const id of ["network-kpi-sections", "network-kpi-lanes", "network-kpi-turns", "network-kpi-nodes"]) {
       if (this.map.getLayer(id)) { try { this.map.moveLayer(id, beforeId); } catch { /* style is changing */ } }
     }
+    // Keep the selected-section highlight above its network layer after the
+    // network layers are repositioned for building visibility.
+    const selectionBeforeId = this.settings.seeThroughBuildings ? undefined : this.firstExtrusionLayerId();
+    for (const id of ["network-kpi-selection-line", "network-kpi-selection-fill", "network-kpi-selection-circle"]) {
+      if (this.map.getLayer(id)) { try { this.map.moveLayer(id, selectionBeforeId); } catch { /* style is changing */ } }
+    }
   }
 
   private firstExtrusionLayerId(): string | undefined {
     return this.map.getStyle().layers?.find((layer) => layer.type === "fill-extrusion")?.id;
+  }
+
+  private ensureSelectionOverlay(): void {
+    const sourceId = "network-kpi-selection";
+    if (!this.map.getSource(sourceId)) this.map.addSource(sourceId, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    if (!this.map.getLayer(`${sourceId}-line`)) this.map.addLayer({ id: `${sourceId}-line`, type: "line", source: sourceId, paint: { "line-color": "#facc15", "line-width": 4 } });
+    if (!this.map.getLayer(`${sourceId}-fill`)) this.map.addLayer({ id: `${sourceId}-fill`, type: "fill", source: sourceId, paint: { "fill-color": "#facc15", "fill-opacity": 0.75, "fill-outline-color": "#fff" } });
+    if (!this.map.getLayer(`${sourceId}-circle`)) this.map.addLayer({ id: `${sourceId}-circle`, type: "circle", source: sourceId, paint: { "circle-color": "#facc15", "circle-radius": 6, "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
+    this.applySelectedSection();
   }
 
   private unbindNetworkClickHandlers(): void {
@@ -663,6 +759,39 @@ class NetworkKpiEngine {
   }
 }
 
+function geometryIntersectsViewport(
+  geometry: NetworkFeature["geometry"], west: number, south: number, east: number, north: number,
+): boolean {
+  if (!geometry) return false;
+  const coordinateLines: unknown[][] = geometry.type === "LineString"
+    ? [Array.isArray(geometry.coordinates) ? geometry.coordinates : []]
+    : geometry.type === "MultiLineString" && Array.isArray(geometry.coordinates)
+      ? geometry.coordinates.filter(Array.isArray) as unknown[][]
+      : [];
+  const ranges: Array<[number, number]> = east < west ? [[west, 180], [-180, east]] : [[west, east]];
+  const inside = (x: number, y: number, minX: number, maxX: number) => x >= minX && x <= maxX && y >= south && y <= north;
+  const segmentIntersects = (a: number[], b: number[], minX: number, maxX: number) => {
+    let t0 = 0; let t1 = 1;
+    const dx = b[0]! - a[0]!; const dy = b[1]! - a[1]!;
+    const clips: Array<[number, number]> = [[-dx, a[0]! - minX], [dx, maxX - a[0]!], [-dy, a[1]! - south], [dy, north - a[1]!]];
+    for (const [p, q] of clips) {
+      if (p === 0) { if (q < 0) return false; continue; }
+      const ratio = q / p;
+      if (p < 0) t0 = Math.max(t0, ratio); else t1 = Math.min(t1, ratio);
+      if (t0 > t1) return false;
+    }
+    return true;
+  };
+  for (const line of coordinateLines) {
+    const points = line.filter((point): point is number[] => Array.isArray(point) && point.length >= 2 && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))).map(point => [Number(point[0]), Number(point[1])]);
+    for (const [minX, maxX] of ranges) {
+      if (points.some(([x, y]) => inside(x!, y!, minX, maxX))) return true;
+      for (let i = 1; i < points.length; i += 1) if (segmentIntersects(points[i - 1]!, points[i]!, minX, maxX)) return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Module store: single source of truth shared by the engine and the React panel.
 // ---------------------------------------------------------------------------
@@ -674,6 +803,11 @@ let loadedPackage: NetworkKpiPackage | null = null;
 let committedKpiIdentity: { scid: string | number | null; did: number | null; interval: number; sampleCount: number; sampleFingerprint: string; flowProbe: { oid: number; value: number | null } } | null = null;
 let requestedKpiIdentity: { scid: string | number | null; did: number | null; interval: number; sampleCount: 0; sampleFingerprint: null } | null = null;
 let status: NetworkKpiStatus = { ...IDLE_STATUS };
+let dashboardState: NetworkKpiDashboardSnapshot = { ...EMPTY_DASHBOARD };
+let dashboardReadToken = 0;
+const dashboardCache = new Map<string, NetworkKpiDashboardSeries>();
+const dashboardMembershipCache = new Map<string, number[]>();
+let lastDashboardContextKey: string | null = null;
 // Guards against a stale load resolving after the user has moved on to another
 // manifest and overwriting the newer package.
 let loadToken = 0;
@@ -689,6 +823,7 @@ const intervalPlayback = createIntervalPlaybackController(() => stepNetworkKpiIn
 const panelListeners = new Set<() => void>();
 const stateListeners = new Set<() => void>();
 const statusListeners = new Set<() => void>();
+const dashboardListeners = new Set<() => void>();
 
 function notifyPanel(): void {
   for (const listener of panelListeners) listener();
@@ -698,6 +833,137 @@ function notifyState(): void {
 }
 function notifyStatus(): void {
   for (const listener of statusListeners) listener();
+}
+function notifyDashboard(): void {
+  for (const listener of dashboardListeners) listener();
+}
+
+export function getNetworkKpiDashboardSnapshot(): NetworkKpiDashboardSnapshot { return dashboardState; }
+export function subscribeNetworkKpiDashboard(listener: () => void): () => void {
+  dashboardListeners.add(listener);
+  return () => dashboardListeners.delete(listener);
+}
+
+export function setNetworkKpiDashboardScope(scope: NetworkKpiDashboardScope): void {
+  if (dashboardState.scope === scope) return;
+  dashboardState = { ...dashboardState, scope, series: null, error: null };
+  notifyDashboard();
+  void refreshDashboardSeries();
+}
+
+function selectNetworkKpiDashboardSection(sectionId: number, sectionName: string): void {
+  dashboardState = { ...dashboardState, selectedSectionId: sectionId, selectedSectionName: sectionName || `Section ${sectionId}`, error: null };
+  notifyDashboard();
+  if (dashboardState.scope === "selected") void refreshDashboardSeries();
+}
+
+function resetNetworkKpiDashboard(clearCache: boolean): void {
+  dashboardReadToken += 1;
+  lastDashboardContextKey = null;
+  if (clearCache) {
+    dashboardCache.clear();
+    dashboardMembershipCache.clear();
+  }
+  const scope = dashboardState.scope;
+  dashboardState = { ...EMPTY_DASHBOARD, scope };
+  notifyDashboard();
+}
+
+function dashboardPackageKey(): string {
+  const scenario = pendingManifest?.scenarios[requestedScenarioIndex ?? status.scenarioIndex]?.scid ?? status.scenarios[status.scenarioIndex]?.scid ?? "";
+  const packageId = settings.manifestUrl ?? status.localFolderName ?? "local-package";
+  return `${packageId}|${String(scenario)}|${String(settings.did ?? loadedPackage?.results?.did ?? "")}|${loadedPackage?.results?.sid ?? 0}`;
+}
+
+function refreshDashboardForContextChange(): void {
+  if (!loadedPackage?.results || !database) {
+    lastDashboardContextKey = null;
+    dashboardReadToken += 1;
+    dashboardState = { ...dashboardState, loading: false, series: null, error: null };
+    notifyDashboard();
+    return;
+  }
+  const contextKey = dashboardPackageKey();
+  if (contextKey === lastDashboardContextKey) return;
+  lastDashboardContextKey = contextKey;
+  void refreshDashboardSeries();
+}
+
+async function refreshDashboardSeries(viewportIds?: number[]): Promise<void> {
+  const activeDatabase = database;
+  const activePackage = loadedPackage;
+  if (!activeDatabase || !activePackage?.results || !status.hasResults) {
+    dashboardReadToken += 1;
+    dashboardState = { ...dashboardState, loading: false, series: null, error: null };
+    notifyDashboard();
+    return;
+  }
+  const token = ++dashboardReadToken;
+  const scope = dashboardState.scope;
+  const did = activePackage.results.did;
+  const sid = activePackage.results.sid;
+  const packageKey = dashboardPackageKey();
+  dashboardState = { ...dashboardState, loading: true, error: null };
+  notifyDashboard();
+  try {
+    let ids: number[];
+    if (scope === "selected") ids = dashboardState.selectedSectionId == null ? [] : [dashboardState.selectedSectionId];
+    else if (scope === "viewport") ids = viewportIds ?? engine?.getViewportSectionIds() ?? [];
+    else {
+      const membershipKey = `${packageKey}|network-membership`;
+      const cachedIds = dashboardMembershipCache.get(membershipKey);
+      if (cachedIds) ids = cachedIds;
+      else {
+        ids = await activeDatabase.readSectionIds({ did, sid });
+        dashboardMembershipCache.set(membershipKey, ids);
+      }
+    }
+    ids = [...new Set(ids)].sort((a, b) => a - b);
+    if (token !== dashboardReadToken || activeDatabase !== database) return;
+    dashboardState = { ...dashboardState, viewportSectionCount: scope === "viewport" ? ids.length : dashboardState.viewportSectionCount };
+    if (ids.length === 0) {
+      dashboardState = { ...dashboardState, loading: false, series: aggregateNetworkKpiDashboardSeries([], new Map(), scope), error: null };
+      notifyDashboard();
+      return;
+    }
+    if (scope === "selected" && !ids.length) {
+      dashboardState = { ...dashboardState, loading: false, series: null, error: null };
+      notifyDashboard();
+      return;
+    }
+    const cacheKey = `${packageKey}|${scope}|${ids.join(",")}`;
+    const cached = dashboardCache.get(cacheKey);
+    if (cached) {
+      dashboardState = { ...dashboardState, loading: false, series: cached, error: null };
+      notifyDashboard();
+      return;
+    }
+    const rows = await activeDatabase.readSectionsTimeSeries(scope === "network" ? null : ids, { did, sid });
+    if (token !== dashboardReadToken || activeDatabase !== database || packageKey !== dashboardPackageKey()) return;
+    const seriesById = new Map(rows.map(item => [item.sectionId, item]));
+    const sections = ids.map(sectionId => seriesById.get(sectionId) ?? { sectionId, samples: [] });
+    const features = activePackage.geometry.sections?.features ?? [];
+    const geometryById = new Map<number, NetworkFeature>();
+    for (const feature of features) {
+      const id = featureSectionId(feature);
+      if (id != null && !geometryById.has(id)) geometryById.set(id, feature);
+    }
+    const lengths = new Map<number, number>();
+    for (const id of ids) {
+      const length = geometryById.has(id) ? networkSectionLengthKm(geometryById.get(id)!, activePackage.geometryEpsg) : null;
+      if (length != null) lengths.set(id, length);
+    }
+    const periodAggregate = sections.some(section => section.samples.length > 0) && sections.every(section => section.samples.length === 0 || section.samples.every(sample => sample.interval === 0));
+    const series = aggregateNetworkKpiDashboardSeries(sections, lengths, scope, periodAggregate);
+    if (dashboardCache.size >= 8) dashboardCache.delete(dashboardCache.keys().next().value!);
+    dashboardCache.set(cacheKey, series);
+    dashboardState = { ...dashboardState, loading: false, series, error: null };
+    notifyDashboard();
+  } catch (error) {
+    if (token !== dashboardReadToken) return;
+    dashboardState = { ...dashboardState, loading: false, series: null, error: error instanceof Error ? error.message : String(error) };
+    notifyDashboard();
+  }
 }
 
 function patchStatus(next: Partial<NetworkKpiStatus>): void {
@@ -763,6 +1029,7 @@ export function openNetworkKpiPanel(app: GeoLibreAppAPI): void {
   registerDuckDbLayer({
     pluginId: "network-kpi",
     dispose: () => {
+      resetNetworkKpiDashboard(true);
       database?.close();
       database = null;
       loadedPackage = null;
@@ -785,6 +1052,7 @@ export function openNetworkKpiPanel(app: GeoLibreAppAPI): void {
  */
 export function closeNetworkKpiPanel(_app?: GeoLibreAppAPI): void {
   readToken += 1;
+  resetNetworkKpiDashboard(true);
   settings = { ...settings, intervalPlaying: false };
   syncIntervalTimer();
   detachEngine();
@@ -989,6 +1257,7 @@ export async function setNetworkKpiManifestUrl(url: string): Promise<void> {
 /** Drop the current package, database and engine data. */
 function clearLoaded(): void {
   readToken += 1;
+  resetNetworkKpiDashboard(true);
   database?.close();
   database = null;
   loadedPackage = null;
@@ -1124,7 +1393,7 @@ async function adoptScenario(scenarioIndex: number, token: number): Promise<void
     settings = { ...settings, interval: results.interval, did: results.did };
   }
 
-  loadedPackage = { geometry, results, ramps: manifest.ramps };
+  loadedPackage = { geometry, geometryEpsg: manifest.geometryEpsg, results, ramps: manifest.ramps };
   if (results) commitKpiIdentity(results, scenarioIndex);
   patchStatus({
     loading: false,
@@ -1203,7 +1472,9 @@ export async function selectNetworkKpiScenarioId(scenarioId: string | number): P
 
 /** Highlight a section only when it is present in the rendered package geometry. */
 export function highlightNetworkKpiSection(sectionId: string | number): boolean {
-  return engine?.highlightSection(sectionId) ?? false;
+  const highlighted = engine?.highlightSection(sectionId) ?? false;
+  if (highlighted) selectNetworkKpiDashboardSection(Number(sectionId), "");
+  return highlighted;
 }
 
 /** Select a replication (did) within the active scenario. */
