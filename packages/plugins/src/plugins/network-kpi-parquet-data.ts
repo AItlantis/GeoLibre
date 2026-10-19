@@ -6,7 +6,7 @@ import mvpWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url
 import { DuckDBDataProtocol } from "@duckdb/duckdb-wasm";
 import type { NetworkKpiPackageSource } from "./network-kpi-data";
 import { deriveSimulationTimeline, readSimulationTimeline as readProviderSimulationTimeline, type SimulationTimeline } from "../shared/simulation-timeline";
-import { assertNetworkKpiExplicitData, assertNetworkKpiExplicitDid, laneKey, queryNetworkKpiFallbackDimension, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample } from "./network-kpi-data";
+import { assertNetworkKpiExplicitData, assertNetworkKpiExplicitDid, laneKey, queryNetworkKpiFallbackDimension, type KpiRow, type NetworkKpiResults, type NetworkKpiSectionSample, type NetworkKpiSectionSeries } from "./network-kpi-data";
 import { catalogDid, pickDefaultDid, planNetworkKpiCatalog, type CatalogEntry } from "./parquet-catalog";
 import { openTestudoDatasetProvider, setTestudoDatasetSessionKey, type TestudoDatasetProvider } from "./testudo-dataset-provider";
 import { getDuckDbExtensionRepository } from "../shared/duckdb-extension-repository";
@@ -238,6 +238,95 @@ export class ParquetResultsDatabase {
     }
   }
 
+  /** Read a set of section histories in one bounded query rather than N per-section reads. */
+  async readSectionsTimeSeries(
+    sectionIds: readonly number[] | null,
+    options: { did?: number | null; sid?: number } = {},
+  ): Promise<NetworkKpiSectionSeries[]> {
+    if (this.closed) throw new Error("The results database is closed.");
+    const ids = sectionIds === null ? null : [...new Set(sectionIds.filter(Number.isSafeInteger))];
+    if (ids?.length === 0) return [];
+    if (this.parquetDisabled) return this.readFallbackSectionsTimeSeries(ids, options);
+    const did = options.did ?? pickDefaultDid(this.catalog);
+    const declared = this.catalog.filter((entry) => catalogDid(entry) === did && String(entry.table ?? "").toUpperCase() === "MISECT");
+    if (!declared.length) throw new Error("Network KPI results catalog has no MISECT partition for dashboard time series.");
+    if (declared.some((entry) => typeof entry.path !== "string" || !entry.path.trim())) throw new Error("Network KPI MISECT catalog entry has no Parquet file path.");
+    try {
+      const handles = await Promise.all(declared.map((entry) => this.register(entry)));
+      const table = handles.length === 1 ? `read_parquet(${q(handles[0])})` : `read_parquet([${handles.map(q).join(",")}])`;
+      const con = await this.db.connect();
+      try {
+        const didSql = did === null ? "NULL" : String(did);
+        const sid = options.sid ?? 0;
+        const oidFilter = ids ? ` AND oid IN (${ids.join(",")})` : "";
+        const read = async (aggregate: boolean) => rows(await con.query(
+          `SELECT oid, ent, flow, density, speed FROM ${table} WHERE did = ${didSql} AND sid = ${sid}${oidFilter} AND ent ${aggregate ? "=" : "<>"} 0 ORDER BY ent, oid LIMIT 500001`,
+        ));
+        let records = await read(false);
+        if (records.length > 500_000) throw new Error("The dashboard scope is too large to read safely; reduce the viewport or use a package with a grouped MISECT query.");
+        if (!records.length) records = await read(true);
+        assertNetworkKpiExplicitData(options.did, records.length, "dashboard MISECT time-series");
+        return groupSectionSamples(records);
+      } finally { await con.close(); }
+    } catch (error) {
+      throw new Error("Network KPI dashboard time-series query failed: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  /** Stable section membership across all intervals, including aggregate-only rows. */
+  async readSectionIds(options: { did?: number | null; sid?: number } = {}): Promise<number[]> {
+    if (this.closed) throw new Error("The results database is closed.");
+    if (this.parquetDisabled) {
+      const provider = await this.getFallback();
+      const filters = [{ column: "sid" as const, op: "=" as const, value: options.sid ?? 0 }];
+      const result = await provider.query({ dataset: "MISECT", ...(options.did == null ? {} : { did: options.did }), columns: ["oid"], distinct: true, filters, limit: 250_000 });
+      if (result.truncated) throw new Error("The package has too many sections for a complete dashboard membership list.");
+      const ids = [...new Set(result.rows.map(row => Number(row.oid)).filter(Number.isSafeInteger))].sort((a, b) => a - b);
+      assertNetworkKpiExplicitData(options.did, ids.length, "dashboard section membership");
+      return ids;
+    }
+    const did = options.did ?? pickDefaultDid(this.catalog);
+    const declared = this.catalog.filter((entry) => catalogDid(entry) === did && String(entry.table ?? "").toUpperCase() === "MISECT");
+    if (!declared.length) throw new Error("Network KPI results catalog has no MISECT partition for dashboard membership.");
+    const handles = await Promise.all(declared.map(entry => this.register(entry)));
+    const table = handles.length === 1 ? `read_parquet(${q(handles[0])})` : `read_parquet([${handles.map(q).join(",")}])`;
+    const con = await this.db.connect();
+    try {
+      const didSql = did === null ? "NULL" : String(did);
+      const rowsFound = rows(await con.query(`SELECT DISTINCT oid FROM ${table} WHERE did = ${didSql} AND sid = ${options.sid ?? 0} AND oid IS NOT NULL LIMIT 250001`));
+      if (rowsFound.length > 250_000) throw new Error("The package has too many sections for a complete dashboard membership list.");
+      const ids = [...new Set(rowsFound.map(row => Number(row.oid)).filter(Number.isSafeInteger))].sort((a, b) => a - b);
+      assertNetworkKpiExplicitData(options.did, ids.length, "dashboard section membership");
+      return ids;
+    } finally { await con.close(); }
+  }
+
+  private async readFallbackSectionsTimeSeries(
+    ids: number[] | null,
+    options: { did?: number | null; sid?: number },
+  ): Promise<NetworkKpiSectionSeries[]> {
+    const provider = await this.getFallback();
+    const filters = [
+      { column: "sid" as const, op: "=" as const, value: options.sid ?? 0 },
+      ...(ids ? [{ column: "oid" as const, op: "IN" as const, value: ids as number[] }] : []),
+    ];
+    const request = async (aggregate: boolean) => provider.query({
+      dataset: "MISECT",
+      ...(options.did == null ? {} : { did: options.did }),
+      columns: ["oid", "ent", "flow", "density", "speed"],
+      filters: [...filters, { column: "ent" as const, op: aggregate ? "=" as const : "!=" as const, value: 0 }],
+      limit: 250_000,
+    });
+    let result = await request(false);
+    if (result.truncated) throw new Error("The dashboard query exceeds the SQLite fallback row limit; results are not shown as complete.");
+    if (!result.rows.length) {
+      result = await request(true);
+      if (result.truncated) throw new Error("The dashboard aggregate exceeds the SQLite fallback row limit; results are not shown as complete.");
+    }
+    assertNetworkKpiExplicitData(options.did, result.rows.length, "dashboard time-series");
+    return groupSectionSamples(result.rows);
+  }
+
   private async readFallbackSectionTimeSeries(
     oid: number,
     options: { did?: number | null; sid?: number },
@@ -353,6 +442,7 @@ export class ParquetResultsDatabase {
 
 function toSectionSamples(rows: Row[]): NetworkKpiSectionSample[] {
   const value = (row: Row, key: string): number | null => {
+    if (row[key] == null) return null;
     const number = Number(row[key]);
     return Number.isFinite(number) && number >= 0 ? number : null;
   };
@@ -366,4 +456,19 @@ function toSectionSamples(rows: Row[]): NetworkKpiSectionSample[] {
     }))
     .filter((row) => Number.isFinite(row.interval))
     .sort((a, b) => a.interval - b.interval);
+}
+
+function groupSectionSamples(rows: Row[]): NetworkKpiSectionSeries[] {
+  const grouped = new Map<number, Row[]>();
+  for (const row of rows) {
+    if (row.oid == null) continue;
+    const sectionId = Number(row.oid);
+    if (!Number.isSafeInteger(sectionId)) continue;
+    const samples = grouped.get(sectionId) ?? [];
+    samples.push(row);
+    grouped.set(sectionId, samples);
+  }
+  return [...grouped.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([sectionId, samples]) => ({ sectionId, samples: toSectionSamples(samples) }));
 }

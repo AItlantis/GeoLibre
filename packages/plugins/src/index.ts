@@ -1291,6 +1291,7 @@ export {
   DEFAULT_NETWORK_KPI_SETTINGS,
   getNetworkKpiSettings,
   getNetworkKpiSnapshot,
+  getNetworkKpiDashboardSnapshot,
   getNetworkKpiStatus,
   getNetworkKpiLiveDiagnostics,
   isNetworkKpiPanelVisible,
@@ -1306,6 +1307,7 @@ export {
   reattachNetworkKpi,
   restoreNetworkKpi,
   setNetworkKpiManifestUrl,
+  setNetworkKpiDashboardScope,
   setNetworkKpiScenario,
   selectNetworkKpiScenarioId,
   highlightNetworkKpiSection,
@@ -1314,10 +1316,12 @@ export {
   stepNetworkKpiInterval,
   toggleNetworkKpiIntervalPlaying,
   subscribeNetworkKpi,
+  subscribeNetworkKpiDashboard,
   subscribeNetworkKpiPanel,
   subscribeNetworkKpiStatus,
   type NetworkKpiSettings,
   type NetworkKpiStatus,
+  type NetworkKpiDashboardSnapshot,
 } from "./plugins/maplibre-network-kpi";
 export {
   DEFAULT_MAX_HEIGHT_M,
@@ -1345,6 +1349,9 @@ export {
   type NetworkKpiGeometry,
   type NetworkKpiManifest,
   type NetworkKpiResults,
+  type NetworkKpiDashboardScope,
+  type NetworkKpiDashboardSeries,
+  type NetworkKpiDashboardSample,
 } from "./plugins/network-kpi-data";
 export {
   EMISSIONS_H3_PLUGIN_ID, EMISSIONS_H3_STORE_LAYER_ID, DEFAULT_EMISSIONS_H3_SETTINGS, maplibreEmissionsH3Plugin,
