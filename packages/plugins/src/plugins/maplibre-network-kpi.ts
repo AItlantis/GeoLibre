@@ -669,13 +669,13 @@ class NetworkKpiEngine {
       const handler = (event: any) => {
         const feature = event.features?.[0];
         if (!feature) return;
-        const sectionId = featureSectionId(feature as NetworkFeature);
-        if ((id === "network-kpi-sections" || id === "network-kpi-lanes") && sectionId != null) {
-          const sectionFeature = this.sectionFeature(sectionId);
-          this.selectedSectionId = sectionId;
+        const clickedSectionId = featureSectionId(feature as NetworkFeature);
+        if ((id === "network-kpi-sections" || id === "network-kpi-lanes") && clickedSectionId != null) {
+          const sectionFeature = this.sectionFeature(clickedSectionId);
+          this.selectedSectionId = clickedSectionId;
           this.applySelectedSection();
           const sectionName = String(sectionFeature?.properties?.name ?? sectionFeature?.properties?.section_name ?? feature.properties?.name ?? "");
-          selectNetworkKpiDashboardSection(sectionId, sectionName);
+          selectNetworkKpiDashboardSection(clickedSectionId, sectionName);
         } else {
           (this.map.getSource(highlightSource) as any)?.setData({ type: "FeatureCollection", features: [feature] });
         }

@@ -432,7 +432,7 @@ const DASHBOARD_METRICS = [
   { key: "flow" as const, label: "flow", unit: "veh/h", color: "#38bdf8" },
   { key: "density" as const, label: "density", unit: "veh/km", color: "#f59e0b" },
   { key: "speed" as const, label: "speed", unit: "km/h", color: "#34d399" },
-];
+] as const;
 
 function dashboardNumber(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value)
