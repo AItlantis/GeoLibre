@@ -398,6 +398,7 @@ export function DesktopShell({
   const identifyEditActions = useIdentifyEditActions({
     canEditLayer: collaboration.canEditLayer,
     editFeatureGeometry: handleEditFeatureGeometry,
+    viewer: layoutOptions.viewer,
   });
   useTileProtocols();
   useRasterFileHandlers(mapControllerRef, t);
@@ -449,7 +450,7 @@ export function DesktopShell({
   const registryPluginLink = usePluginDeepLink({
     mapControllerRef,
     enforceViewerPlugins,
-    viewer: layoutOptions.viewer,
+    layoutOptions,
     externalPluginsReady,
     mapReadyGeneration,
     projectUrlSettled:
