@@ -11,22 +11,178 @@ import {
   comparisonThresholdOptions,
   isComparisonDifferenceMetric,
   getScenarioComparisonSnapshot,
+  getScenarioComparisonDashboardSnapshot,
   getScenarioComparisonStatus,
   isScenarioComparisonPanelVisible,
   loadLocalScenarioComparisonFolder,
   setScenarioComparisonManifestUrl,
   setScenarioComparisonSettings,
+  setScenarioComparisonDashboardScope,
   swapScenarioComparisonSides,
   stepScenarioComparisonInterval,
   subscribeScenarioComparison,
+  subscribeScenarioComparisonDashboard,
   subscribeScenarioComparisonStatus,
   toggleScenarioComparisonIntervalPlaying,
   useIntervalPlayback,
   useManifestUrlDraft,
   useScenarioReplicationSelector,
   useViewModeToggle,
+  type ScenarioComparisonDashboardSample,
 } from "@geolibre/plugins";
 import { PlaybackTimelineReadout } from "./PlaybackTimelineReadout";
+
+const COMPARISON_DASHBOARD_METRICS = [
+  { key: "flow", label: "Flow", unit: "veh/h", laneUnit: "veh/h/lane", max: 2200, color: "#38bdf8" },
+  { key: "density", label: "Density", unit: "veh/km", max: 160, color: "#f59e0b" },
+  { key: "speed", label: "Speed", unit: "km/h", max: 120, color: "#34d399" },
+] as const;
+
+function comparisonDashboardNumber(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
+}
+
+function comparisonTimeLabel(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  return `${String(Math.floor(total / 3600)).padStart(2, "0")}:${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** Testudo's lateral Comparison dashboard body, separate from the floating plugin controls. */
+export function ScenarioComparisonDashboardPanel() {
+  const dashboard = useSyncExternalStore(subscribeScenarioComparisonDashboard, getScenarioComparisonDashboardSnapshot, getScenarioComparisonDashboardSnapshot);
+  const samples = dashboard.samples;
+  const current = samples.find(sample => Math.abs(sample.timeSeconds - (dashboard.currentTimeSeconds ?? Number.NaN)) < 1e-6) ?? samples.at(-1) ?? null;
+  const selected = dashboard.scope === "selected";
+  const fixedSelectedScale = selected;
+
+  return (
+    <section className="space-y-3" aria-label="Comparison dashboard">
+      <div className="space-y-1">
+        <label htmlFor="scenario-comparison-dashboard-scope" className="block text-xs font-medium">Scope</label>
+        <select
+          id="scenario-comparison-dashboard-scope"
+          className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
+          value={dashboard.scope}
+          onChange={event => setScenarioComparisonDashboardScope(event.currentTarget.value as "selected" | "viewport" | "network")}
+        >
+          <option value="selected">Selected section or lane</option>
+          <option value="viewport">All sections in viewport</option>
+          <option value="network">Whole network</option>
+        </select>
+      </div>
+
+      {selected && dashboard.selectedEntity && (
+        <p className="text-xs text-muted-foreground">{dashboard.selectedEntity.name} · Section {dashboard.selectedEntity.sectionId}</p>
+      )}
+      {dashboard.loading && <p role="status" className="text-sm text-muted-foreground">Loading comparison statistics…</p>}
+      {dashboard.error && <p role="alert" className="rounded-md border border-destructive/40 p-2 text-sm text-destructive">{dashboard.error}</p>}
+      {!dashboard.loading && !dashboard.error && selected && !dashboard.selectedEntity && (
+        <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">Click a section, lane, or turn to compare its statistics.</p>
+      )}
+      {!dashboard.loading && !dashboard.error && !selected && !samples.length && (
+        <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">No matched simulation samples are available for this scope.</p>
+      )}
+
+      {!dashboard.loading && !dashboard.error && current && (
+        <>
+          <div className="grid grid-cols-3 gap-2">
+            {COMPARISON_DASHBOARD_METRICS.map(metric => {
+              const a = current.scenarioA[metric.key];
+              const b = current.scenarioB[metric.key];
+              const delta = current.delta[metric.key];
+              return (
+                <div key={metric.key} className="min-w-0 rounded-md border border-border p-2">
+                  <span className="block truncate text-xs text-muted-foreground">{metric.label}</span>
+                  <strong className="block truncate text-xs tabular-nums">A {comparisonDashboardNumber(a)}</strong>
+                  <strong className="block truncate text-xs tabular-nums">B {comparisonDashboardNumber(b)}</strong>
+                  <span className="block truncate text-[10px] tabular-nums text-muted-foreground">Δ {comparisonDashboardNumber(delta)} {metric.key === "flow" && fixedSelectedScale ? metric.laneUnit : metric.unit}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            {dashboard.scenarioA.label} ({dashboard.scenarioA.replicationLabel ?? "no replication"}) · {dashboard.scenarioB.label} ({dashboard.scenarioB.replicationLabel ?? "no replication"})
+          </p>
+          <div className="grid grid-cols-1 gap-2">
+            {COMPARISON_DASHBOARD_METRICS.map(metric => (
+              <ComparisonDashboardLineChart key={metric.key} metric={metric} samples={samples} nameA={dashboard.scenarioA.label} nameB={dashboard.scenarioB.label} fixedDomain={fixedSelectedScale ? [0, metric.max] : undefined} />
+            ))}
+          </div>
+          <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+            <ComparisonDashboardScatterChart kind="density" samples={samples} nameA={dashboard.scenarioA.label} nameB={dashboard.scenarioB.label} fixedFlowDomain={fixedSelectedScale ? [0, 2200] : undefined} fixedMetricDomain={fixedSelectedScale ? [0, 160] : undefined} />
+            <ComparisonDashboardScatterChart kind="speed" samples={samples} nameA={dashboard.scenarioA.label} nameB={dashboard.scenarioB.label} fixedFlowDomain={fixedSelectedScale ? [0, 2200] : undefined} fixedMetricDomain={fixedSelectedScale ? [0, 120] : undefined} />
+          </div>
+          <details className="rounded-md border border-border p-2">
+            <summary className="cursor-pointer text-xs font-medium">Matched sample values</summary>
+            <div className="mt-2 max-h-56 overflow-auto">
+              <table className="w-full text-start text-xs tabular-nums">
+                <thead><tr><th>Time</th><th>Side</th><th>Flow</th><th>Density</th><th>Speed</th></tr></thead>
+                <tbody>{samples.flatMap(sample => ([
+                  <tr key={`${sample.timeSeconds}-a`}><th rowSpan={2}>{comparisonTimeLabel(sample.timeSeconds)}</th><th>{dashboard.scenarioA.label}</th><td>{comparisonDashboardNumber(sample.scenarioA.flow)}</td><td>{comparisonDashboardNumber(sample.scenarioA.density)}</td><td>{comparisonDashboardNumber(sample.scenarioA.speed)}</td></tr>,
+                  <tr key={`${sample.timeSeconds}-b`}><th>{dashboard.scenarioB.label}</th><td>{comparisonDashboardNumber(sample.scenarioB.flow)}</td><td>{comparisonDashboardNumber(sample.scenarioB.density)}</td><td>{comparisonDashboardNumber(sample.scenarioB.speed)}</td></tr>,
+                ]))}</tbody>
+              </table>
+            </div>
+          </details>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ComparisonDashboardLineChart({ metric, samples, nameA, nameB, fixedDomain }: { metric: (typeof COMPARISON_DASHBOARD_METRICS)[number]; samples: ScenarioComparisonDashboardSample[]; nameA: string; nameB: string; fixedDomain?: [number, number] }) {
+  const values = samples.flatMap(sample => [sample.scenarioA[metric.key], sample.scenarioB[metric.key]]).filter((value): value is number => value !== null && Number.isFinite(value));
+  const min = fixedDomain?.[0] ?? (values.length ? Math.min(...values) : 0);
+  const max = fixedDomain?.[1] ?? (values.length ? Math.max(...values) : 0);
+  const spread = max - min || Math.max(Math.abs(max) * 0.1, 1);
+  const line = (side: "scenarioA" | "scenarioB") => samples.map((sample, index) => {
+    const value = sample[side][metric.key];
+    if (value === null || !Number.isFinite(value)) return null;
+    const x = samples.length < 2 ? 55 : 14 + index * 83 / (samples.length - 1);
+    const y = 40 - Math.max(0, Math.min(1, (value - min) / spread)) * 34;
+    return { sample, value, x, y };
+  });
+  const path = (points: ReturnType<typeof line>) => points.map((point, index) => point ? `${index === 0 || points[index - 1] == null ? "M" : "L"}${point.x.toFixed(2)},${point.y.toFixed(2)}` : "").filter(Boolean).join(" ");
+  const unit = metric.key === "flow" && fixedDomain ? metric.laneUnit : metric.unit;
+  const title = `${metric.label} over time`;
+  return (
+    <section className="rounded-md border border-border p-2">
+      <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{unit}</span></div>
+      {values.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, common scale ${comparisonDashboardNumber(min)} to ${comparisonDashboardNumber(max)} ${unit}`} className="network-kpi-dashboard-chart">
+        {[0, 0.5, 1].map(fraction => <g key={fraction}><line x1="14" y1={6 + fraction * 34} x2="97" y2={6 + fraction * 34} className="network-kpi-chart-axis" /><text x="12" y={8 + fraction * 34} textAnchor="end" className="network-kpi-chart-label">{comparisonDashboardNumber(max - fraction * spread)}</text></g>)}
+        <path d={path(line("scenarioA"))} fill="none" stroke="#2563eb" strokeWidth="1.5" />
+        <path d={path(line("scenarioB"))} fill="none" stroke="#f97316" strokeWidth="1.5" strokeDasharray="2 1" />
+        <text x="14" y="52" className="network-kpi-chart-label">{comparisonTimeLabel(samples[0]!.timeSeconds)}</text><text x="97" y="52" textAnchor="end" className="network-kpi-chart-label">{comparisonTimeLabel(samples.at(-1)!.timeSeconds)}</text>
+      </svg> : <p className="py-3 text-xs text-muted-foreground">No values are available.</p>}
+      <div className="flex gap-3 text-[10px]"><span className="text-blue-600">● {`A · ${nameA}`}</span><span className="text-orange-600">● {`B · ${nameB}`}</span></div>
+    </section>
+  );
+}
+
+function ComparisonDashboardScatterChart({ kind, samples, nameA, nameB, fixedFlowDomain, fixedMetricDomain }: { kind: "density" | "speed"; samples: ScenarioComparisonDashboardSample[]; nameA: string; nameB: string; fixedFlowDomain?: [number, number]; fixedMetricDomain?: [number, number] }) {
+  const points = samples.flatMap(sample => ([
+    { interval: sample.intervalA, timeSeconds: sample.timeSeconds, side: "A" as const, flow: sample.scenarioA.flow, metric: sample.scenarioA[kind] },
+    { interval: sample.intervalB, timeSeconds: sample.timeSeconds, side: "B" as const, flow: sample.scenarioB.flow, metric: sample.scenarioB[kind] },
+  ])).filter(point => point.flow !== null && point.metric !== null && Number.isFinite(point.flow) && Number.isFinite(point.metric));
+  const xMin = fixedFlowDomain?.[0] ?? (points.length ? Math.min(...points.map(point => point.flow!)) : 0);
+  const xMax = fixedFlowDomain?.[1] ?? (points.length ? Math.max(...points.map(point => point.flow!)) : 0);
+  const yMin = fixedMetricDomain?.[0] ?? (points.length ? Math.min(...points.map(point => point.metric!)) : 0);
+  const yMax = fixedMetricDomain?.[1] ?? (points.length ? Math.max(...points.map(point => point.metric!)) : 0);
+  const xSpread = xMax - xMin || Math.max(Math.abs(xMax) * 0.1, 1);const ySpread = yMax - yMin || Math.max(Math.abs(yMax) * 0.1, 1);
+  const unit = kind === "density" ? "veh/km" : "km/h";
+  return (
+    <section className="min-w-0 rounded-md border border-border p-2">
+      <div className="flex items-center justify-between text-xs"><strong>Flow vs {kind}</strong><span className="text-muted-foreground">{fixedFlowDomain ? "veh/h/lane" : "veh/h"} · {unit}</span></div>
+      {points.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`Flow vs ${kind}; flow scale ${comparisonDashboardNumber(xMin)} to ${comparisonDashboardNumber(xMax)}, ${kind} scale ${comparisonDashboardNumber(yMin)} to ${comparisonDashboardNumber(yMax)}`} className="network-kpi-dashboard-chart">
+        <line x1="4" y1="40" x2="97" y2="40" className="network-kpi-chart-axis" /><line x1="4" y1="4" x2="4" y2="40" className="network-kpi-chart-axis" />
+        {points.map(point => <circle key={`${point.timeSeconds}-${point.side}`} cx={4 + Math.max(0, Math.min(1, (point.flow! - xMin) / xSpread)) * 92} cy={39 - Math.max(0, Math.min(1, (point.metric! - yMin) / ySpread)) * 34} r="1.7" fill={point.side === "A" ? "#2563eb" : "#f97316"}><title>{`${comparisonTimeLabel(point.timeSeconds)} · ${point.side} · ${comparisonDashboardNumber(point.flow)} ${fixedFlowDomain ? "veh/h/lane" : "veh/h"} · ${comparisonDashboardNumber(point.metric)} ${unit}`}</title></circle>)}
+        <text x="4" y="47" className="network-kpi-chart-label">{comparisonDashboardNumber(xMin)}</text><text x="97" y="47" textAnchor="end" className="network-kpi-chart-label">{comparisonDashboardNumber(xMax)}</text>
+        <text x="4" y="53" className="network-kpi-chart-label">Flow</text><text x="97" y="53" textAnchor="end" className="network-kpi-chart-label">{kind}: {comparisonDashboardNumber(yMin)}–{comparisonDashboardNumber(yMax)}</text>
+      </svg> : <p className="py-3 text-xs text-muted-foreground">No paired values are available.</p>}
+      <div className="flex gap-3 text-[10px]"><span className="text-blue-600">● {`A · ${nameA}`}</span><span className="text-orange-600">● {`B · ${nameB}`}</span></div>
+    </section>
+  );
+}
 
 export function ScenarioComparisonPanel() {
   const { t } = useTranslation();

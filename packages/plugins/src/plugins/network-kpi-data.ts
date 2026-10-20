@@ -594,6 +594,18 @@ export interface NetworkKpiDashboardSample extends NetworkKpiSectionSample {
 
 export type NetworkKpiDashboardScope = "selected" | "viewport" | "network";
 
+export type NetworkKpiEntityKind = "section" | "lane" | "turn";
+
+/** Stable map selection identity shared with the Results and Comparison panels. */
+export interface NetworkKpiSelectedEntity {
+  kind: NetworkKpiEntityKind;
+  id: number;
+  sectionId: number;
+  laneIndex: number | null;
+  turnId: number | null;
+  name: string;
+}
+
 export interface NetworkKpiDashboardSeries {
   scope: NetworkKpiDashboardScope;
   samples: NetworkKpiDashboardSample[];
@@ -655,6 +667,7 @@ export function aggregateNetworkKpiDashboardSeries(
   lengthsKm: ReadonlyMap<number, number>,
   scope: NetworkKpiDashboardScope,
   periodAggregate = false,
+  laneCounts: ReadonlyMap<number, number> = new Map(),
 ): NetworkKpiDashboardSeries {
   const byInterval = new Map<number, Array<{ sectionId: number; sample: NetworkKpiSectionSample }>>();
   const unique = new Map<number, NetworkKpiSectionSeries>();
@@ -673,19 +686,23 @@ export function aggregateNetworkKpiDashboardSeries(
     const rows = entries.map(entry => entry.sample);
     if (scope === "selected") {
       const row = rows[0]!;
-      const sectionLength = lengthsKm.get(entries[0]!.sectionId) ?? 0;
+      const sectionId = entries[0]!.sectionId;
+      const sectionLength = lengthsKm.get(sectionId) ?? 0;
+      const laneCount = Math.max(1, laneCounts.get(sectionId) ?? 1);
+      const displayFlow = row.flow === null ? null : row.flow / laneCount;
       const hasFlowDensity = row.flow !== null && row.density !== null;
       const hasFlowSpeed = row.flow !== null && row.speed !== null;
       return {
         ...row,
+        flow: displayFlow,
         flowContributors: row.flow === null ? 0 : 1,
         densityContributors: row.density === null ? 0 : 1,
         densityLengthKm: sectionLength,
         densityScopeLengthKm: sectionLength,
         speedContributors: row.speed === null ? 0 : 1,
         speedFlowWeight: row.flow ?? 0,
-        flowDensity: { flow: hasFlowDensity ? row.flow : null, metric: hasFlowDensity ? row.density : null, contributors: hasFlowDensity ? 1 : 0 },
-        flowSpeed: { flow: hasFlowSpeed ? row.flow : null, metric: hasFlowSpeed ? row.speed : null, contributors: hasFlowSpeed ? 1 : 0 },
+        flowDensity: { flow: hasFlowDensity ? displayFlow : null, metric: hasFlowDensity ? row.density : null, contributors: hasFlowDensity ? 1 : 0 },
+        flowSpeed: { flow: hasFlowSpeed ? displayFlow : null, metric: hasFlowSpeed ? row.speed : null, contributors: hasFlowSpeed ? 1 : 0 },
       };
     }
     const flowRows = rows.filter(row => row.flow !== null && Number.isFinite(row.flow) && row.flow >= 0);

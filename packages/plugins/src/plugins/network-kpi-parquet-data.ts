@@ -238,6 +238,82 @@ export class ParquetResultsDatabase {
     }
   }
 
+  /** Read one lane/turn history without confusing an all-null row with absence. */
+  async readEntityTimeSeries(
+    kind: "lane" | "turn",
+    id: number,
+    options: { did?: number | null; sid?: number; laneIndex?: number; interval?: number } = {},
+  ): Promise<NetworkKpiSectionSample[]> {
+    if (this.closed) throw new Error("The results database is closed.");
+    if (!Number.isSafeInteger(id)) return [];
+    if (kind === "lane" && !Number.isSafeInteger(options.laneIndex)) return [];
+    const tableName = kind === "lane" ? "MILANE" : "MITURN";
+    const did = options.did ?? pickDefaultDid(this.catalog);
+    if (this.parquetDisabled) {
+      return this.readFallbackEntityTimeSeries(tableName, id, options.laneIndex, options);
+    }
+    const declared = this.catalog.filter((entry) => catalogDid(entry) === did && String(entry.table ?? "").toUpperCase() === tableName);
+    if (!declared.length) return [];
+    if (declared.some((entry) => typeof entry.path !== "string" || !entry.path.trim())) {
+      throw new Error(`Network KPI ${tableName} catalog entry has no Parquet file path.`);
+    }
+    try {
+      const handles = await Promise.all(declared.map((entry) => this.register(entry)));
+      const table = handles.length === 1 ? `read_parquet(${q(handles[0])})` : `read_parquet([${handles.map(q).join(", ")}])`;
+      const con = await this.db.connect();
+      try {
+        const didSql = did === null ? "NULL" : String(did);
+        const sid = options.sid ?? 0;
+        const lanePredicate = kind === "lane" ? ` AND lane = ${Number(options.laneIndex) + 1}` : "";
+        const entityPredicate = `did = ${didSql} AND sid = ${sid} AND oid = ${id}${lanePredicate}`;
+        const read = (aggregate: boolean) => con.query(
+          `SELECT ent, flow, density, speed FROM ${table} WHERE ${entityPredicate} AND ent ${options.interval !== undefined ? `= ${Math.trunc(options.interval)}` : aggregate ? "= 0" : "<> 0"} ORDER BY ent`,
+        );
+        let result = rows(await read(false));
+        // For turns, callers distinguish absent rows from rows whose metrics
+        // are null. Returning a non-empty all-null series preserves that fact.
+        if (!result.length && options.interval === undefined) result = rows(await read(true));
+        return toSectionSamples(result);
+      } finally { await con.close(); }
+    } catch (error) {
+      throw new Error(`Network KPI ${tableName} entity time-series query failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async readFallbackEntityTimeSeries(
+    table: "MILANE" | "MITURN",
+    id: number,
+    laneIndex: number | undefined,
+    options: { did?: number | null; sid?: number; interval?: number },
+  ): Promise<NetworkKpiSectionSample[]> {
+    const provider = await this.getFallback();
+    const metadata = provider.describe();
+    const descriptor = metadata.datasets.find((item) => item.table.toUpperCase() === table);
+    const did = options.did ?? descriptor?.dids?.[0];
+    if (options.did != null && !(descriptor?.dids ?? []).includes(options.did)) {
+      throw new Error(`Network KPI results catalog has no ${table} data for explicitly selected did ${options.did}.`);
+    }
+    const filters = [
+      { column: "sid" as const, op: "=" as const, value: options.sid ?? 0 },
+      { column: "oid" as const, op: "=" as const, value: id },
+      ...(table === "MILANE" ? [{ column: "lane" as const, op: "=" as const, value: Number(laneIndex) + 1 }] : []),
+    ];
+    const query = (aggregate: boolean) => provider.query({
+      dataset: table,
+      ...(did == null ? {} : { did }),
+      columns: ["ent", "flow", "density", "speed"],
+      filters: [...filters, { column: "ent" as const, op: options.interval !== undefined ? "=" as const : aggregate ? "=" as const : "!=" as const, value: options.interval !== undefined ? Math.trunc(options.interval) : 0 }],
+      limit: 100_000,
+    });
+    let result = await query(false);
+    if (result.truncated) throw new Error(`The ${table} entity history exceeds the SQLite fallback row limit.`);
+    if (!result.rows.length && options.interval === undefined) {
+      result = await query(true);
+      if (result.truncated) throw new Error(`The ${table} entity aggregate exceeds the SQLite fallback row limit.`);
+    }
+    return toSectionSamples(result.rows);
+  }
+
   /** Read a set of section histories in one bounded query rather than N per-section reads. */
   async readSectionsTimeSeries(
     sectionIds: readonly number[] | null,

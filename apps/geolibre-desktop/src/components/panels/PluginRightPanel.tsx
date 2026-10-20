@@ -61,6 +61,8 @@ interface PluginRightPanelProps {
   onWidthChange: (width: number) => void;
 }
 
+const TESTUDO_RESULTS_PANEL_ID = "testudo-results-dashboard";
+
 /**
  * Renders the active plugin-owned dockable panel when it is docked at this
  * instance's `dock` position.
@@ -299,7 +301,7 @@ export function PluginRightPanel({ dock, contentEl, width, onWidthChange }: Plug
                 <PanelRightClose className="h-4 w-4" />
               )}
             </Button>
-            <Button
+            {activeId !== TESTUDO_RESULTS_PANEL_ID && <Button
               variant="ghost"
               size="icon"
               className="h-7 w-7"
@@ -308,7 +310,7 @@ export function PluginRightPanel({ dock, contentEl, width, onWidthChange }: Plug
               onClick={() => closeRightPanel(activeId)}
             >
               <X className="h-4 w-4" />
-            </Button>
+            </Button>}
           </div>
         </div>
         <div ref={contentRef} className="plugin-panel-scroll min-h-0 flex-1 overflow-auto" />

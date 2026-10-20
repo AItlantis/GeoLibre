@@ -57,7 +57,7 @@ export {
   PATH_ANALYSIS_STORE_LAYER_ID,
 } from "./plugins/maplibre-path-analysis";
 export { PATH_METRICS, PATH_RAMPS, pathColorRgb, pathElevation, type PathMetric } from "./plugins/path-analysis-ramps";
-export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_STORE_LAYER_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, getScenarioComparisonLiveDiagnostics, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, selectScenarioComparisonPair, swapScenarioComparisonSides, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
+export { maplibreScenarioComparisonPlugin, SCENARIO_COMPARISON_PLUGIN_ID, SCENARIO_COMPARISON_STORE_LAYER_ID, SCENARIO_COMPARISON_CONTINUOUS_RAMPS, openScenarioComparisonPanel, closeScenarioComparisonPanel, isScenarioComparisonPanelVisible, subscribeScenarioComparison, getScenarioComparisonSnapshot, getScenarioComparisonStatus, getScenarioComparisonLiveDiagnostics, subscribeScenarioComparisonStatus, setScenarioComparisonSettings, selectScenarioComparisonPair, swapScenarioComparisonSides, reattachScenarioComparison, stepScenarioComparisonInterval, toggleScenarioComparisonIntervalPlaying, setScenarioComparisonManifestUrl, canLoadLocalScenarioComparisonPackage, loadLocalScenarioComparisonFolder, getScenarioComparisonDashboardSnapshot, subscribeScenarioComparisonDashboard, setScenarioComparisonDashboardScope, type ScenarioComparisonDashboardSnapshot, type ScenarioComparisonDashboardEntity, type ScenarioComparisonDashboardSample, type ScenarioComparisonDashboardValue, type ScenarioComparisonDashboardSide, type ScenarioComparisonSettings, type ScenarioComparisonStatus } from "./plugins/maplibre-scenario-comparison";
 export { buildScenarioComparisonRows, type ComparisonInput, type ComparisonRow } from "./plugins/scenario-comparison-data";
 export { parseComparisonRamps, comparisonCategoricalRamp, comparisonDifferenceLegend, comparisonThresholdOptions, comparisonThresholdDefault, isComparisonDifferenceMetric, sideBySideLegend, COMPARISON_CONTINUOUS_RAMPS, type ComparisonMetric, type CategoricalRamp, type ComparisonDifferenceMetric } from "./plugins/comparison-ramps";
 export {
@@ -1352,6 +1352,9 @@ export {
   type NetworkKpiDashboardScope,
   type NetworkKpiDashboardSeries,
   type NetworkKpiDashboardSample,
+  type NetworkKpiSectionSample,
+  type NetworkKpiSelectedEntity,
+  type NetworkKpiEntityKind,
 } from "./plugins/network-kpi-data";
 export {
   EMISSIONS_H3_PLUGIN_ID, EMISSIONS_H3_STORE_LAYER_ID, DEFAULT_EMISSIONS_H3_SETTINGS, maplibreEmissionsH3Plugin,

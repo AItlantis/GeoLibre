@@ -73,7 +73,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings,
   // (default = all hidden, as before). Style/attribute panels stay hidden.
   const testudoPanelRequest = layout === "testudo" && testudoPanels ? testudoPanels : null;
   const testudoAnyPanel = testudoPanelRequest !== null
-    && (testudoPanelRequest.layers || testudoPanelRequest.plugins || testudoPanelRequest.comments);
+    && (testudoPanelRequest.layers || testudoPanelRequest.plugins || testudoPanelRequest.comments || testudoPanelRequest.results);
   const panelsHidden = testudoPanelRequest
     ? !testudoAnyPanel
     : mapOnly ||

@@ -75,13 +75,13 @@ export type KpiRampOverrides = Partial<Record<NetworkKpiMetric, KpiRamp>>;
  */
 export const KPI_RAMPS: Readonly<Record<NetworkKpiMetric, KpiRamp>> = {
   flow: {
-    stops: [0, 500, 1000, 1500, 2000],
+    stops: [0, 550, 1100, 1650, 2200],
     colors: ["#2878c8", "#28b478", "#c8dc3c", "#ff8c00", "#d73027"],
-    unit: "veh/h",
+    unit: "veh/h/lane",
     label: "Flow",
   },
   density: {
-    stops: [0, 37, 75, 112, 150],
+    stops: [0, 40, 80, 120, 160],
     colors: ["#32a032", "#78c83c", "#c8dc3c", "#ff8c00", "#d73027"],
     unit: "veh/km",
     label: "Density",
@@ -110,8 +110,8 @@ export const KPI_RAMPS: Readonly<Record<NetworkKpiMetric, KpiRamp>> = {
  * too rather than derived from {@link KPI_RAMPS}.
  */
 export const KPI_RANGES: Readonly<Record<NetworkKpiMetric, { min: number; max: number }>> = {
-  flow: { min: 0, max: 2000 },
-  density: { min: 0, max: 150 },
+  flow: { min: 0, max: 2200 },
+  density: { min: 0, max: 160 },
   speed: { min: 0, max: 120 },
   delay: { min: 0, max: 240 },
 };
@@ -334,9 +334,11 @@ let RAMP_RGB: Record<NetworkKpiMetric, [number, number, number][]> = {
 /** Re-derive the cached RGB triples from whichever ramps are in force. */
 function refreshRampRgb(): void {
   RAMP_RGB = {
-    flow: activeRamp("flow").colors.map(parseHexColor),
-    density: activeRamp("density").colors.map(parseHexColor),
-    speed: activeRamp("speed").colors.map(parseHexColor),
+    // Testudo's section and lane scales are fixed across packages so the same
+    // values always have the same colors and legend stops.
+    flow: KPI_RAMPS.flow.colors.map(parseHexColor),
+    density: KPI_RAMPS.density.colors.map(parseHexColor),
+    speed: KPI_RAMPS.speed.colors.map(parseHexColor),
     delay: activeRamp("delay").colors.map(parseHexColor),
   };
 }
@@ -401,10 +403,17 @@ export function elevationByKpi(
   value: number | null | undefined,
   metric: NetworkKpiMetric,
   maxHeightMeters?: number | null,
+  overrides?: KpiRampOverrides,
 ): number {
   const rawValue = value ?? 0;
   if (!(rawValue > 0)) return 0;
-  const range = KPI_RANGES[metric];
+  // A package's declared default ramp is authoritative for its color domain;
+  // use that same domain for extrusion so color and height cannot disagree.
+  // Without an override, the standard Testudo ranges above apply.
+  const ramp = overrides?.[metric];
+  const range = ramp
+    ? { min: ramp.stops[0]!, max: ramp.stops[ramp.stops.length - 1]! }
+    : KPI_RANGES[metric];
   const clamped = clamp(rawValue, range.min, range.max);
   const ratio = (clamped - range.min) / (range.max - range.min);
   const maxHeight = clamp(maxHeightMeters ?? DEFAULT_MAX_HEIGHT_M, MAX_HEIGHT_MIN_M, MAX_HEIGHT_MAX_M);

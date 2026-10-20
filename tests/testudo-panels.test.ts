@@ -23,6 +23,7 @@ describe("testudoSetPanels protocol", () => {
   it("accepts strict booleans and optional flags", () => {
     assert.equal(acceptsTestudoMessage(msg({ layers: true, plugins: true, comments: true, layersCollapsed: true }), parent, [origin], challenge), true);
     assert.equal(acceptsTestudoMessage(msg({ tviewId: "main", layers: false, plugins: false, comments: true, hostGeoAi: true }), parent, [origin], challenge), true);
+    assert.equal(acceptsTestudoMessage(msg({ layers: false, plugins: false, comments: false, results: true }), parent, [origin], challenge), true);
   });
   it("rejects non-booleans, missing keys, unknown keys, other TViews and a bad challenge", () => {
     for (const bad of [
@@ -42,8 +43,8 @@ describe("panels store and layout", () => {
     assert.deepEqual(getTestudoPanels(), TESTUDO_PANELS_DEFAULT);
     assert.equal(testudoPanelsFromPayload({ layers: true, plugins: true, comments: true }).layersCollapsed, true);
     setTestudoPanels(testudoPanelsFromPayload({ layers: true, plugins: true, comments: true, layersCollapsed: false }));
-    setTestudoPanels(testudoPanelsFromPayload({ layers: false, plugins: false, comments: true, hostGeoAi: true }));
-    assert.deepEqual(getTestudoPanels(), { layers: false, plugins: false, comments: true, layersCollapsed: true, hostGeoAi: true });
+    setTestudoPanels(testudoPanelsFromPayload({ layers: false, plugins: false, comments: true, results: true, hostGeoAi: true }));
+    assert.deepEqual(getTestudoPanels(), { layers: false, plugins: false, comments: true, results: true, layersCollapsed: true, hostGeoAi: true });
     resetTestudoPanels();
     assert.deepEqual(getTestudoPanels(), TESTUDO_PANELS_DEFAULT);
   });
@@ -57,9 +58,9 @@ describe("panels store and layout", () => {
     const o = layoutOptionsFromLocation(DEFAULT_DESKTOP_LAYOUT_SETTINGS, testudoPanelsFromPayload({ layers: true, plugins: true, comments: true, layersCollapsed: true }));
     assert.deepEqual([o.panelsHidden, o.layerPanelVisible, o.panelsCollapsed, o.stylePanelVisible, o.attributePanelVisible, o.toolbarVisible, o.statusBarVisible], [false, true, true, false, false, false, false]);
   });
-  it("Present panels: only Comments keeps the docks reachable without Layers", () => {
+  it("Present panels: Results and Comments keep the docks reachable without Layers", () => {
     withSearch("?layout=testudo");
-    const o = layoutOptionsFromLocation(DEFAULT_DESKTOP_LAYOUT_SETTINGS, testudoPanelsFromPayload({ layers: false, plugins: false, comments: true }));
+    const o = layoutOptionsFromLocation(DEFAULT_DESKTOP_LAYOUT_SETTINGS, testudoPanelsFromPayload({ layers: false, plugins: false, comments: false, results: true }));
     assert.deepEqual([o.panelsHidden, o.layerPanelVisible, o.panelsCollapsed], [false, false, false]);
   });
   it("panels are ignored outside layout=testudo", () => {

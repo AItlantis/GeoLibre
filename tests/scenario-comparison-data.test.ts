@@ -1,6 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import test from "node:test";
-import { buildScenarioComparisonRows, defaultScenarioComparisonPair } from "../packages/plugins/src/plugins/scenario-comparison-data";
+import { buildScenarioComparisonRows, defaultScenarioComparisonPair, scenarioComparisonMetricDelta } from "../packages/plugins/src/plugins/scenario-comparison-data";
 import { comparisonDifferenceColor, comparisonDifferenceLegend, comparisonThresholdDefault, isComparisonMetric } from "../packages/plugins/src/plugins/comparison-ramps";
 
 test("comparison rows align by section ID and preserve missing side values", () => {
@@ -12,6 +12,20 @@ test("comparison rows align by section ID and preserve missing side values", () 
     { key: 10, hasReference: true, hasCompared: true, flow_delta: 50, density_delta: null },
     { key: 11, hasReference: false, hasCompared: true, flow_delta: null, density_delta: null },
   ]);
+});
+
+test("comparison dashboard deltas use independently read B minus A values and preserve missing samples", () => {
+  assert.deepEqual(
+    scenarioComparisonMetricDelta(
+      { key: "section:7", flow: 900, density: 30, speed: 45, delay: 2 },
+      { key: "section:7", flow: 1100, density: null, speed: 40, delay: 5 },
+    ),
+    { flow: 200, density: null, speed: -5, delay: 3 },
+  );
+  assert.deepEqual(
+    scenarioComparisonMetricDelta(null, { key: "section:7", flow: 1100, density: 35, speed: 40, delay: 5 }),
+    { flow: null, density: null, speed: null, delay: null },
+  );
 });
 
 test("difference thresholds and legend domains follow the selected metric and flow scale", () => {

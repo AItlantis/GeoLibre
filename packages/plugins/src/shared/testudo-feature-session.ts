@@ -95,6 +95,7 @@ export interface TestudoMapHandle {
   removeLayer(id: string): void;
   setLayoutProperty(id: string, name: string, value: unknown): void;
   isStyleLoaded?(): boolean;
+  queryRenderedFeatures?(point: unknown, options?: { layers?: string[] }): Array<{ properties?: Record<string, unknown>; id?: number | string }>;
 }
 
 export interface TestudoFeatureCapability {

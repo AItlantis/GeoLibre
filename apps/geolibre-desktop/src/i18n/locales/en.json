@@ -2537,10 +2537,11 @@
       "dashboard": {
         "title": "Results dashboard",
         "scope": "Perspective",
-        "selected": "Selected section",
+        "selected": "Selected section, lane, or turn",
         "viewport": "Sections in viewport",
         "network": "Whole network",
-        "selectSection": "Select a section on the map to view its results.",
+        "selectSection": "Select a section, lane, or turn on the map to view its results.",
+        "sectionFallback": "Turn data unavailable; showing connected section results",
         "loading": "Loading dashboard data…",
         "error": "Dashboard data could not be loaded: {{error}}",
         "emptyViewport": "No sections are in the current viewport.",

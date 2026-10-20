@@ -947,7 +947,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       if (mode === "paths") persistentNetwork.setPathsMode(true, activeSessionGeneration);
       else if (current.selectedMode === "paths") persistentNetwork.setPathsMode(false, activeSessionGeneration);
       update({ ...result, selectedMode: mode, ...(style ? { style } : {}) });
-      return finalizeModeSelection({
+      const finalized = await finalizeModeSelection({
         syncScenarioRoster: () => { syncScenarioRoster(target.plugin); },
         synchronizeViewMode: async () => {
           if (bridgeInstalled) await featureBridge.setViewMode("main", mode, sessionAtStart?.context.generation);
@@ -960,6 +960,8 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         assertCurrent: assertSelectionCurrent,
         getCurrentState: () => current,
       });
+      window.dispatchEvent(new CustomEvent("testudo-view-mode-changed", { detail: { mode, generation: activeSessionGeneration } }));
+      return finalized;
     };
     modeSelector.current = async mode => {
       if (commandGate.packageBusy || commandGate.commandBusy) return current;
@@ -1422,7 +1424,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
         if (request.type === "testudoGetTViews") return featureBridge.getTViews();
         if (request.type === "testudoSetPanels") {
           // Layout-only and idempotent (latest call wins): usable before a package loads and with selectedPlugin null.
-          if (!isSetPanelsPayload(request.payload)) throw new Error("testudoSetPanels needs boolean layers, plugins and comments (optional boolean layersCollapsed, hostGeoAi); unknown keys are rejected.");
+          if (!isSetPanelsPayload(request.payload)) throw new Error("testudoSetPanels needs boolean layers, plugins and comments (optional boolean results, layersCollapsed, hostGeoAi); unknown keys are rejected.");
           const next = setTestudoPanels(testudoPanelsFromPayload(request.payload));
           return update({ panels: { ...next } });
         }
@@ -1716,7 +1718,11 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             assertCameraCurrent();
             return camera;
           }
-          if (request.type === "testudoSetViewMode") return { mode: await featureBridge.setViewMode("main", request.payload?.mode, request.payload?.generation) };
+          if (request.type === "testudoSetViewMode") {
+            const mode = await featureBridge.setViewMode("main", request.payload?.mode, request.payload?.generation);
+            window.dispatchEvent(new CustomEvent("testudo-view-mode-changed", { detail: { mode, generation: request.payload?.generation } }));
+            return { mode };
+          }
           if (request.type === "testudoFeatureRequestInvestigation") return featureBridge.requestInvestigation("main", String(request.payload?.question ?? ""),
             typeof request.payload?.activeScenarioId === "string" ? request.payload.activeScenarioId : undefined);
           if (request.type === "testudoRespondGeoAIRequest") return featureBridge.respondGeoAIRequestTuple(String(request.payload?.requestId ?? ""), String(request.payload?.tviewId ?? "main"),

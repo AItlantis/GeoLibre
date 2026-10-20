@@ -14,6 +14,28 @@ export interface ComparisonRow extends ComparisonInput {
   cmp_flow_density_quadrant: ComparisonFlowDensityQuadrant;
 }
 
+export interface ScenarioComparisonMetricDelta {
+  flow: number | null;
+  density: number | null;
+  speed: number | null;
+  delay: number | null;
+}
+
+/** Calculate B − A from independently read scenario values, preserving missing metrics. */
+export function scenarioComparisonMetricDelta(
+  scenarioA: Pick<ComparisonInput, "flow" | "density" | "speed" | "delay"> | null,
+  scenarioB: Pick<ComparisonInput, "flow" | "density" | "speed" | "delay"> | null,
+): ScenarioComparisonMetricDelta {
+  const difference = (a: number | null | undefined, b: number | null | undefined) =>
+    a == null || b == null ? null : b - a;
+  return {
+    flow: difference(scenarioA?.flow, scenarioB?.flow),
+    density: difference(scenarioA?.density, scenarioB?.density),
+    speed: difference(scenarioA?.speed, scenarioB?.speed),
+    delay: difference(scenarioA?.delay, scenarioB?.delay),
+  };
+}
+
 export function defaultScenarioComparisonPair(
   scenarioIndices: readonly number[],
   currentA: number,

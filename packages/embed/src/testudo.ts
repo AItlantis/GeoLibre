@@ -75,7 +75,7 @@ export interface TestudoBootstrap {
  * Strict booleans, unknown keys rejected, latest call wins, reset to all-hidden on package reset.
  * `layersCollapsed` defaults to true (Layers shown as a rail entry). `hostGeoAi` hides the in-iframe "Ask GeoAI" overlay when the host drives GeoAI.
  */
-export interface TestudoPanels { layers: boolean; plugins: boolean; comments: boolean; layersCollapsed?: boolean; hostGeoAi?: boolean }
+export interface TestudoPanels { layers: boolean; plugins: boolean; comments: boolean; results?: boolean; layersCollapsed?: boolean; hostGeoAi?: boolean }
 export interface TestudoSetPanels extends TestudoPanels { tviewId?: string }
 /** testudoSetPresentSuspended payload (without challenge): strict boolean, optional tviewId. */
 export interface TestudoSetPresentSuspended { suspended: boolean; tviewId?: string }

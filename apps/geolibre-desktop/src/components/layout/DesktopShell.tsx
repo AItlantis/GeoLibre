@@ -18,6 +18,7 @@ import {
   endLayerGeometryEdit,
   GEO_EDITOR_PLUGIN_ID,
   getGeometryEditTargetLayerId,
+  collapseRightPanel,
   openRasterLayerPanel,
   getRightPanel,
   restoreDeckViz,
@@ -78,12 +79,17 @@ import {
 import { createPortal } from "react-dom";
 import { BROWSER_PANEL_ID, useRegisterBrowserPanel } from "../../hooks/useRegisterBrowserPanel";
 import { COMMENTS_PANEL_ID, useRegisterCommentsPanel } from "../../hooks/useRegisterCommentsPanel";
+import i18n from "../../i18n";
 import { UrlLoadErrorBanner } from "./UrlLoadErrorBanner";
 import { CommentsPanel } from "../comments/CommentsPanel";
 import { CommentMapOverlay } from "../comments/CommentMapOverlay";
 import { useCommentTool } from "../comments/useCommentTool";
 import { AddCommentDialog } from "../comments/AddCommentDialog";
 import { openRightPanel } from "@geolibre/plugins";
+import { isRightPanelVisible, registerRightPanel } from "@geolibre/plugins/right-panel-registry";
+import { NetworkKpiDashboardPanel } from "../panels/NetworkKpiPanel";
+
+const TESTUDO_RESULTS_PANEL_ID = "testudo-results-dashboard";
 import { getIsMobileViewport } from "../../hooks/useIsMobileViewport";
 import { useProjectFileActions } from "../../hooks/useProjectFileActions";
 import { useProjectHistory } from "../../hooks/useProjectHistory";
@@ -811,6 +817,12 @@ export function DesktopShell({
   // into a dedicated content host (below) that the dock slots adopt.
   useRegisterBrowserPanel();
   useRegisterCommentsPanel();
+  useEffect(() => registerRightPanel({
+    id: TESTUDO_RESULTS_PANEL_ID,
+    title: () => i18n.t("toolbar.networkKpi.dashboard.title"),
+    dock: "replace-style",
+    render: () => {},
+  }), []);
   // One shared project-file-actions instance for both the toolbar and the
   // Browser panel, so their "open recent" calls coordinate their aborts (two
   // instances would race). Lifted here for the same reason as `collaboration`.
@@ -850,9 +862,24 @@ export function DesktopShell({
   // Browser stays hidden; Comments is reachable independently of plugin docks.
   const testudoShell = isTestudoLayout();
   const testudoPanels = useTestudoPanels();
+  const [activeTestudoViewMode, setActiveTestudoViewMode] = useState<string | null>(null);
+  useEffect(() => {
+    const onViewModeChanged = (event: Event) => {
+      const mode = (event as CustomEvent<{ mode?: unknown }>).detail?.mode;
+      if (typeof mode === "string") setActiveTestudoViewMode(mode);
+    };
+    window.addEventListener("testudo-view-mode-changed", onViewModeChanged);
+    return () => window.removeEventListener("testudo-view-mode-changed", onViewModeChanged);
+  }, []);
+  useEffect(() => {
+    if (testudoShell && testudoPanels.results && !isRightPanelVisible(TESTUDO_RESULTS_PANEL_ID)) {
+      openRightPanel(TESTUDO_RESULTS_PANEL_ID);
+      collapseRightPanel(TESTUDO_RESULTS_PANEL_ID);
+    }
+  }, [testudoShell, testudoPanels.results]);
   const showPluginDocks = !testudoShell || testudoPanels.plugins;
   const showCommentsPanel = testudoShell ? testudoPanels.comments : true;
-  const testudoRightDockVisible = testudoPanels.plugins || testudoPanels.comments;
+  const testudoRightDockVisible = testudoPanels.plugins || testudoPanels.comments || testudoPanels.results;
   const [pluginPanelWidth, setPluginPanelWidth] = useState(PLUGIN_PANEL_DEFAULT_WIDTH);
   // The active plugin panel's content lives in this one host element (created
   // once per app instance). The active dock slot adopts it via appendChild, so
@@ -877,12 +904,37 @@ export function DesktopShell({
     el.className = "contents";
     return el;
   });
+  const [resultsContentEl] = useState(() => {
+    const el = document.createElement("div");
+    el.className = "contents";
+    return el;
+  });
   const rightPanelState = useRightPanelState();
   const activePanelId = rightPanelState.activeId;
+  const lastSelectedTestudoFeature = useRef<string | null>(null);
+  useEffect(() => {
+    if (!testudoShell || !testudoPanels.results || (activeTestudoViewMode !== "results" && activeTestudoViewMode !== "comparison")) return;
+    const onFeatureSelected = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+      const map = detail?.map as ({ __testudoGeneration?: number } | null) ?? null;
+      const generation = Number(detail?.generation);
+      if (!detail || !map || !Number.isSafeInteger(generation) || map.__testudoGeneration !== generation) return;
+      const key = [detail.kind, detail.featureId, detail.sectionId, detail.laneIndex, detail.turnId].join(":");
+      const sameSelection = lastSelectedTestudoFeature.current === key;
+      lastSelectedTestudoFeature.current = key;
+      if (sameSelection && rightPanelState.activeId === TESTUDO_RESULTS_PANEL_ID && !rightPanelState.collapsed) {
+        collapseRightPanel(TESTUDO_RESULTS_PANEL_ID);
+      } else {
+        openRightPanel(TESTUDO_RESULTS_PANEL_ID);
+      }
+    };
+    window.addEventListener("testudo-network-feature-selected", onFeatureSelected);
+    return () => window.removeEventListener("testudo-network-feature-selected", onFeatureSelected);
+  }, [testudoShell, testudoPanels.results, activeTestudoViewMode, rightPanelState.activeId, rightPanelState.collapsed]);
   const replaceStylePanelIds = rightPanelState.visibleIds.filter(
     (id) =>
       rightPanelState.panelDocks[id] === "replace-style" &&
-      (!testudoShell || (id === COMMENTS_PANEL_ID ? testudoPanels.comments : testudoPanels.plugins)),
+      (!testudoShell || (id === COMMENTS_PANEL_ID ? testudoPanels.comments : id === TESTUDO_RESULTS_PANEL_ID ? testudoPanels.results : testudoPanels.plugins)),
   );
   const replaceLayersPanelIds = rightPanelState.visibleIds.filter(
     (id) =>
@@ -944,6 +996,8 @@ export function DesktopShell({
       ? browserContentEl
       : activePanelId === COMMENTS_PANEL_ID
         ? commentsContentEl
+        : activePanelId === TESTUDO_RESULTS_PANEL_ID
+          ? resultsContentEl
         : pluginContentEl;
   // Render the active panel into the shared host once; re-run when its
   // registration is replaced (re-registration refresh) but not on dock/collapse
@@ -2729,6 +2783,9 @@ export function DesktopShell({
               />,
               commentsContentEl,
             )
+          : null}
+        {activePanelId === TESTUDO_RESULTS_PANEL_ID && !layoutOptions.panelsHidden && testudoShell && testudoPanels.results
+          ? createPortal(<NetworkKpiDashboardPanel />, resultsContentEl)
           : null}
         {/* Map-only / hidden-panels embeds show nothing but the map: skip the
             whole left side-dock (Layers, plugin panels, and the shared rail that

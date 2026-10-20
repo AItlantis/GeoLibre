@@ -18,6 +18,7 @@ const PATH_RIBBON_WIDTH_M=12;
 let pathAnalysisLayerVisible=true;
 let pathLayerOpacity = 1;
 let loadToken=0;
+let pathSelectionListener: ((event: Event) => void) | null = null;
 let pathPackageDirectory: VehicleDirectoryHandle | null = null;
 let selectedPathScenarioId: string | number | undefined;
 let intervalTimer: ReturnType<typeof setInterval> | null = null;
@@ -27,14 +28,14 @@ let snapshot:PathAnalysisSnapshot={settings:{manifestUrl:null,rule:"or",metric:"
 export const getPathAnalysisSnapshot=()=>snapshot;export const subscribePathAnalysis=(f:()=>void)=>(listeners.add(f),()=>listeners.delete(f));export const isPathAnalysisPanelVisible=()=>visible;export const subscribePathAnalysisPanel=(f:()=>void)=>(panelListeners.add(f),()=>panelListeners.delete(f));
 function fitPathAnalysisBounds(bounds:[number,number,number,number]|null){if(bounds)appRef?.fitBounds?.(bounds)}
 function registerPathAnalysisStoreLayer(){appRef?.registerExternalNativeLayer?.({id:PATH_ANALYSIS_STORE_LAYER_ID,name:"Path analysis",type:"geojson",nativeLayerIds:[SECTION_SOURCE,PATH_SOURCE,LABEL_SOURCE,SELECTED_LAYER],paintMode:"plugin",metadata:{customLayerType:"maplibre"},paintBridge:{setOpacity:(opacity)=>{pathLayerOpacity=Math.max(0,Math.min(1,opacity));const map=appRef?.getMap?.();if(map?.getLayer(SECTION_SOURCE))map.setPaintProperty(SECTION_SOURCE,"line-opacity",0.75*pathLayerOpacity);if(map?.getLayer(PATH_SOURCE))map.setPaintProperty(PATH_SOURCE,"line-opacity",["*",["get","opacity"],pathLayerOpacity]);if(map?.getLayer(LABEL_SOURCE))map.setPaintProperty(LABEL_SOURCE,"text-opacity",pathLayerOpacity);if(map?.getLayer(SELECTED_LAYER))map.setPaintProperty(SELECTED_LAYER,"line-opacity",pathLayerOpacity);void engine?.render();},setVisibility:(next)=>{pathAnalysisLayerVisible=next;const map=appRef?.getMap?.();for(const id of [SECTION_SOURCE,PATH_SOURCE,LABEL_SOURCE,SELECTED_LAYER])if(map?.getLayer(id))map.setLayoutProperty(id,"visibility",next?"visible":"none");void engine?.render();}}});}
-export function openPathAnalysisPanel(app:GeoLibreAppAPI){appRef=app;visible=true;registerPathAnalysisStoreLayer();registerDuckDbLayer({pluginId:"path-analysis",dispose:()=>{engine?.disposeData()}});panelListeners.forEach(f=>f());if(!engine){const map=app.getMap?.();if(map)engine=new PathAnalysisEngine(app,map)}}
+export function openPathAnalysisPanel(app:GeoLibreAppAPI){appRef=app;visible=true;registerPathAnalysisStoreLayer();registerDuckDbLayer({pluginId:"path-analysis",dispose:()=>{engine?.disposeData()}});panelListeners.forEach(f=>f());if(!engine){const map=app.getMap?.();if(map)engine=new PathAnalysisEngine(app,map)}if(!pathSelectionListener&&typeof window!=="undefined"){pathSelectionListener=(event)=>{const detail=(event as CustomEvent).detail;const map=appRef?.getMap?.();if(!detail||!engine||detail.map!==map||!map||!Number.isSafeInteger(detail.generation)||detail.generation<1)return;engine.selectNetworkFeature(detail)};window.addEventListener("testudo-network-feature-selected",pathSelectionListener)}}
 // Disposes the engine's current PathAnalysisData (conn.close()/db.terminate()/
 // worker.terminate() in path-analysis-data.ts) so closing the panel actually
 // releases the DuckDB instance instead of leaking it. `engine.disposeData()`
 // nulls out its own `data` field after closing, so a close-then-immediate-
 // reload race (setData() firing right after) never double-closes: setData()'s
 // own `this.data?.close()` sees the already-nulled field and no-ops.
-export function closePathAnalysisPanel(){visible=false;loadToken++;stopPathAnalysisTimer();snapshot={...snapshot,loading:false,settings:{...snapshot.settings,intervalPlaying:false}};releaseDuckDbLayer("path-analysis");appRef?.unregisterExternalNativeLayer?.(PATH_ANALYSIS_STORE_LAYER_ID);engine?.disposeData();panelListeners.forEach(f=>f())}
+export function closePathAnalysisPanel(){visible=false;loadToken++;stopPathAnalysisTimer();snapshot={...snapshot,loading:false,settings:{...snapshot.settings,intervalPlaying:false}};if(pathSelectionListener&&typeof window!=="undefined")window.removeEventListener("testudo-network-feature-selected",pathSelectionListener);pathSelectionListener=null;releaseDuckDbLayer("path-analysis");appRef?.unregisterExternalNativeLayer?.(PATH_ANALYSIS_STORE_LAYER_ID);engine?.disposeData();panelListeners.forEach(f=>f())}
 export async function setPathAnalysisManifestUrl(url:string){const token=++loadToken;stopPathAnalysisTimer();engine?.disposeData();snapshot={...snapshot,summary:null,intervals:[],selectedSections:[],selectedSection:null,selectedSectionName:null,selectedVolume:0,sectionVolumes:[],matches:[],settings:{...snapshot.settings,manifestUrl:url,interval:0,intervalPlaying:false},loading:true,error:null,selectionLoading:false,selectionError:null};notify();try{const p=parsePathAnalysisManifest(await fetchNetworkKpiManifestJson(url),url);if(token!==loadToken)return;if(!p.available)throw new Error(p.unavailableReason??"Path data is unavailable in this package.");const d=await loadPathAnalysis(createHttpPackageSource(url),p);if(token!==loadToken){d.close();return}engine?.setData(d);fitPathAnalysisBounds(p.bounds);snapshot={...snapshot,loading:false,summary:d.summary,intervals:d.intervals??[],settings:{...snapshot.settings,interval:0,intervalPlaying:false},selectedSections:[],selectedSection:null,selectedSectionName:null,matches:[]}}catch(e){if(token!==loadToken)return;snapshot={...snapshot,loading:false,error:e instanceof Error?e.message:String(e)};notify()}notify()}
 export async function loadLocalPathAnalysisFolder(selectedDirectory?:VehicleDirectoryHandle, scenarioId=selectedPathScenarioId){const token=++loadToken;if(!selectedDirectory&&!supportsLocalPackageFolders()){snapshot={...snapshot,error:"Local folders are not supported in this browser."};notify();return}stopPathAnalysisTimer();engine?.disposeData();snapshot={...snapshot,summary:null,intervals:[],selectedSections:[],selectedSection:null,selectedSectionName:null,selectedVolume:0,sectionVolumes:[],matches:[],selectionLoading:false,selectionError:null,loading:true,error:null,settings:{...snapshot.settings,interval:0,intervalPlaying:false}};notify();try{const root=selectedDirectory??pathPackageDirectory??await(window as any).showDirectoryPicker() as VehicleDirectoryHandle;if(token!==loadToken)return;pathPackageDirectory=root;selectedPathScenarioId=scenarioId;const p=parsePathAnalysisManifest(await readLocalPathAnalysisManifestJson(root),null,scenarioId);if(token!==loadToken)return;const d=await loadPathAnalysis(createPathAnalysisDirectorySource(root),p);if(token!==loadToken){d.close();return}engine?.setData(d);fitPathAnalysisBounds(p.bounds);snapshot={...snapshot,loading:false,summary:d.summary,intervals:d.intervals??[],settings:{...snapshot.settings,interval:0,intervalPlaying:false,manifestUrl:null},selectedSections:[],selectedSection:null,selectedSectionName:null,matches:[]};notify()}catch(e){if(token!==loadToken)return;snapshot={...snapshot,loading:false,error:(e as Error).name!=="AbortError"?(e instanceof Error?e.message:String(e)):null};notify()}}
 export async function setPathAnalysisScenario(scenarioId:string|number):Promise<void>{
@@ -89,6 +90,7 @@ class PathAnalysisEngine {
   private styleBound = false;
   private selectionToken = 0;
   private renderGeneration = 0;
+  private selectionGeneration: number | null = null;
   constructor(private app: GeoLibreAppAPI, private map: MapLibreMap) {}
 
   disposeData() {
@@ -105,6 +107,7 @@ class PathAnalysisEngine {
 
   setData(data: PathAnalysisData) {
     this.selectionToken++;
+    this.selectionGeneration = null;
     this.data?.close();
     this.data = data;
     this.ensureLayerSources();
@@ -126,6 +129,10 @@ class PathAnalysisEngine {
     this.setSelectedFeature(null);
     if (!this.bound) {
       this.map.on("click", (event) => {
+        // Testudo owns the persistent network and publishes exact hit-tested
+        // features. The plugin has no section layer in that layout; querying a
+        // missing layer throws in MapLibre and used to make Paths unselectable.
+        if (isTestudoLayout() || !this.map.getLayer(SECTION_SOURCE)) return;
         const p = event.point;
         const features = this.map.queryRenderedFeatures([[p.x - 8, p.y - 8], [p.x + 8, p.y + 8]], { layers: [SECTION_SOURCE] });
         if (features.length) void this.select({ ...event, features } as MapMouseEvent);
@@ -172,6 +179,24 @@ class PathAnalysisEngine {
     await this.render();
     notify();
     await this.refresh();
+  }
+
+  selectNetworkFeature(detail: { map: unknown; generation: number; kind: "section" | "lane" | "turn"; featureId?: number | string; sectionId?: number | string; laneIndex?: number; turnId?: number | string; properties?: Record<string, unknown>; ctrlKey?: boolean; shiftKey?: boolean; originalEvent?: { ctrlKey?: boolean; shiftKey?: boolean } }) {
+    if (detail.map !== this.map || !Number.isSafeInteger(detail.generation) || detail.generation < 1
+      || detail.generation !== (this.map as any).__testudoGeneration || !this.data) return;
+    if (this.selectionGeneration !== null && detail.generation < this.selectionGeneration) return;
+    this.selectionGeneration = detail.generation;
+    const rawId = detail.sectionId ?? detail.properties?.section_id ?? detail.properties?.sectionId
+      ?? detail.properties?.oid ?? detail.properties?.id ?? detail.properties?.ID;
+    const id = Math.trunc(Number(rawId));
+    if (!Number.isSafeInteger(id)) return;
+    const add = Boolean(detail.ctrlKey || detail.shiftKey || detail.originalEvent?.ctrlKey || detail.originalEvent?.shiftKey);
+    const next = add ? (snapshot.selectedSections.includes(id) ? snapshot.selectedSections.filter(value => value !== id) : [...snapshot.selectedSections, id]) : [id];
+    this.selectionToken++;
+    const selected = next.includes(id) ? id : next.at(-1) ?? null;
+    snapshot = { ...snapshot, selectedSections: next, selectedSection: selected, selectedSectionName: selected === null ? null : this.getSectionName(selected), selectionLoading: next.length > 0, selectionError: null, selectedVolume: 0, sectionVolumes: [], matches: [] };
+    this.setSelectedFeature(selected);
+    void this.render().then(() => { notify(); return this.refresh(); });
   }
 
   async refresh() {

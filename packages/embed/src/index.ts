@@ -265,11 +265,12 @@ export function connect(
     testudoSetMode: (payload) => sendTestudo<TestudoViewerState>("testudoSetMode", payload),
     testudoOpenGeoAiChat: (payload) => sendTestudo<TestudoViewerState>("testudoOpenGeoAiChat", payload),
     testudoSetPanels: (payload) => {
-      const allowed = ["tviewId", "layers", "plugins", "comments", "layersCollapsed", "hostGeoAi"];
+      const allowed = ["tviewId", "layers", "plugins", "comments", "results", "layersCollapsed", "hostGeoAi"];
       const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
       const record = payload as unknown as Record<string, unknown>;
-      if (!keys.length || keys.some(key => !allowed.includes(key))) return Promise.reject(new Error("testudoSetPanels accepts only tviewId, layers, plugins, comments, layersCollapsed and hostGeoAi."));
+      if (!keys.length || keys.some(key => !allowed.includes(key))) return Promise.reject(new Error("testudoSetPanels accepts only tviewId, layers, plugins, comments, results, layersCollapsed and hostGeoAi."));
       if (["layers", "plugins", "comments"].some(key => typeof record[key] !== "boolean")
+        || (record.results !== undefined && typeof record.results !== "boolean")
         || ["layersCollapsed", "hostGeoAi"].some(key => record[key] !== undefined && typeof record[key] !== "boolean")
         || (record.tviewId !== undefined && typeof record.tviewId !== "string")) return Promise.reject(new Error("testudoSetPanels layers, plugins and comments must be booleans."));
       return sendTestudo<TestudoViewerState>("testudoSetPanels", { ...payload });

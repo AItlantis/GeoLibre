@@ -223,12 +223,13 @@ export function isSetPresentSuspendedPayload(payload: unknown): boolean {
     && typeof value.suspended === "boolean" && (value.tviewId === undefined || value.tviewId === "main");
 }
 
-/** Strict testudoSetPanels payload: challenge + required boolean layers/plugins/comments, optional boolean layersCollapsed/hostGeoAi, optional tviewId "main"; nothing else. */
+/** Strict testudoSetPanels payload: challenge + required boolean layers/plugins/comments, optional boolean results/layersCollapsed/hostGeoAi, optional tviewId "main"; nothing else. */
 export function isSetPanelsPayload(payload: unknown): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   const value = payload as Record<string, unknown>;
-  return Object.keys(value).every(key => ["challenge", "tviewId", "layers", "plugins", "comments", "layersCollapsed", "hostGeoAi"].includes(key))
+  return Object.keys(value).every(key => ["challenge", "tviewId", "layers", "plugins", "comments", "results", "layersCollapsed", "hostGeoAi"].includes(key))
     && typeof value.layers === "boolean" && typeof value.plugins === "boolean" && typeof value.comments === "boolean"
+    && (value.results === undefined || typeof value.results === "boolean")
     && (value.layersCollapsed === undefined || typeof value.layersCollapsed === "boolean")
     && (value.hostGeoAi === undefined || typeof value.hostGeoAi === "boolean")
     && (value.tviewId === undefined || value.tviewId === "main");

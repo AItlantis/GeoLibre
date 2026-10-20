@@ -72,4 +72,7 @@ test("network KPI query construction keeps MISECT and MILANE unions separate", (
   assert.match(source, /FROM \$\{misect\} x/);
   assert.match(source, /FROM \$\{milane\} x/);
   assert.doesNotMatch(source, /const tables = .*UNION ALL/);
+  assert.match(source, /lane = \$\{Number\(options\.laneIndex\) \+ 1\}/);
+  assert.match(source, /const tableName = kind === "lane" \? "MILANE" : "MITURN"/);
+  assert.match(source, /if \(!result\.length\) result = rows\(await read\(true\)\)/);
 });

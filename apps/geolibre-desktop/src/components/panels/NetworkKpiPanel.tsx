@@ -29,10 +29,12 @@ import {
   useViewModeToggle,
   type NetworkKpiMetric,
   type NetworkKpiDashboardSample,
+  type NetworkKpiSectionSample,
 } from "@geolibre/plugins";
 import { Button, Slider, Tabs, TabsContent, TabsList, TabsTrigger } from "@geolibre/ui";
 import { BarChart3, Box, Eye, FolderOpen, Loader2, PanelBottomClose, PanelBottomOpen, Pause, Play, SkipBack, SkipForward, Square, X } from "lucide-react";
 import { PlaybackTimelineReadout, intervalCurrentSeconds } from "./PlaybackTimelineReadout";
+import { ScenarioComparisonDashboardPanel } from "./ScenarioComparisonPanel";
 import {
   useEffect,
   useState,
@@ -60,7 +62,35 @@ export function NetworkKpiPanel() {
     isNetworkKpiPanelVisible,
   );
   if (!visible) return null;
+  // Testudo owns a dedicated docked Results panel. Keep this plugin controls
+  // dialog available in ordinary GeoLibre layouts only.
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("layout") === "testudo") return null;
   return <NetworkKpiCard />;
+}
+
+/** Testudo's lateral Results panel body, rendered by DesktopShell's right dock. */
+export function NetworkKpiDashboardPanel() {
+  const { t } = useTranslation();
+  const [activeDashboard, setActiveDashboard] = useState("results");
+  useEffect(() => {
+    const onViewModeChanged = (event: Event) => {
+      const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode;
+      if (mode === "results") setActiveDashboard("results");
+      else if (mode === "comparison") setActiveDashboard("comparison");
+    };
+    window.addEventListener("testudo-view-mode-changed", onViewModeChanged);
+    return () => window.removeEventListener("testudo-view-mode-changed", onViewModeChanged);
+  }, []);
+  return (
+    <Tabs value={activeDashboard} onValueChange={setActiveDashboard}>
+      <TabsList className="grid w-full grid-cols-2">
+        <TabsTrigger value="results">{t("toolbar.networkKpi.tabs.dashboard")}</TabsTrigger>
+        <TabsTrigger value="comparison">Comparison</TabsTrigger>
+      </TabsList>
+      <TabsContent value="results" className="mt-3"><NetworkKpiDashboard /></TabsContent>
+      <TabsContent value="comparison" className="mt-3"><ScenarioComparisonDashboardPanel /></TabsContent>
+    </Tabs>
+  );
 }
 
 function NetworkKpiCard() {
@@ -429,10 +459,15 @@ function NetworkKpiCard() {
 }
 
 const DASHBOARD_METRICS = [
-  { key: "flow" as const, label: "flow", unit: "veh/h", color: "#38bdf8" },
-  { key: "density" as const, label: "density", unit: "veh/km", color: "#f59e0b" },
-  { key: "speed" as const, label: "speed", unit: "km/h", color: "#34d399" },
+  { key: "flow" as const, label: "flow", unit: "veh/h", max: 2200, color: "#38bdf8" },
+  { key: "density" as const, label: "density", unit: "veh/km", max: 160, color: "#f59e0b" },
+  { key: "speed" as const, label: "speed", unit: "km/h", max: 120, color: "#34d399" },
 ] as const;
+
+type DashboardChartSample = Pick<NetworkKpiSectionSample, "interval" | "flow" | "density" | "speed"> & {
+  flowDensity?: NetworkKpiDashboardSample["flowDensity"];
+  flowSpeed?: NetworkKpiDashboardSample["flowSpeed"];
+};
 
 function dashboardNumber(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value)
@@ -453,8 +488,12 @@ function NetworkKpiDashboard() {
   const settings = useSyncExternalStore(subscribeNetworkKpi, getNetworkKpiSnapshot, getNetworkKpiSnapshot);
   const status = useSyncExternalStore(subscribeNetworkKpiStatus, getNetworkKpiStatus, getNetworkKpiStatus);
   const series = dashboard.series;
-  const samples = series?.samples ?? [];
+  const selected = dashboard.scope === "selected";
+  const samples: DashboardChartSample[] = selected
+    ? dashboard.entitySeries ?? []
+    : series?.samples ?? [];
   const current = samples.find(sample => sample.interval === settings.interval) ?? samples.at(-1) ?? null;
+  const periodAggregate = selected ? samples.length === 1 && samples[0]?.interval === 0 : Boolean(series?.periodAggregate);
   const coverageGap = Boolean(series && (series.geometryMissingCount > 0 || samples.some(sample =>
     sample.flowContributors < series.sectionCount || sample.densityContributors < series.sectionCount || sample.speedContributors < series.sectionCount,
   )));
@@ -475,38 +514,39 @@ function NetworkKpiDashboard() {
         </select>
       </div>
 
-      {dashboard.scope === "selected" && (
+      {selected && (
         <p className="text-xs text-muted-foreground">
-          {dashboard.selectedSectionName ?? t("toolbar.networkKpi.dashboard.selectSection")}
+          {dashboard.selectedEntity?.name ?? dashboard.selectedSectionName ?? t("toolbar.networkKpi.dashboard.selectSection")}
+          {dashboard.entityStatsFallback ? ` · ${t("toolbar.networkKpi.dashboard.sectionFallback")}` : ""}
         </p>
       )}
       {dashboard.loading && <p role="status" className="text-sm text-muted-foreground">{t("toolbar.networkKpi.dashboard.loading")}</p>}
       {dashboard.error && <p role="alert" className="rounded-md border border-destructive/40 p-2 text-sm text-destructive">{t("toolbar.networkKpi.dashboard.error", { error: dashboard.error })}</p>}
-      {!dashboard.loading && !dashboard.error && dashboard.scope === "selected" && dashboard.selectedSectionId == null && (
+      {!dashboard.loading && !dashboard.error && selected && dashboard.selectedEntity == null && dashboard.selectedSectionId == null && (
         <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">{t("toolbar.networkKpi.dashboard.selectSection")}</p>
       )}
       {!dashboard.loading && !dashboard.error && dashboard.scope === "viewport" && dashboard.viewportSectionCount === 0 && (
         <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">{t("toolbar.networkKpi.dashboard.emptyViewport")}</p>
       )}
-      {!dashboard.loading && !dashboard.error && series && series.sectionCount > 0 && !current && (
+      {!dashboard.loading && !dashboard.error && (selected ? samples.length > 0 : Boolean(series && series.sectionCount > 0)) && !current && (
         <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">{t("toolbar.networkKpi.dashboard.noValues")}</p>
       )}
 
-      {!dashboard.loading && !dashboard.error && current && series && (
+      {!dashboard.loading && !dashboard.error && current && (selected || series) && (
         <>
           <div className="grid grid-cols-3 gap-2">
             {DASHBOARD_METRICS.map(metric => (
               <div key={metric.key} className="min-w-0 rounded-md border border-border p-2">
                 <span className="block truncate text-xs text-muted-foreground">{t(`toolbar.networkKpi.metric.${metric.label}`)}</span>
                 <strong className="block truncate text-base tabular-nums">{dashboardNumber(current[metric.key])}</strong>
-                <span className="block text-[10px] text-muted-foreground">{metric.unit}</span>
+                <span className="block text-[10px] text-muted-foreground">{metric.key === "flow" && selected ? "veh/h/lane" : metric.unit}</span>
               </div>
             ))}
           </div>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            {t(dashboard.scope === "selected" ? "toolbar.networkKpi.dashboard.singleFormula" : "toolbar.networkKpi.dashboard.formula")}
+            {t(selected ? "toolbar.networkKpi.dashboard.singleFormula" : "toolbar.networkKpi.dashboard.formula")}
           </p>
-          {coverageGap && (
+          {!selected && coverageGap && (
             <p role="status" className="rounded-md border border-amber-500/40 p-2 text-xs text-muted-foreground">
               {t("toolbar.networkKpi.dashboard.coverage", {
                 sections: series.sectionCount,
@@ -521,18 +561,18 @@ function NetworkKpiDashboard() {
               })}
             </p>
           )}
-          {series.periodAggregate ? (
+          {periodAggregate ? (
             <p role="status" className="rounded-md border border-border p-2 text-sm text-muted-foreground">{t("toolbar.networkKpi.dashboard.periodAggregate")}</p>
           ) : (
             <>
               <div className="grid grid-cols-1 gap-2">
                 {DASHBOARD_METRICS.map(metric => (
-                  <DashboardLineChart key={metric.key} metric={metric} samples={samples} selectedInterval={settings.interval} timeline={status.timeline} />
+                  <DashboardLineChart key={metric.key} metric={metric} samples={samples} selectedInterval={settings.interval} timeline={status.timeline} fixedDomain={selected ? [0, metric.max] : undefined} />
                 ))}
               </div>
               <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-                <DashboardScatterChart kind="density" samples={samples} selectedInterval={settings.interval} timeline={status.timeline} />
-                <DashboardScatterChart kind="speed" samples={samples} selectedInterval={settings.interval} timeline={status.timeline} />
+                <DashboardScatterChart kind="density" samples={samples} selectedInterval={settings.interval} timeline={status.timeline} fixedFlowDomain={selected ? [0, 2200] : undefined} fixedMetricDomain={selected ? [0, 160] : undefined} />
+                <DashboardScatterChart kind="speed" samples={samples} selectedInterval={settings.interval} timeline={status.timeline} fixedFlowDomain={selected ? [0, 2200] : undefined} fixedMetricDomain={selected ? [0, 120] : undefined} />
               </div>
               <details className="rounded-md border border-border p-2">
                 <summary className="cursor-pointer text-xs font-medium">{t("toolbar.networkKpi.dashboard.dataTable")}</summary>
@@ -542,7 +582,7 @@ function NetworkKpiDashboard() {
                     <thead><tr><th scope="col">{t("toolbar.networkKpi.interval")}</th><th scope="col">{t("toolbar.networkKpi.metric.flow")}</th><th scope="col">{t("toolbar.networkKpi.metric.density")}</th><th scope="col">{t("toolbar.networkKpi.metric.speed")}</th></tr></thead>
                     <tbody>{samples.map(sample => <tr key={sample.interval} aria-current={sample.interval === settings.interval ? "true" : undefined}>
                       <th scope="row">{dashboardIntervalLabel(sample.interval, status.timeline, t("toolbar.networkKpi.intervalAggregate"))}</th>
-                      <td>{dashboardNumber(sample.flow)} {DASHBOARD_METRICS[0].unit}</td>
+                      <td>{dashboardNumber(sample.flow)} {selected ? "veh/h/lane" : DASHBOARD_METRICS[0].unit}</td>
                       <td>{dashboardNumber(sample.density)} {DASHBOARD_METRICS[1].unit}</td>
                       <td>{dashboardNumber(sample.speed)} {DASHBOARD_METRICS[2].unit}</td>
                     </tr>)}</tbody>
@@ -562,61 +602,71 @@ function DashboardLineChart({
   samples,
   selectedInterval,
   timeline,
+  fixedDomain,
 }: {
   metric: (typeof DASHBOARD_METRICS)[number];
-  samples: NetworkKpiDashboardSample[];
+  samples: DashboardChartSample[];
   selectedInterval: number;
   timeline: ReturnType<typeof getNetworkKpiStatus>["timeline"];
+  fixedDomain?: [number, number];
 }) {
   const { t } = useTranslation();
   const usable = samples.map(sample => sample[metric.key]).filter((value): value is number => value != null && Number.isFinite(value));
-  const min = usable.length ? Math.min(...usable) : 0;
-  const max = usable.length ? Math.max(...usable) : 0;
+  const min = fixedDomain?.[0] ?? (usable.length ? Math.min(...usable) : 0);
+  const max = fixedDomain?.[1] ?? (usable.length ? Math.max(...usable) : 0);
   const spread = max - min || Math.max(Math.abs(max) * 0.1, 1);
-  const points = samples.map((sample, index) => {
+  const timeIntervals = samples.map(sample => sample.interval).filter(interval => interval > 0);
+  const firstInterval = timeIntervals.length ? Math.min(...timeIntervals) : 0;
+  const lastInterval = timeIntervals.length ? Math.max(...timeIntervals) : 0;
+  const points = samples.map(sample => {
     const value = sample[metric.key];
-    return value == null ? null : { sample, value, x: samples.length < 2 ? 50 : 4 + index * 92 / (samples.length - 1), y: 40 - (value - min) * 34 / spread };
+    const normalized = value == null ? null : Math.max(0, Math.min(1, (value - min) / spread));
+    const x = lastInterval > firstInterval ? 14 + (sample.interval - firstInterval) * 83 / (lastInterval - firstInterval) : 55;
+    return value == null || normalized == null ? null : { sample, value, x, y: 40 - normalized * 34 };
   });
   const path = points.map((point, index) => point ? `${index === 0 || points[index - 1] == null ? "M" : "L"}${point.x.toFixed(2)},${point.y.toFixed(2)}` : "").filter(Boolean).join(" ");
   const title = t("toolbar.networkKpi.dashboard.overTime", { metric: t(`toolbar.networkKpi.metric.${metric.label}`) });
   return (
     <section className="rounded-md border border-border p-2">
-      <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{metric.unit}</span></div>
-      {usable.length ? <svg viewBox="0 0 100 48" role="img" aria-label={title} className="network-kpi-dashboard-chart">
-        <line x1="3" y1="41" x2="97" y2="41" className="network-kpi-chart-axis" />
+      <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{metric.key === "flow" && fixedDomain ? "veh/h/lane" : metric.unit}</span></div>
+      {usable.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, scale ${dashboardNumber(min)} to ${dashboardNumber(max)} ${metric.unit}`} className="network-kpi-dashboard-chart">
+        {[0, 0.5, 1].map(fraction => <g key={fraction}><line x1="14" y1={6 + fraction * 34} x2="97" y2={6 + fraction * 34} className="network-kpi-chart-axis" /><text x="12" y={8 + fraction * 34} textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(max - fraction * spread)}</text></g>)}
         <path d={path} fill="none" stroke={metric.color} strokeWidth="1.5" />
         {points.map((point, index) => point && <circle key={point.sample.interval} cx={point.x} cy={point.y} r={point.sample.interval === selectedInterval ? 2.3 : 1.3} fill={metric.color}>
           <title>{dashboardIntervalLabel(point.sample.interval, timeline, t("toolbar.networkKpi.intervalAggregate"))} · {dashboardNumber(point.value)} {metric.unit}</title>
         </circle>)}
-        <text x="3" y="47" className="network-kpi-chart-label">{dashboardNumber(min)}</text><text x="97" y="47" textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(max)}</text>
+        <text x="14" y="52" className="network-kpi-chart-label">{dashboardIntervalLabel(firstInterval, timeline)}</text><text x="97" y="52" textAnchor="end" className="network-kpi-chart-label">{dashboardIntervalLabel(lastInterval, timeline)}</text>
       </svg> : <p className="py-3 text-xs text-muted-foreground">{t("toolbar.networkKpi.dashboard.noMetricValues")}</p>}
     </section>
   );
 }
 
-function DashboardScatterChart({ kind, samples, selectedInterval, timeline }: { kind: "density" | "speed"; samples: NetworkKpiDashboardSample[]; selectedInterval: number; timeline: ReturnType<typeof getNetworkKpiStatus>["timeline"] }) {
+function DashboardScatterChart({ kind, samples, selectedInterval, timeline, fixedFlowDomain, fixedMetricDomain }: { kind: "density" | "speed"; samples: DashboardChartSample[]; selectedInterval: number; timeline: ReturnType<typeof getNetworkKpiStatus>["timeline"]; fixedFlowDomain?: [number, number]; fixedMetricDomain?: [number, number] }) {
   const { t } = useTranslation();
   const points = samples.flatMap(sample => {
     const pair = kind === "density" ? sample.flowDensity : sample.flowSpeed;
-    return pair.flow == null || pair.metric == null ? [] : [{ interval: sample.interval, x: pair.flow, y: pair.metric, contributors: pair.contributors }];
+    const x = pair?.flow ?? sample.flow;
+    const y = pair?.metric ?? sample[kind];
+    return x == null || y == null ? [] : [{ interval: sample.interval, x, y, contributors: pair?.contributors ?? 1 }];
   });
-  const xMin = points.length ? Math.min(...points.map(point => point.x)) : 0;
-  const xMax = points.length ? Math.max(...points.map(point => point.x)) : 0;
-  const yMin = points.length ? Math.min(...points.map(point => point.y)) : 0;
-  const yMax = points.length ? Math.max(...points.map(point => point.y)) : 0;
+  const xMin = fixedFlowDomain?.[0] ?? (points.length ? Math.min(...points.map(point => point.x)) : 0);
+  const xMax = fixedFlowDomain?.[1] ?? (points.length ? Math.max(...points.map(point => point.x)) : 0);
+  const yMin = fixedMetricDomain?.[0] ?? (points.length ? Math.min(...points.map(point => point.y)) : 0);
+  const yMax = fixedMetricDomain?.[1] ?? (points.length ? Math.max(...points.map(point => point.y)) : 0);
   const xSpread = xMax - xMin || Math.max(Math.abs(xMax) * 0.1, 1);
   const ySpread = yMax - yMin || Math.max(Math.abs(yMax) * 0.1, 1);
   const metricLabel = t(`toolbar.networkKpi.metric.${kind}`);
   const title = t("toolbar.networkKpi.dashboard.flowVs", { metric: metricLabel });
   return (
     <section className="min-w-0 rounded-md border border-border p-2">
-      <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">veh/h · {kind === "density" ? "veh/km" : "km/h"}</span></div>
-      {points.length ? <svg viewBox="0 0 100 48" role="img" aria-label={title} className="network-kpi-dashboard-chart">
+      <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{fixedFlowDomain ? "veh/h/lane" : "veh/h"} · {kind === "density" ? "veh/km" : "km/h"}</span></div>
+      {points.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, flow scale ${dashboardNumber(xMin)} to ${dashboardNumber(xMax)}, ${kind} scale ${dashboardNumber(yMin)} to ${dashboardNumber(yMax)}`} className="network-kpi-dashboard-chart">
         <line x1="4" y1="40" x2="97" y2="40" className="network-kpi-chart-axis" /><line x1="4" y1="4" x2="4" y2="40" className="network-kpi-chart-axis" />
         {points.map(point => <circle key={point.interval} cx={4 + (point.x - xMin) * 92 / xSpread} cy={39 - (point.y - yMin) * 34 / ySpread} r={point.interval === selectedInterval ? 2.3 : 1.5} fill={kind === "density" ? "#f59e0b" : "#34d399"}>
           <title>{`${dashboardIntervalLabel(point.interval, timeline, t("toolbar.networkKpi.intervalAggregate"))}: ${dashboardNumber(point.x)} veh/h · ${dashboardNumber(point.y)} ${kind === "density" ? "veh/km" : "km/h"} · ${point.contributors} sections`}</title>
         </circle>)}
         <text x="4" y="47" className="network-kpi-chart-label">{dashboardNumber(xMin)}</text><text x="97" y="47" textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(xMax)}</text>
+        <text x="4" y="53" className="network-kpi-chart-label">Flow</text><text x="97" y="53" textAnchor="end" className="network-kpi-chart-label">{kind === "density" ? "Density" : "Speed"}: {dashboardNumber(yMin)}–{dashboardNumber(yMax)}</text>
       </svg> : <p className="py-3 text-xs text-muted-foreground">{t("toolbar.networkKpi.dashboard.noPairedValues")}</p>}
     </section>
   );

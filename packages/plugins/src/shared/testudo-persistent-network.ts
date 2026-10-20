@@ -91,6 +91,7 @@ export class TestudoPersistentNetwork {
   private isCurrent: ((context: TestudoFeatureContext) => boolean) | null = null;
   private context: TestudoFeatureContext | null = null;
   private readonly styleListeners = new Map<TestudoMapHandle, (event?: { originalEvent?: unknown }) => void>();
+  private readonly clickListeners = new Map<TestudoMapHandle, (event: any) => void>();
   private readonly mountState = new TestudoGenerationMount();
   private visibility: Record<TestudoNetworkGeometry, boolean> = { sections: true, lanes: true, turns: true, nodes: true };
   private pathsModeSnapshot: { generation: number; visibility: Record<TestudoNetworkGeometry, boolean> } | null = null;
@@ -116,6 +117,7 @@ export class TestudoPersistentNetwork {
     this.map = map;
     this.context = context;
     this.generation = context.generation;
+    (map as TestudoMapHandle & { __testudoGeneration?: number }).__testudoGeneration = context.generation;
     this.isCurrent = isCurrent;
     tracePersistentNetwork("generation-mount", "start", { styleLoaded: map.isStyleLoaded?.() ?? null });
     const mounted = await this.mountState.mount(context.generation, () => isCurrent(context) && this.map === map, async () => {
@@ -152,7 +154,11 @@ export class TestudoPersistentNetwork {
   clear(): void {
     for (const [map, listener] of this.styleListeners) map.off?.("styledata", listener);
     this.styleListeners.clear();
+    for (const [map, listener] of this.clickListeners) (map as any).off?.("click", listener);
+    this.clickListeners.clear();
     if (this.map) {
+      const generationMap = this.map as TestudoMapHandle & { __testudoGeneration?: number };
+      if (generationMap.__testudoGeneration === this.generation) delete generationMap.__testudoGeneration;
       for (const id of Object.values(TESTUDO_NETWORK_LAYERS)) {
         if (this.map.getLayer(id)) this.map.removeLayer(id);
         if (this.map.getSource(id)) this.map.removeSource(id);
@@ -181,8 +187,14 @@ export class TestudoPersistentNetwork {
         const previousListener = this.styleListeners.get(this.map);
         if (previousListener) this.map.off?.("styledata", previousListener);
         this.styleListeners.delete(this.map);
+        const previousClickListener = this.clickListeners.get(this.map);
+        if (previousClickListener) (this.map as any).off?.("click", previousClickListener);
+        this.clickListeners.delete(this.map);
+        const previousGenerationMap = this.map as TestudoMapHandle & { __testudoGeneration?: number };
+        if (previousGenerationMap.__testudoGeneration === this.generation) delete previousGenerationMap.__testudoGeneration;
       }
       this.map = map;
+      (map as TestudoMapHandle & { __testudoGeneration?: number }).__testudoGeneration = this.generation;
       this.attachMap(map);
       return;
     }
@@ -198,6 +210,51 @@ export class TestudoPersistentNetwork {
       };
       this.styleListeners.set(map, listener);
       map.on?.("styledata", listener);
+    }
+    if (!this.clickListeners.has(map)) {
+      const onClick = (event: any) => {
+        if (this.map !== map || !this.context || !this.isCurrent?.(this.context)
+          || (map as TestudoMapHandle & { __testudoGeneration?: number }).__testudoGeneration !== this.generation) return;
+        const layers = [TESTUDO_NETWORK_LAYERS.turns, TESTUDO_NETWORK_LAYERS.lanes, TESTUDO_NETWORK_LAYERS.sections]
+          .filter(id => Boolean(map.getLayer(id)) && map.getLayoutProperty?.(id, "visibility") !== "none");
+        const features = map.queryRenderedFeatures?.(event.point, { layers }) ?? [];
+        const feature = features.find(candidate => candidate.properties);
+        if (!feature?.properties) return;
+        const properties = feature.properties;
+        const layerId = String((feature as any).layer?.id ?? "");
+        const kind = layerId === TESTUDO_NETWORK_LAYERS.turns ? "turn"
+          : layerId === TESTUDO_NETWORK_LAYERS.lanes ? "lane" : "section";
+        const propertyNumber = (...keys: string[]): number | null => {
+          for (const key of keys) {
+            const value = properties[key];
+            const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+            if (Number.isFinite(number)) return number;
+          }
+          return null;
+        };
+        const sectionId = propertyNumber("section_id", "sectionId", "origin_section_id", "originSectionId", "dest_section_id", "destSectionId", "from_section_id", "fromSectionId", "id");
+        const featureId = kind === "turn"
+          ? propertyNumber("turn_id", "turnId", "id")
+          : kind === "lane" ? propertyNumber("lane_id", "laneId", "id") ?? sectionId
+            : sectionId;
+        if (featureId == null || sectionId == null) return;
+        const detail = {
+          map,
+          generation: this.generation,
+          kind,
+          featureId,
+          sectionId,
+          laneIndex: kind === "lane" ? propertyNumber("lane_index", "lane", "index") : null,
+          turnId: kind === "turn" ? featureId : null,
+          properties: { ...properties },
+          lngLat: event.lngLat ? { lng: event.lngLat.lng, lat: event.lngLat.lat } : undefined,
+          ctrlKey: Boolean(event.originalEvent?.ctrlKey),
+          shiftKey: Boolean(event.originalEvent?.shiftKey),
+        };
+        if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("testudo-network-feature-selected", { detail }));
+      };
+      this.clickListeners.set(map, onClick);
+      (map as any).on?.("click", onClick);
     }
     if (map.isStyleLoaded?.() === false) return;
     this.addGeometry(map, this.geometry);

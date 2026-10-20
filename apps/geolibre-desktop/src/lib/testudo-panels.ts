@@ -5,6 +5,8 @@ export interface TestudoPanelsState {
   layers: boolean;
   plugins: boolean;
   comments: boolean;
+  /** Results dashboard is a dedicated lateral panel, separate from plugin UI. */
+  results: boolean;
   /** Layers is shown as a collapsed rail entry (never hidden by collapsing). */
   layersCollapsed: boolean;
   /** The host drives GeoAI, so the in-iframe "Ask GeoAI" overlay is hidden. */
@@ -12,7 +14,7 @@ export interface TestudoPanelsState {
 }
 
 export const TESTUDO_PANELS_DEFAULT: TestudoPanelsState = Object.freeze({
-  layers: false, plugins: false, comments: false, layersCollapsed: true, hostGeoAi: false,
+  layers: false, plugins: false, comments: false, results: false, layersCollapsed: true, hostGeoAi: false,
 });
 
 let current: TestudoPanelsState = TESTUDO_PANELS_DEFAULT;
@@ -29,9 +31,9 @@ export function setTestudoPanels(next: TestudoPanelsState): TestudoPanelsState {
 export function resetTestudoPanels(): TestudoPanelsState { return setTestudoPanels(TESTUDO_PANELS_DEFAULT); }
 
 /** Validate a testudoSetPanels payload (already shape-checked by the protocol) into a full state; latest call wins. */
-export function testudoPanelsFromPayload(payload: { layers: boolean; plugins: boolean; comments: boolean; layersCollapsed?: boolean; hostGeoAi?: boolean }): TestudoPanelsState {
+export function testudoPanelsFromPayload(payload: { layers: boolean; plugins: boolean; comments: boolean; results?: boolean; layersCollapsed?: boolean; hostGeoAi?: boolean }): TestudoPanelsState {
   return {
-    layers: payload.layers, plugins: payload.plugins, comments: payload.comments,
+    layers: payload.layers, plugins: payload.plugins, comments: payload.comments, results: payload.results ?? false,
     layersCollapsed: payload.layersCollapsed ?? true, hostGeoAi: payload.hostGeoAi ?? false,
   };
 }

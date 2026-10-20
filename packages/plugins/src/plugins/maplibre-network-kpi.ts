@@ -17,6 +17,7 @@ import {
   resolveNetworkKpiReplicationDid,
   aggregateNetworkKpiDashboardSeries,
   featureSectionId,
+  featureLaneIndex,
   networkSectionLengthKm,
   commitNetworkKpiReadIfCurrent,
   assertNetworkKpiExplicitDid,
@@ -29,6 +30,10 @@ import {
   type NetworkFeature,
   type NetworkKpiDashboardScope,
   type NetworkKpiDashboardSeries,
+  type NetworkKpiEntityKind,
+  type NetworkKpiSelectedEntity,
+  type NetworkKpiSectionSample,
+  type KpiRow,
 } from "./network-kpi-data";
 import { ParquetResultsDatabase } from "./network-kpi-parquet-data";
 import type { SimulationTimeline } from "../shared/simulation-timeline";
@@ -174,6 +179,24 @@ function isMetric(value: unknown): value is NetworkKpiMetric {
   return value === "flow" || value === "density" || value === "speed";
 }
 
+function featureTurnId(feature: NetworkFeature): number | null {
+  const props = feature.properties ?? {};
+  for (const value of [props.turn_id, props.turnId, props.id, (feature as NetworkFeature & { id?: unknown }).id, props.oid]) {
+    const id = Number(value);
+    if (Number.isSafeInteger(id)) return id;
+  }
+  return null;
+}
+
+function featureConnectedSectionId(feature: NetworkFeature): number | null {
+  const props = feature.properties ?? {};
+  for (const value of [props.section_id, props.sectionId, props.origin_section_id, props.dest_section_id]) {
+    const id = Number(value);
+    if (Number.isSafeInteger(id)) return id;
+  }
+  return featureSectionId(feature);
+}
+
 /** Coerce arbitrary persisted/partial input into complete settings. */
 export function normalizeNetworkKpiSettings(
   value: unknown,
@@ -286,8 +309,12 @@ export interface NetworkKpiPackage {
 
 export interface NetworkKpiDashboardSnapshot {
   scope: NetworkKpiDashboardScope;
+  selectedEntity: NetworkKpiSelectedEntity | null;
   selectedSectionId: number | null;
   selectedSectionName: string | null;
+  entitySeries: NetworkKpiSectionSample[] | null;
+  selectedEntityStats: KpiRow | null;
+  entityStatsFallback: boolean;
   loading: boolean;
   error: string | null;
   series: NetworkKpiDashboardSeries | null;
@@ -295,9 +322,13 @@ export interface NetworkKpiDashboardSnapshot {
 }
 
 const EMPTY_DASHBOARD: NetworkKpiDashboardSnapshot = {
-  scope: "selected",
+  scope: "viewport",
+  selectedEntity: null,
   selectedSectionId: null,
   selectedSectionName: null,
+  entitySeries: null,
+  selectedEntityStats: null,
+  entityStatsFallback: false,
   loading: false,
   error: null,
   series: null,
@@ -335,6 +366,8 @@ class NetworkKpiEngine {
   private readonly networkClickHandlers = new Map<string, (event: any) => void>();
   private selectedSectionId: number | null = null;
   private readonly handleMoveEnd: () => void;
+  private lastHostGeneration: number | null = null;
+  private readonly handleSharedNetworkSelection: (event: unknown) => void;
 
   highlightSection(sectionId: string | number): boolean {
     const id = Number(sectionId);
@@ -416,9 +449,45 @@ class NetworkKpiEngine {
       notifyDashboard();
       void refreshDashboardSeries(ids);
     };
+    this.handleSharedNetworkSelection = (rawEvent: unknown) => {
+      const event = (rawEvent ?? {}) as Record<string, unknown>;
+      const detail = (event.detail && typeof event.detail === "object" ? event.detail : event) as Record<string, unknown>;
+      if (detail.map !== this.map) return;
+      const generation = Number(detail.generation);
+      if (Number.isSafeInteger(generation)) {
+        const currentGeneration = Number((this.map as any).__testudoGeneration);
+        if (Number.isSafeInteger(currentGeneration) && generation !== currentGeneration) return;
+        if (this.lastHostGeneration !== null && generation < this.lastHostGeneration) return;
+        this.lastHostGeneration = generation;
+      }
+      const kind = detail.kind;
+      if (kind !== "section" && kind !== "lane" && kind !== "turn") return;
+      const properties = detail.properties && typeof detail.properties === "object" ? detail.properties as Record<string, unknown> : {};
+      const sectionId = Number(detail.sectionId ?? properties.section_id ?? properties.sectionId ?? properties.origin_section_id ?? properties.dest_section_id ?? properties.oid);
+      if (!Number.isSafeInteger(sectionId)) return;
+      const id = kind === "turn"
+        ? Number(detail.turnId ?? detail.featureId ?? properties.turn_id ?? properties.oid ?? properties.id)
+        : kind === "lane" ? sectionId : Number(detail.featureId ?? sectionId);
+      if (!Number.isSafeInteger(id)) return;
+      const rawLaneIndex = Number(detail.laneIndex ?? properties.lane_index);
+      const entity: NetworkKpiSelectedEntity = {
+        kind,
+        id,
+        sectionId,
+        laneIndex: kind === "lane" && Number.isSafeInteger(rawLaneIndex) ? rawLaneIndex : null,
+        turnId: kind === "turn" ? id : null,
+        name: String(properties.name ?? properties.section_name ?? properties.turn_name ?? (
+          kind === "turn" ? `Turn ${id}` : kind === "lane" && Number.isSafeInteger(rawLaneIndex) ? `Lane ${rawLaneIndex + 1}` : `${kind === "lane" ? "Lane" : "Section"} ${sectionId}`
+        )),
+      };
+      this.selectedSectionId = sectionId;
+      this.applySelectedSection();
+      selectNetworkKpiDashboardEntity(entity);
+    };
     this.map.on("styledata", this.handleStyleData);
     this.map.on("zoom", this.handleZoom);
     this.map.on("moveend", this.handleMoveEnd);
+    window.addEventListener("testudo-network-feature-selected", this.handleSharedNetworkSelection as EventListener);
     this.rebuildGeometryRows();
     this.rebuildValueIndex();
     // A reattach (panel reopened, plugin reactivated) constructs a fresh
@@ -502,6 +571,17 @@ class NetworkKpiEngine {
    */
   private rebuildValueIndex(): void {
     this.valueIndex = buildKpiValueIndex(this.loaded?.results ?? null, this.settings.metric);
+    // MISECT flow is a section-wide rate (veh/h), while MILANE flow is already
+    // per lane. For the individual section map scale (veh/h/lane), divide the
+    // section total by the count of unique exported lane geometries.
+    if (this.settings.metric === "flow" && this.loaded) {
+      const lanesBySection = networkKpiLaneCounts(this.loaded.geometry);
+      for (const [sectionId, row] of this.loaded.results?.sections ?? []) {
+        const value = row.flow;
+        const laneCount = lanesBySection.get(sectionId);
+        if (value !== null && laneCount && laneCount > 0) this.valueIndex.set(`s:${sectionId}`, value / laneCount);
+      }
+    }
   }
 
   destroy(): void {
@@ -510,6 +590,7 @@ class NetworkKpiEngine {
     this.map.off("styledata", this.handleStyleData);
     this.map.off("zoom", this.handleZoom);
     this.map.off("moveend", this.handleMoveEnd);
+    window.removeEventListener("testudo-network-feature-selected", this.handleSharedNetworkSelection as EventListener);
     this.destroyed = true;
   }
 
@@ -578,6 +659,7 @@ class NetworkKpiEngine {
     // build time; here it is applied per-frame from the live value index
     // instead, since the geometry rows themselves are metric-independent).
     const overlayData = effective.filter(rowHasValue);
+    const rampOverrides = metric === "delay" ? this.loaded?.ramps : undefined;
 
     const overlayLayer = new deck.layers.PolygonLayer<KpiGeometryRow>({
       id: `${NETWORK_KPI_DECK_SOURCE}-overlay-${lodSuffix}`,
@@ -588,14 +670,14 @@ class NetworkKpiEngine {
       // graduated stepping.
       getFillColor: (d: KpiGeometryRow) => {
         const value = this.valueIndex.get(d.key) ?? null;
-        const [r, g, b] = kpiColorRgb(value ?? 0, metric, this.loaded?.ramps);
+        const [r, g, b] = kpiColorRgb(value ?? 0, metric, rampOverrides);
         return [r, g, b, alpha];
       },
       // In flat mode every polygon is a ground-level choropleth; in 3D the
       // height carries the same value the color does, so the two encodings
       // reinforce each other rather than showing different things.
       getElevation: (d: KpiGeometryRow) =>
-        extruded ? elevationByKpi(this.valueIndex.get(d.key) ?? null, metric, maxHeightM) : 0,
+        extruded ? elevationByKpi(this.valueIndex.get(d.key) ?? null, metric, maxHeightM, rampOverrides) : 0,
       extruded,
       filled: true,
       stroked: false,
@@ -669,16 +751,35 @@ class NetworkKpiEngine {
       const handler = (event: any) => {
         const feature = event.features?.[0];
         if (!feature) return;
-        const clickedSectionId = featureSectionId(feature as NetworkFeature);
-        if ((id === "network-kpi-sections" || id === "network-kpi-lanes") && clickedSectionId != null) {
+        const networkFeature = feature as NetworkFeature;
+        const clickedSectionId = id === "network-kpi-turns" ? featureConnectedSectionId(networkFeature) : featureSectionId(networkFeature);
+        if (id !== "network-kpi-nodes" && clickedSectionId != null) {
           const sectionFeature = this.sectionFeature(clickedSectionId);
           this.selectedSectionId = clickedSectionId;
           this.applySelectedSection();
           const sectionName = String(sectionFeature?.properties?.name ?? sectionFeature?.properties?.section_name ?? feature.properties?.name ?? "");
-          selectNetworkKpiDashboardSection(clickedSectionId, sectionName);
+          const kind: NetworkKpiEntityKind = id === "network-kpi-lanes" ? "lane" : id === "network-kpi-turns" ? "turn" : "section";
+          const laneIndex = kind === "lane" ? featureLaneIndex(networkFeature) : null;
+          const turnId = kind === "turn" ? featureTurnId(networkFeature) : null;
+          const entityId = kind === "turn" ? turnId : clickedSectionId;
+          if (entityId != null) {
+            selectNetworkKpiDashboardEntity({
+              kind,
+              id: entityId,
+              sectionId: clickedSectionId,
+              laneIndex,
+              turnId,
+              name: kind === "turn"
+                ? String(feature.properties?.turn_name ?? feature.properties?.name ?? `Turn ${entityId}`)
+                : sectionName || `${kind === "lane" ? "Lane" : "Section"} ${entityId}`,
+            });
+          }
         } else {
           (this.map.getSource(highlightSource) as any)?.setData({ type: "FeatureCollection", features: [feature] });
         }
+        // Testudo's selected-entity history is shown in the host-owned lateral
+        // Results panel; keep GeoLibre's standalone identify popup for desktop.
+        if (isTestudoLayout()) return;
         const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: false }).setLngLat(event.lngLat);
         if (id !== "network-kpi-sections") {
           popup.setDOMContent(createIdentifyPopupElement(name, feature.properties ?? {}, feature.id)).addTo(this.map);
@@ -792,6 +893,24 @@ function geometryIntersectsViewport(
   return false;
 }
 
+function networkKpiLaneCounts(geometry: NetworkKpiGeometry): Map<number, number> {
+  const lanes = new Map<number, Set<number>>();
+  for (const feature of geometry.lanes?.features ?? []) {
+    const sectionId = featureSectionId(feature);
+    const laneIndex = featureLaneIndex(feature);
+    if (sectionId === null || laneIndex === null) continue;
+    const indexes = lanes.get(sectionId) ?? new Set<number>();
+    indexes.add(laneIndex);
+    lanes.set(sectionId, indexes);
+  }
+  return new Map([...lanes].map(([sectionId, indexes]) => [sectionId, indexes.size]));
+}
+
+function sectionFlowPerLane(samples: readonly NetworkKpiSectionSample[], laneCount: number): NetworkKpiSectionSample[] {
+  const divisor = Number.isSafeInteger(laneCount) && laneCount > 0 ? laneCount : 1;
+  return samples.map(sample => ({ ...sample, flow: sample.flow === null ? null : sample.flow / divisor }));
+}
+
 // ---------------------------------------------------------------------------
 // Module store: single source of truth shared by the engine and the React panel.
 // ---------------------------------------------------------------------------
@@ -806,6 +925,7 @@ let status: NetworkKpiStatus = { ...IDLE_STATUS };
 let dashboardState: NetworkKpiDashboardSnapshot = { ...EMPTY_DASHBOARD };
 let dashboardReadToken = 0;
 const dashboardCache = new Map<string, NetworkKpiDashboardSeries>();
+const dashboardEntityCache = new Map<string, { samples: NetworkKpiSectionSample[]; fallback: boolean }>();
 const dashboardMembershipCache = new Map<string, number[]>();
 let lastDashboardContextKey: string | null = null;
 // Guards against a stale load resolving after the user has moved on to another
@@ -851,10 +971,27 @@ export function setNetworkKpiDashboardScope(scope: NetworkKpiDashboardScope): vo
   void refreshDashboardSeries();
 }
 
-function selectNetworkKpiDashboardSection(sectionId: number, sectionName: string): void {
-  dashboardState = { ...dashboardState, selectedSectionId: sectionId, selectedSectionName: sectionName || `Section ${sectionId}`, error: null };
+function selectNetworkKpiDashboardEntity(entity: NetworkKpiSelectedEntity): void {
+  const previous = dashboardState.selectedEntity;
+  const changed = !previous || previous.kind !== entity.kind || previous.id !== entity.id
+    || previous.sectionId !== entity.sectionId || previous.laneIndex !== entity.laneIndex;
+  dashboardState = {
+    ...dashboardState,
+    scope: "selected",
+    selectedEntity: entity,
+    selectedSectionId: entity.sectionId,
+    selectedSectionName: entity.name || `Section ${entity.sectionId}`,
+    entitySeries: changed ? null : dashboardState.entitySeries,
+    selectedEntityStats: changed ? null : dashboardState.selectedEntityStats,
+    entityStatsFallback: changed ? false : dashboardState.entityStatsFallback,
+    error: null,
+  };
   notifyDashboard();
-  if (dashboardState.scope === "selected") void refreshDashboardSeries();
+  if (changed) void refreshDashboardSeries();
+}
+
+function selectNetworkKpiDashboardSection(sectionId: number, sectionName: string): void {
+  selectNetworkKpiDashboardEntity({ kind: "section", id: sectionId, sectionId, laneIndex: null, turnId: null, name: sectionName || `Section ${sectionId}` });
 }
 
 function resetNetworkKpiDashboard(clearCache: boolean): void {
@@ -862,6 +999,7 @@ function resetNetworkKpiDashboard(clearCache: boolean): void {
   lastDashboardContextKey = null;
   if (clearCache) {
     dashboardCache.clear();
+    dashboardEntityCache.clear();
     dashboardMembershipCache.clear();
   }
   const scope = dashboardState.scope;
@@ -883,7 +1021,7 @@ function refreshDashboardForContextChange(): void {
     notifyDashboard();
     return;
   }
-  const contextKey = dashboardPackageKey();
+  const contextKey = `${dashboardPackageKey()}|interval:${settings.interval}`;
   if (contextKey === lastDashboardContextKey) return;
   lastDashboardContextKey = contextKey;
   void refreshDashboardSeries();
@@ -894,18 +1032,82 @@ async function refreshDashboardSeries(viewportIds?: number[]): Promise<void> {
   const activePackage = loadedPackage;
   if (!activeDatabase || !activePackage?.results || !status.hasResults) {
     dashboardReadToken += 1;
-    dashboardState = { ...dashboardState, loading: false, series: null, error: null };
+    dashboardState = { ...dashboardState, loading: false, series: null, entitySeries: null, selectedEntityStats: null, entityStatsFallback: false, error: null };
     notifyDashboard();
     return;
   }
   const token = ++dashboardReadToken;
   const scope = dashboardState.scope;
+  const selectedEntity = dashboardState.selectedEntity;
   const did = activePackage.results.did;
   const sid = activePackage.results.sid;
   const packageKey = dashboardPackageKey();
   dashboardState = { ...dashboardState, loading: true, error: null };
   notifyDashboard();
   try {
+    if (selectedEntity) {
+      const entityKey = `${packageKey}|entity|${selectedEntity.kind}|${selectedEntity.id}|${selectedEntity.sectionId}|${selectedEntity.laneIndex ?? ""}`;
+      let entityResult = dashboardEntityCache.get(entityKey);
+      if (!entityResult) {
+        let samples: NetworkKpiSectionSample[] = [];
+        let fallback = false;
+        if (selectedEntity.kind === "section") {
+          samples = await activeDatabase.readSectionTimeSeries(selectedEntity.sectionId, { did, sid });
+          samples = sectionFlowPerLane(samples, networkKpiLaneCounts(activePackage.geometry).get(selectedEntity.sectionId) ?? 1);
+        } else {
+          samples = await activeDatabase.readEntityTimeSeries(selectedEntity.kind, selectedEntity.id, {
+            did,
+            sid,
+            ...(selectedEntity.kind === "lane" && selectedEntity.laneIndex !== null ? { laneIndex: selectedEntity.laneIndex } : {}),
+          });
+          if (selectedEntity.kind === "turn" && samples.length === 0) {
+            // Only an absent MITURN row triggers the connected-section
+            // fallback. A present row with null KPIs remains null.
+            samples = await activeDatabase.readSectionTimeSeries(selectedEntity.sectionId, { did, sid });
+            samples = sectionFlowPerLane(samples, networkKpiLaneCounts(activePackage.geometry).get(selectedEntity.sectionId) ?? 1);
+            fallback = true;
+          }
+        }
+        entityResult = { samples, fallback };
+        if (dashboardEntityCache.size >= 64) dashboardEntityCache.delete(dashboardEntityCache.keys().next().value!);
+        dashboardEntityCache.set(entityKey, entityResult);
+      }
+      if (token !== dashboardReadToken || activeDatabase !== database || packageKey !== dashboardPackageKey()) return;
+      let currentSample = entityResult.samples.find(sample => sample.interval === settings.interval)
+        ?? entityResult.samples.find(sample => sample.interval === 0)
+        ?? null;
+      let entityStatsFallback = entityResult.fallback;
+      if (selectedEntity.kind === "turn" && !entityResult.samples.some(sample => sample.interval === settings.interval)) {
+        const exactTurn = await activeDatabase.readEntityTimeSeries("turn", selectedEntity.id, { did, sid, interval: settings.interval });
+        if (exactTurn.length) currentSample = exactTurn[0]!;
+        else {
+          const connected = await activeDatabase.readSectionTimeSeries(selectedEntity.sectionId, { did, sid });
+          currentSample = connected.find(sample => sample.interval === settings.interval)
+            ?? connected.find(sample => sample.interval === 0)
+            ?? null;
+          if (currentSample?.flow !== null && currentSample) {
+            currentSample = { ...currentSample, flow: currentSample.flow / (networkKpiLaneCounts(activePackage.geometry).get(selectedEntity.sectionId) ?? 1) };
+          }
+          entityStatsFallback = true;
+        }
+      }
+      let selectedEntityStats: KpiRow | null = currentSample
+        ? { flow: currentSample.flow, density: currentSample.density, speed: currentSample.speed, delay: currentSample.delay }
+        : null;
+      if (!selectedEntityStats && selectedEntity.kind === "lane" && selectedEntity.laneIndex !== null) {
+        selectedEntityStats = activePackage.results.lanes.get(laneKey(selectedEntity.sectionId, selectedEntity.laneIndex)) ?? null;
+      } else if (!selectedEntityStats && selectedEntity.kind === "section") {
+        selectedEntityStats = activePackage.results.sections.get(selectedEntity.sectionId) ?? null;
+        if (selectedEntityStats?.flow !== null && selectedEntityStats) {
+          selectedEntityStats = { ...selectedEntityStats, flow: selectedEntityStats.flow / (networkKpiLaneCounts(activePackage.geometry).get(selectedEntity.sectionId) ?? 1) };
+        }
+      }
+      dashboardState = { ...dashboardState, entitySeries: entityResult.samples, selectedEntityStats, entityStatsFallback };
+      notifyDashboard();
+    } else {
+      dashboardState = { ...dashboardState, entitySeries: null, selectedEntityStats: null, entityStatsFallback: false };
+      notifyDashboard();
+    }
     let ids: number[];
     if (scope === "selected") ids = dashboardState.selectedSectionId == null ? [] : [dashboardState.selectedSectionId];
     else if (scope === "viewport") ids = viewportIds ?? engine?.getViewportSectionIds() ?? [];
@@ -954,7 +1156,7 @@ async function refreshDashboardSeries(viewportIds?: number[]): Promise<void> {
       if (length != null) lengths.set(id, length);
     }
     const periodAggregate = sections.some(section => section.samples.length > 0) && sections.every(section => section.samples.length === 0 || section.samples.every(sample => sample.interval === 0));
-    const series = aggregateNetworkKpiDashboardSeries(sections, lengths, scope, periodAggregate);
+    const series = aggregateNetworkKpiDashboardSeries(sections, lengths, scope, periodAggregate, networkKpiLaneCounts(activePackage.geometry));
     if (dashboardCache.size >= 8) dashboardCache.delete(dashboardCache.keys().next().value!);
     dashboardCache.set(cacheKey, series);
     dashboardState = { ...dashboardState, loading: false, series, error: null };
