@@ -120,7 +120,6 @@ import { isPhotoDropFileName, type GeotaggedPhotoResult } from "../../lib/geotag
 import type { LargeVectorDataset } from "../../lib/duckdb-vector-guard";
 import { detectNonGeographicCoordinates } from "@geolibre/core";
 import { PANEL_RESIZE_END_EVENT, PANEL_RESIZE_START_EVENT } from "../../lib/panel-resize";
-import i18n from "../../i18n";
 import {
   addOsmPbfLayers,
   isOsmPbfFileName,

@@ -15,6 +15,7 @@ import {
   resolveNetworkKpiScenarioReplication,
   readNetworkKpiScenarioResults,
   resolveNetworkKpiReplicationDid,
+  laneKey,
   aggregateNetworkKpiDashboardSeries,
   featureSectionId,
   featureLaneIndex,

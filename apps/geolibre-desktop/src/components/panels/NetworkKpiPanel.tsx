@@ -464,7 +464,9 @@ const DASHBOARD_METRICS = [
   { key: "speed" as const, label: "speed", unit: "km/h", max: 120, color: "#34d399" },
 ] as const;
 
-type DashboardChartSample = Pick<NetworkKpiSectionSample, "interval" | "flow" | "density" | "speed"> & {
+type DashboardChartSample = Pick<NetworkKpiSectionSample, "interval" | "flow" | "density" | "speed"> & Partial<Pick<NetworkKpiDashboardSample,
+  "flowContributors" | "densityContributors" | "densityLengthKm" | "densityScopeLengthKm" | "speedContributors" | "speedFlowWeight"
+>> & {
   flowDensity?: NetworkKpiDashboardSample["flowDensity"];
   flowSpeed?: NetworkKpiDashboardSample["flowSpeed"];
 };
@@ -495,7 +497,7 @@ function NetworkKpiDashboard() {
   const current = samples.find(sample => sample.interval === settings.interval) ?? samples.at(-1) ?? null;
   const periodAggregate = selected ? samples.length === 1 && samples[0]?.interval === 0 : Boolean(series?.periodAggregate);
   const coverageGap = Boolean(series && (series.geometryMissingCount > 0 || samples.some(sample =>
-    sample.flowContributors < series.sectionCount || sample.densityContributors < series.sectionCount || sample.speedContributors < series.sectionCount,
+    (sample.flowContributors ?? 0) < series.sectionCount || (sample.densityContributors ?? 0) < series.sectionCount || (sample.speedContributors ?? 0) < series.sectionCount,
   )));
 
   return (
@@ -549,15 +551,15 @@ function NetworkKpiDashboard() {
           {!selected && coverageGap && (
             <p role="status" className="rounded-md border border-amber-500/40 p-2 text-xs text-muted-foreground">
               {t("toolbar.networkKpi.dashboard.coverage", {
-                sections: series.sectionCount,
-                flow: current.flowContributors,
-                density: current.densityContributors,
-                speed: current.speedContributors,
+                sections: series?.sectionCount ?? 0,
+                flow: current.flowContributors ?? 0,
+                density: current.densityContributors ?? 0,
+                speed: current.speedContributors ?? 0,
                 lengthKm: dashboardNumber(current.densityLengthKm),
                 scopeLengthKm: dashboardNumber(current.densityScopeLengthKm),
                 flowWeight: dashboardNumber(current.speedFlowWeight),
                 flowTotal: dashboardNumber(current.flow),
-                missingGeometry: series.geometryMissingCount,
+                missingGeometry: series?.geometryMissingCount ?? 0,
               })}
             </p>
           )}
