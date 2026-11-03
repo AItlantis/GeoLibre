@@ -102,3 +102,25 @@ test("isSetPresentSuspendedPayload is strict", () => {
   assert.equal(isSetPresentSuspendedPayload({ challenge: "c", suspended: false, tviewId: "main" }), true);
   for (const bad of [null, [], {}, { suspended: "true" }, { suspended: 1 }, { suspended: true, extra: 1 }, { suspended: true, tviewId: "other" }]) assert.equal(isSetPresentSuspendedPayload(bad), false, JSON.stringify(bad));
 });
+
+test("package switch in one session does not reuse the previous package's cached base geometry", async () => {
+  const { loadNetworkKpiGeometry } = await import("../packages/plugins/src/plugins/network-kpi-data");
+  const { TestudoPersistentNetwork } = await import("../packages/plugins/src/shared/testudo-persistent-network");
+  const fc = (lon: number, lat: number) => JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { section_id: 1 }, geometry: { type: "LineString", coordinates: [[lon, lat], [lon + 0.01, lat + 0.01]] } }] });
+  const manifest = JSON.stringify({ geometry: { base_networks: { centerlines: "base_sections_centerlines.geojson" } } });
+  const source = (lon: number, lat: number) => ({
+    baseUrl: null,
+    read: async (path: string): Promise<ArrayBuffer> => {
+      if (path.endsWith("manifest.json")) return new TextEncoder().encode(manifest).buffer as ArrayBuffer;
+      if (path.endsWith("base_sections_centerlines.geojson")) return new TextEncoder().encode(fc(lon, lat)).buffer as ArrayBuffer;
+      throw new Error("missing " + path);
+    },
+  });
+  const sources = { scenarioManifest: "geometry/manifest.json", sections: "", lanes: "", turns: "", nodes: "" } as never;
+  const network = new TestudoPersistentNetwork();
+  const malaga = await loadNetworkKpiGeometry(source(-4.43, 36.71), sources);
+  assert.deepEqual(geometryBounds([malaga.sections]), [-4.43, 36.71, -4.42, 36.72]);
+  network.clear(); // what the host's package reset does
+  const tanger = await loadNetworkKpiGeometry(source(-5.5, 35.9), sources);
+  assert.deepEqual(geometryBounds([tanger.sections]), [-5.5, 35.9, -5.49, 35.91]);
+});
