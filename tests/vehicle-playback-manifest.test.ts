@@ -108,6 +108,47 @@ test("vehicle playback keeps named root manifests usable when package metadata h
   assert.equal(scenarios[0]?.manifestPath, "chunks/AM_FZP/animation.json");
 });
 
+function labelsFor(
+  scenarios: Array<{ name?: string; scid: number; animations: string[] }>,
+  viaRoot = false,
+): string[] {
+  const rootAnimations = scenarios.flatMap((s) => s.animations.map((stem) => ({
+    name: stem, path: `chunks/${stem}/animation.json`, scid: s.scid,
+  })));
+  const raw = attachGeolibrePackage({ animations: rootAnimations }, {
+    scenarios: scenarios.map((s) => ({
+      ...(s.name === undefined ? {} : { name: s.name }),
+      scid: s.scid,
+      replications: [{ did: s.scid + 1 }],
+      ...(viaRoot ? {} : {
+        animations: s.animations.map((stem) => ({ name: stem, manifestPath: `chunks/${stem}/animation.json`, scid: s.scid })),
+      }),
+    })),
+  } as never);
+  return listVehicleManifestScenarios(raw, { includeAnimationVariants: true }).map((v) => v.label);
+}
+
+for (const viaRoot of [false, true]) {
+  test(`animation variant labels read 'Scenario name (stem)' (${viaRoot ? "root-matched" : "declared"} animations)`, () => {
+    assert.deepEqual(
+      labelsFor([
+        { name: "Dynamic Base", scid: 1, animations: ["16692"] },
+        { name: "Dynamic Scenario - Reduced Staff", scid: 2, animations: ["16715"] },
+      ], viaRoot),
+      ["Dynamic Base (16692)", "Dynamic Scenario - Reduced Staff (16715)"],
+    );
+    // Erbil style: one scenario, two animations -> distinct labels.
+    assert.deepEqual(
+      labelsFor([{ name: "Erbil Base", scid: 3, animations: ["93488", "93505"] }], viaRoot),
+      ["Erbil Base (93488)", "Erbil Base (93505)"],
+    );
+    // Missing scenario name -> plain stem.
+    assert.deepEqual(labelsFor([{ scid: 4, animations: ["4346"] }], viaRoot), ["4346"]);
+    // Name equal to stem -> no 'X (X)'.
+    assert.deepEqual(labelsFor([{ name: "4346", scid: 5, animations: ["4346"] }], viaRoot), ["4346"]);
+  });
+}
+
 test("root package animation stream remains playable when multiple result scenarios are declared", async () => {
   const raw = attachGeolibrePackage({
     metadata: { n_ticks: 21, dt: 0.8 },

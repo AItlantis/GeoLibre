@@ -293,6 +293,12 @@ function animationId(animation: Record<string, unknown>, index: number): string 
   return typeof rawId === "string" && rawId.trim() ? rawId.trim() : `scenario_${index}`;
 }
 
+/** Selector label 'Scenario name (stem)'; plain stem when the name is missing or equals it. */
+function animationVariantLabel(scenarioName: unknown, stem: string): string {
+  const name = typeof scenarioName === "string" ? scenarioName.trim() : "";
+  return name && name !== stem ? `${name} (${stem})` : stem;
+}
+
 function stableAnimationVariantId(animation: Record<string, unknown>, index: number): string {
   const path = animationPath(animation);
   if (path) return path;
@@ -354,7 +360,9 @@ export function listVehicleManifestScenarios(
             index: variants.length,
             id,
             variantId: declared.manifestPath,
-            label: fzpName ?? scenarioLabel(rootAnimation ?? { name: id }, metadata, variants.length),
+            label: fzpName
+              ? animationVariantLabel(scenario.name, fzpName)
+              : scenarioLabel(rootAnimation ?? { name: id }, metadata, variants.length),
             scenarioName: scenario.name,
             fzpName,
             nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
@@ -382,7 +390,7 @@ export function listVehicleManifestScenarios(
             index: variants.length,
             id: animationId(animation, variants.length),
             variantId: stableAnimationVariantId(animation, rootIndex),
-            label: animationId(animation, variants.length),
+            label: animationVariantLabel(scenario.name, animationId(animation, variants.length)),
             scenarioName: scenario.name,
             fzpName: animationId(animation, variants.length),
             nTicks: Math.max(1, safeInt(metadata.n_ticks, 1)),
