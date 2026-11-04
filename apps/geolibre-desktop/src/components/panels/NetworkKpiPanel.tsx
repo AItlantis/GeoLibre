@@ -688,12 +688,13 @@ function DashboardScatterChart({ kind, samples, selectedInterval, timeline, fixe
     <section className="min-w-0 rounded-md border border-border p-2">
       <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{fixedFlowDomain ? "veh/h/lane" : "veh/h"} · {kind === "density" ? "veh/km" : "km/h"}</span></div>
       {points.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, flow scale ${dashboardNumber(xMin)} to ${dashboardNumber(xMax)}, ${kind} scale ${dashboardNumber(yMin)} to ${dashboardNumber(yMax)}`} className="network-kpi-dashboard-chart network-kpi-dashboard-chart--fill">
-        <line x1="4" y1="40" x2="97" y2="40" className="network-kpi-chart-axis" /><line x1="4" y1="4" x2="4" y2="40" className="network-kpi-chart-axis" />
-        {points.map(point => <circle key={point.interval} cx={4 + (point.x - xMin) * 92 / xSpread} cy={39 - (point.y - yMin) * 34 / ySpread} r={point.interval === selectedInterval ? 2.3 : 1.5} fill={kind === "density" ? "#f59e0b" : "#34d399"}>
+        {[0, 0.5, 1].map(fraction => <g key={`y${fraction}`}><line x1="14" y1={6 + fraction * 34} x2="97" y2={6 + fraction * 34} className="network-kpi-chart-axis" /><text x="12" y={7 + fraction * 34} textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(yMax - fraction * ySpread)}</text></g>)}
+        {[0, 0.5, 1].map(fraction => <g key={`x${fraction}`}><line x1={14 + fraction * 83} y1="6" x2={14 + fraction * 83} y2="40" className="network-kpi-chart-axis" /><text x={14 + fraction * 83} y="44" textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} className="network-kpi-chart-label">{dashboardNumber(xMin + fraction * xSpread)}</text></g>)}
+        {points.map(point => <circle key={point.interval} cx={14 + (point.x - xMin) * 83 / xSpread} cy={40 - (point.y - yMin) * 34 / ySpread} r={point.interval === selectedInterval ? 2.3 : 1.5} fill={kind === "density" ? "#f59e0b" : "#34d399"}>
           <title>{`${dashboardIntervalLabel(point.interval, timeline, t("toolbar.networkKpi.intervalAggregate"))}: ${dashboardNumber(point.x)} veh/h · ${dashboardNumber(point.y)} ${kind === "density" ? "veh/km" : "km/h"} · ${point.contributors} sections`}</title>
         </circle>)}
-        <text x="4" y="47" className="network-kpi-chart-label">{dashboardNumber(xMin)}</text><text x="97" y="47" textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(xMax)}</text>
-        <text x="4" y="53" className="network-kpi-chart-label">Flow</text><text x="97" y="53" textAnchor="end" className="network-kpi-chart-label">{kind === "density" ? "Density" : "Speed"}: {dashboardNumber(yMin)}–{dashboardNumber(yMax)}</text>
+        <text x="55" y="51" textAnchor="middle" className="network-kpi-chart-label">{t("toolbar.networkKpi.metric.flow")} ({fixedFlowDomain ? "veh/h/lane" : "veh/h"})</text>
+        <text x="1" y="4" className="network-kpi-chart-label">{metricLabel} ({kind === "density" ? "veh/km" : "km/h"})</text>
       </svg> : <p className="py-3 text-xs text-muted-foreground">{t("toolbar.networkKpi.dashboard.noPairedValues")}</p>}
     </section>
   );
