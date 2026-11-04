@@ -2555,7 +2555,9 @@
         "dataTable": "View chart values",
         "dataTableCaption": "Flow, density, and speed values by interval",
         "overTime": "{{metric}} over time",
-        "flowVs": "Flow vs {{metric}}"
+        "flowVs": "Flow vs {{metric}}",
+        "overTimeTabs": "Statistics over time",
+        "relationshipTabs": "Flow relationships"
       },
       "loadFolderTooltip": "Load a local network KPI package folder.",
       "loadFolderUnsupported": "Local folders are not supported in this browser.",
