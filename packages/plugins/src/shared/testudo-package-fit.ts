@@ -137,13 +137,25 @@ export class PackageFitter {
     this.watch(target.map);
     const decision = decidePackageFit({ key, fittedKey: this.fittedKey, userMovedKey: this.userMovedKey, bounds });
     if (decision.action !== "fit") return false;
-    const [w, s, e, n] = decision.bounds;
+    if (!this.apply(decision.bounds, target)) return false;
+    this.fittedKey = key;
+    return true;
+  }
+
+  /** Explicit host request: frame the given bounds now, ignoring the fit-once / user-moved gates. Never throws. */
+  fitNow(bounds: unknown, target: { map: PackageFitMap | null; applyCamera?: (camera: { center: [number, number]; zoom: number }) => void; viewport?: { width: number; height: number } }): boolean {
+    const parsed = parsePackageBounds(bounds);
+    if (!parsed) return false;
+    return this.apply(parsed, target);
+  }
+
+  private apply(bounds: PackageBounds, target: { map: PackageFitMap | null; applyCamera?: (camera: { center: [number, number]; zoom: number }) => void; viewport?: { width: number; height: number } }): boolean {
+    const [w, s, e, n] = bounds;
     try {
       if (target.map?.fitBounds) target.map.fitBounds([[w, s], [e, n]], { padding: PACKAGE_FIT_PADDING, maxZoom: PACKAGE_FIT_MAX_ZOOM, duration: 0 });
-      else if (target.applyCamera) target.applyCamera(cameraForBounds(decision.bounds, target.viewport ?? { width: 1280, height: 720 }));
+      else if (target.applyCamera) target.applyCamera(cameraForBounds(bounds, target.viewport ?? { width: 1280, height: 720 }));
       else return false;
     } catch { return false; }
-    this.fittedKey = key;
     return true;
   }
 

@@ -567,15 +567,7 @@ function NetworkKpiDashboard() {
             <p role="status" className="rounded-md border border-border p-2 text-sm text-muted-foreground">{t("toolbar.networkKpi.dashboard.periodAggregate")}</p>
           ) : (
             <>
-              <div className="grid grid-cols-1 gap-2">
-                {DASHBOARD_METRICS.map(metric => (
-                  <DashboardLineChart key={metric.key} metric={metric} samples={samples} selectedInterval={settings.interval} timeline={status.timeline} fixedDomain={selected ? [0, metric.max] : undefined} />
-                ))}
-              </div>
-              <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-                <DashboardScatterChart kind="density" samples={samples} selectedInterval={settings.interval} timeline={status.timeline} fixedFlowDomain={selected ? [0, 2200] : undefined} fixedMetricDomain={selected ? [0, 160] : undefined} />
-                <DashboardScatterChart kind="speed" samples={samples} selectedInterval={settings.interval} timeline={status.timeline} fixedFlowDomain={selected ? [0, 2200] : undefined} fixedMetricDomain={selected ? [0, 120] : undefined} />
-              </div>
+              <DashboardChartTabs samples={samples} selected={selected} selectedInterval={settings.interval} timeline={status.timeline} />
               <details className="rounded-md border border-border p-2">
                 <summary className="cursor-pointer text-xs font-medium">{t("toolbar.networkKpi.dashboard.dataTable")}</summary>
                 <div className="mt-2 max-h-48 overflow-auto">
@@ -596,6 +588,39 @@ function NetworkKpiDashboard() {
         </>
       )}
     </section>
+  );
+}
+
+/** Tabbed chart groups: one full-size chart visible at a time. */
+function DashboardChartTabs({ samples, selected, selectedInterval, timeline }: { samples: DashboardChartSample[]; selected: boolean; selectedInterval: number; timeline: ReturnType<typeof getNetworkKpiStatus>["timeline"] }) {
+  const { t } = useTranslation();
+  const [overTimeTab, setOverTimeTab] = useState<string>(DASHBOARD_METRICS[0].key);
+  const [relationTab, setRelationTab] = useState<string>("density");
+  return (
+    <div className="space-y-2">
+      <Tabs value={overTimeTab} onValueChange={setOverTimeTab}>
+        <TabsList className="grid w-full grid-cols-3" aria-label={t("toolbar.networkKpi.dashboard.overTimeTabs")}>
+          {DASHBOARD_METRICS.map(metric => <TabsTrigger key={metric.key} value={metric.key}>{t(`toolbar.networkKpi.metric.${metric.label}`)}</TabsTrigger>)}
+        </TabsList>
+        {DASHBOARD_METRICS.map(metric => (
+          <TabsContent key={metric.key} value={metric.key} className="mt-2">
+            <DashboardLineChart metric={metric} samples={samples} selectedInterval={selectedInterval} timeline={timeline} fixedDomain={selected ? [0, metric.max] : undefined} />
+          </TabsContent>
+        ))}
+      </Tabs>
+      <Tabs value={relationTab} onValueChange={setRelationTab}>
+        <TabsList className="grid w-full grid-cols-2" aria-label={t("toolbar.networkKpi.dashboard.relationshipTabs")}>
+          <TabsTrigger value="density">{t("toolbar.networkKpi.dashboard.flowVs", { metric: t("toolbar.networkKpi.metric.density") })}</TabsTrigger>
+          <TabsTrigger value="speed">{t("toolbar.networkKpi.dashboard.flowVs", { metric: t("toolbar.networkKpi.metric.speed") })}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="density" className="mt-2">
+          <DashboardScatterChart kind="density" samples={samples} selectedInterval={selectedInterval} timeline={timeline} fixedFlowDomain={selected ? [0, 2200] : undefined} fixedMetricDomain={selected ? [0, 160] : undefined} />
+        </TabsContent>
+        <TabsContent value="speed" className="mt-2">
+          <DashboardScatterChart kind="speed" samples={samples} selectedInterval={selectedInterval} timeline={timeline} fixedFlowDomain={selected ? [0, 2200] : undefined} fixedMetricDomain={selected ? [0, 120] : undefined} />
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }
 
@@ -631,7 +656,7 @@ function DashboardLineChart({
   return (
     <section className="rounded-md border border-border p-2">
       <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{metric.key === "flow" && fixedDomain ? "veh/h/lane" : metric.unit}</span></div>
-      {usable.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, scale ${dashboardNumber(min)} to ${dashboardNumber(max)} ${metric.unit}`} className="network-kpi-dashboard-chart">
+      {usable.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, scale ${dashboardNumber(min)} to ${dashboardNumber(max)} ${metric.unit}`} className="network-kpi-dashboard-chart network-kpi-dashboard-chart--fill">
         {[0, 0.5, 1].map(fraction => <g key={fraction}><line x1="14" y1={6 + fraction * 34} x2="97" y2={6 + fraction * 34} className="network-kpi-chart-axis" /><text x="12" y={8 + fraction * 34} textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(max - fraction * spread)}</text></g>)}
         <path d={path} fill="none" stroke={metric.color} strokeWidth="1.5" />
         {points.map((point, index) => point && <circle key={point.sample.interval} cx={point.x} cy={point.y} r={point.sample.interval === selectedInterval ? 2.3 : 1.3} fill={metric.color}>
@@ -662,13 +687,14 @@ function DashboardScatterChart({ kind, samples, selectedInterval, timeline, fixe
   return (
     <section className="min-w-0 rounded-md border border-border p-2">
       <div className="flex items-center justify-between text-xs"><strong>{title}</strong><span className="text-muted-foreground">{fixedFlowDomain ? "veh/h/lane" : "veh/h"} · {kind === "density" ? "veh/km" : "km/h"}</span></div>
-      {points.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, flow scale ${dashboardNumber(xMin)} to ${dashboardNumber(xMax)}, ${kind} scale ${dashboardNumber(yMin)} to ${dashboardNumber(yMax)}`} className="network-kpi-dashboard-chart">
-        <line x1="4" y1="40" x2="97" y2="40" className="network-kpi-chart-axis" /><line x1="4" y1="4" x2="4" y2="40" className="network-kpi-chart-axis" />
-        {points.map(point => <circle key={point.interval} cx={4 + (point.x - xMin) * 92 / xSpread} cy={39 - (point.y - yMin) * 34 / ySpread} r={point.interval === selectedInterval ? 2.3 : 1.5} fill={kind === "density" ? "#f59e0b" : "#34d399"}>
+      {points.length ? <svg viewBox="0 0 100 54" role="img" aria-label={`${title}, flow scale ${dashboardNumber(xMin)} to ${dashboardNumber(xMax)}, ${kind} scale ${dashboardNumber(yMin)} to ${dashboardNumber(yMax)}`} className="network-kpi-dashboard-chart network-kpi-dashboard-chart--fill">
+        {[0, 0.5, 1].map(fraction => <g key={`y${fraction}`}><line x1="14" y1={6 + fraction * 34} x2="97" y2={6 + fraction * 34} className="network-kpi-chart-axis" /><text x="12" y={7 + fraction * 34} textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(yMax - fraction * ySpread)}</text></g>)}
+        {[0, 0.5, 1].map(fraction => <g key={`x${fraction}`}><line x1={14 + fraction * 83} y1="6" x2={14 + fraction * 83} y2="40" className="network-kpi-chart-axis" /><text x={14 + fraction * 83} y="44" textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} className="network-kpi-chart-label">{dashboardNumber(xMin + fraction * xSpread)}</text></g>)}
+        {points.map(point => <circle key={point.interval} cx={14 + (point.x - xMin) * 83 / xSpread} cy={40 - (point.y - yMin) * 34 / ySpread} r={point.interval === selectedInterval ? 2.3 : 1.5} fill={kind === "density" ? "#f59e0b" : "#34d399"}>
           <title>{`${dashboardIntervalLabel(point.interval, timeline, t("toolbar.networkKpi.intervalAggregate"))}: ${dashboardNumber(point.x)} veh/h · ${dashboardNumber(point.y)} ${kind === "density" ? "veh/km" : "km/h"} · ${point.contributors} sections`}</title>
         </circle>)}
-        <text x="4" y="47" className="network-kpi-chart-label">{dashboardNumber(xMin)}</text><text x="97" y="47" textAnchor="end" className="network-kpi-chart-label">{dashboardNumber(xMax)}</text>
-        <text x="4" y="53" className="network-kpi-chart-label">Flow</text><text x="97" y="53" textAnchor="end" className="network-kpi-chart-label">{kind === "density" ? "Density" : "Speed"}: {dashboardNumber(yMin)}–{dashboardNumber(yMax)}</text>
+        <text x="55" y="51" textAnchor="middle" className="network-kpi-chart-label">{t("toolbar.networkKpi.metric.flow")} ({fixedFlowDomain ? "veh/h/lane" : "veh/h"})</text>
+        <text x="1" y="4" className="network-kpi-chart-label">{metricLabel} ({kind === "density" ? "veh/km" : "km/h"})</text>
       </svg> : <p className="py-3 text-xs text-muted-foreground">{t("toolbar.networkKpi.dashboard.noPairedValues")}</p>}
     </section>
   );

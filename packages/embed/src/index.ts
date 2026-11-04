@@ -155,6 +155,10 @@ export interface GeoLibreEmbedClient {
   testudoRecordVideo(payload: { tviewId: string; generation?: number }): Promise<{ opened: true }>;
   testudoSetCameraView(payload: { tviewId: string; view: TestudoCameraView; generation?: number }): Promise<import("./testudo").TestudoCameraViewState>;
   testudoGetCameraView(payload: { tviewId: string; generation?: number }): Promise<import("./testudo").TestudoCameraViewState>;
+  /** Fit the camera to the whole network of the active package (computed at call time); null when no network bounds are available yet. */
+  testudoFitNetwork(payload: { tviewId: string; generation?: number }): Promise<import("./testudo").TestudoCameraViewState | null>;
+  /** Stop annotation mode / the tour recording / the video recording; stopped=false when nothing was active. */
+  testudoStopCapture(payload: { tviewId: string; generation?: number; kind: "annotations" | "record-tour" | "record-video" }): Promise<{ stopped: boolean }>;
   testudoFeatureRequestInvestigation(payload: { tviewId: string; question: string; activeScenarioId?: string }): Promise<{ requestId: string; tviewId: string; generation: number; accepted: true }>;
   testudoRespondGeoAIRequest(payload: { requestId: string; tviewId: string; generation: number; content?: string; error?: string; proposedActions?: unknown[]; scenario_analysis?: Record<string, unknown>; viewer_action?: TestudoGeoAIReply["viewer_action"] }): Promise<{ requestId: string; accepted: boolean }>;
   loadProject(url: string): Promise<void>;
@@ -318,6 +322,8 @@ export function connect(
     testudoRecordVideo: (payload) => sendTestudo("testudoRecordVideo", withGeneration(payload)),
     testudoSetCameraView: (payload) => sendTestudo("testudoSetCameraView", payload as unknown as Record<string, unknown>),
     testudoGetCameraView: (payload) => sendTestudo("testudoGetCameraView", payload as unknown as Record<string, unknown>),
+    testudoFitNetwork: (payload) => sendTestudo("testudoFitNetwork", payload as unknown as Record<string, unknown>),
+    testudoStopCapture: (payload) => sendTestudo("testudoStopCapture", payload as unknown as Record<string, unknown>),
     testudoFeatureRequestInvestigation: (payload) => sendTestudo("testudoFeatureRequestInvestigation", payload as unknown as Record<string, unknown>),
     testudoRespondGeoAIRequest: (payload) => sendTestudo("testudoRespondGeoAIRequest", payload as unknown as Record<string, unknown>),
     loadProject: (url) => send("loadProject", { url }),

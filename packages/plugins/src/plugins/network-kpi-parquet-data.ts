@@ -267,7 +267,7 @@ export class ParquetResultsDatabase {
         const lanePredicate = kind === "lane" ? ` AND lane = ${Number(options.laneIndex) + 1}` : "";
         const entityPredicate = `did = ${didSql} AND sid = ${sid} AND oid = ${id}${lanePredicate}`;
         const read = (aggregate: boolean) => con.query(
-          `SELECT ent, flow, density, speed FROM ${table} WHERE ${entityPredicate} AND ent ${options.interval !== undefined ? `= ${Math.trunc(options.interval)}` : aggregate ? "= 0" : "<> 0"} ORDER BY ent`,
+          `SELECT ent, flow, ${kind === "lane" ? "density" : "NULL AS density"}, speed FROM ${table} WHERE ${entityPredicate} AND ent ${options.interval !== undefined ? `= ${Math.trunc(options.interval)}` : aggregate ? "= 0" : "<> 0"} ORDER BY ent`,
         );
         let result = rows(await read(false));
         // For turns, callers distinguish absent rows from rows whose metrics
@@ -301,7 +301,7 @@ export class ParquetResultsDatabase {
     const query = (aggregate: boolean) => provider.query({
       dataset: table,
       ...(did == null ? {} : { did }),
-      columns: ["ent", "flow", "density", "speed"],
+      columns: table === "MILANE" ? ["ent", "flow", "density", "speed"] : ["ent", "flow", "speed"],
       filters: [...filters, { column: "ent" as const, op: options.interval !== undefined ? "=" as const : aggregate ? "=" as const : "!=" as const, value: options.interval !== undefined ? Math.trunc(options.interval) : 0 }],
       limit: 100_000,
     });

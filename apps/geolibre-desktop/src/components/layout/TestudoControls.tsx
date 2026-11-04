@@ -13,7 +13,7 @@ import { mapViewFromMapLibre, type TestudoRendererReadinessRef, type TestudoTVie
 import { readDeploymentEnvValue } from "../../lib/deployment-env";
 import { runWithPackageOwnerRelease, TestudoCommandGate } from "../../lib/testudo-command-gate";
 import { createParentProxiedPackageSource, createSignedPackageSource, sourceDirectory } from "../../lib/testudo-source";
-import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoSupersedeStartupProjectEvent, isTestudoAnalysisCapabilityId, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
+import { acceptsTestudoMessage, availableTestudoModes, createTestudoNativeActionEvent, createTestudoNativeStopEvent, createTestudoSupersedeStartupProjectEvent, isTestudoCaptureKind, isTestudoAnalysisCapabilityId, validateScenarioAnalysisAction, validateTestudoBootstrap } from "../../lib/testudo-protocol";
 import { resolveTestudoViewerKind, TestudoAnalysisController } from "../../lib/testudo-analysis";
 import { getPluginManager } from "../../hooks/usePlugins";
 import { readLocalNetworkKpiManifestJson } from "@geolibre/plugins";
@@ -207,9 +207,11 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
     const persistentNetworkMapWatch = setInterval(() => persistentNetwork.reconcileMap(app.getMap?.() as any ?? null), 200);
     // Present data is framed once per package version, never after the user moved the map (see testudo-package-fit).
     const packageFitter = new plugins.PackageFitter();
+    let packageManifestBounds: ReturnType<typeof plugins.manifestBounds> = null;
     const fitPackageView = (key: string, rawManifest: unknown) => {
       try {
-        const bounds = plugins.manifestBounds(rawManifest) ?? persistentNetwork.getGeometryBounds();
+        packageManifestBounds = plugins.manifestBounds(rawManifest);
+        const bounds = packageManifestBounds ?? persistentNetwork.getGeometryBounds();
         const cesium = useAppStore.getState().primaryRenderer === "cesium";
         packageFitter.fit(key, bounds, {
           map: cesium ? null : (app.getMap?.() as unknown as plugins.PackageFitMap | null) ?? null,
@@ -1022,7 +1024,7 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
       preferredMode = undefined;
       declaredAvailableModes = [];
       analysis.setPackage(null);
-      packageFitter.reset(); presentSuspended = null;
+      packageFitter.reset(); packageManifestBounds = null; presentSuspended = null;
       closeAllPlugins(); directory = null; bootstrap = null; declaredScenarioIds = []; declaredScenarioRoster = []; declaredVariantScenarioRoster = []; environmentScenarioCoverage = { byScid: {}, packageEligible: true }; environmentPackageEligible = true;
       persistentNetwork.clear();
       plugins.resetGeoAiChat();
@@ -1717,6 +1719,36 @@ export function TestudoControls({ app, rendererReadinessRef, currentTViewRef }: 
             const camera = readTestudoCamera(app);
             assertCameraCurrent();
             return camera;
+          }
+          if (request.type === "testudoFitNetwork") {
+            if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Camera command targets an unsupported TView.");
+            const fitGeneration = generation;
+            const assertFitCurrent = () => {
+              if (disposed || generation !== fitGeneration || (request.payload?.generation !== undefined && request.payload.generation !== fitGeneration)) throw new Error("Camera command belongs to a stale package generation.");
+            };
+            assertFitCurrent();
+            // Bounds are read now from the mounted network (cleared on package switch), falling back to the active manifest's bounds.
+            const bounds = persistentNetwork.getGeometryBounds() ?? packageManifestBounds;
+            if (!bounds) return null;
+            const cesium = useAppStore.getState().primaryRenderer === "cesium";
+            const fitted = packageFitter.fitNow(bounds, {
+              map: cesium ? null : (app.getMap?.() as unknown as plugins.PackageFitMap | null) ?? null,
+              applyCamera: cesium ? camera => { applyTestudoCamera(app, { ...camera, bearing: 0, pitch: 0 }); } : undefined,
+              viewport: { width: window.innerWidth || 1280, height: window.innerHeight || 720 },
+            });
+            if (!fitted) return null;
+            const camera = readTestudoCamera(app);
+            assertFitCurrent();
+            return camera;
+          }
+          if (request.type === "testudoStopCapture") {
+            if (request.payload?.tviewId !== undefined && request.payload.tviewId !== "main") throw new Error("Capture command targets an unsupported TView.");
+            if (disposed || (request.payload?.generation !== undefined && request.payload.generation !== generation)) throw new Error("Capture command belongs to a stale package generation.");
+            const kind = request.payload?.kind;
+            if (!isTestudoCaptureKind(kind)) throw new Error("kind must be annotations, record-tour, or record-video.");
+            let stopped = false;
+            window.dispatchEvent(createTestudoNativeStopEvent({ source: "testudo", kind, report: value => { if (value) stopped = true; } }));
+            return { stopped };
           }
           if (request.type === "testudoSetViewMode") {
             const mode = await featureBridge.setViewMode("main", request.payload?.mode, request.payload?.generation);

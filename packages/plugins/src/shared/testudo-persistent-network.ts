@@ -1,4 +1,4 @@
-import { loadNetworkKpiGeometry, parseNetworkKpiManifest, type NetworkKpiGeometry } from "../plugins/network-kpi-data";
+import { clearNetworkKpiGeometryCache, loadNetworkKpiGeometry, parseNetworkKpiManifest, type NetworkKpiGeometry } from "../plugins/network-kpi-data";
 import { createNetworkKpiDirectorySource, type NetworkKpiDirectoryHandle } from "../plugins/network-kpi-data";
 import type { TestudoFeatureContext, TestudoMapHandle } from "./testudo-feature-session";
 import { geometryBounds, type PackageBounds } from "./testudo-package-fit";
@@ -152,6 +152,9 @@ export class TestudoPersistentNetwork {
   }
 
   clear(): void {
+    // The base-geometry cache is keyed by package-relative path, which is identical across packages:
+    // a package switch must never reuse the previous package's network (it also drove the camera fit).
+    clearNetworkKpiGeometryCache();
     for (const [map, listener] of this.styleListeners) map.off?.("styledata", listener);
     this.styleListeners.clear();
     for (const [map, listener] of this.clickListeners) (map as any).off?.("click", listener);

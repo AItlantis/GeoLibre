@@ -16,7 +16,7 @@ export function isTestudoAnalysisPluginId(value: unknown): value is TestudoAnaly
 
 const CAPABILITY_IDS: TestudoCapabilityId[] = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai", "geoai-buildings", "analysis-counts", "analysis-od", "analysis-journey-time"];
 const PRESET_PLUGIN_IDS = ["vehicle-playback", "network-kpi", "path-analysis", "emissions-h3", "scenario-comparison", "geoai-buildings"] as const;
-export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPanels", "testudoSetPresentSuspended", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis", "testudoRefreshAnalysisGrant", "testudoSetAnalysisTime"] as const;
+export const TESTUDO_COMMANDS = ["testudoSetGuestCapability", "testudoLoadPackage", "testudoOpenLocalPackage", "testudoSetPlugin", "testudoSetMode", "testudoOpenGeoAiChat", "testudoSetPanels", "testudoSetPresentSuspended", "testudoRequestInvestigation", "testudoSetPreset", "testudoGetState", "testudoCreateTView", "testudoDestroyTView", "testudoGetTView", "testudoGetTViews", "testudoSetActiveTView", "testudoGetActiveTView", "testudoSetScenario", "testudoSetScenarioPair", "testudoSetScenarioPairById", "testudoSetStyle", "testudoSetPlaybackPlaying", "testudoRestartPlayback", "testudoSeekPlayback", "testudoSetPlaybackSpeed", "testudoGetPlaybackState", "testudoSetCameraView", "testudoGetCameraView", "testudoFitNetwork", "testudoStopCapture", "testudoSetMapControl", "testudoSetViewMode", "testudoSetNetworkFilter", "testudoSetLegendVisibility", "testudoSetEsriWorldImagery", "testudoSetKpiGeometry", "testudoGetKpiGeometryState", "testudoSetRenderer", "testudoGetMapControlState", "testudoOpenAnnotations", "testudoOpenRecordTour", "testudoOpenRecordVideo", "testudoRecordTour", "testudoRecordVideo", "testudoFeatureRequestInvestigation", "testudoRespondGeoAIRequest", "testudoOpenAnalysis", "testudoCloseAnalysis", "testudoRefreshAnalysisGrant", "testudoSetAnalysisTime"] as const;
 export const TESTUDO_DEMO_MODES: TestudoDemoMode[] = ["animation", "flow", "paths", "density", "results", "comparison", "environment"];
 
 export const TESTUDO_CHALLENGE_RE = /^[a-f0-9]{32}$/;
@@ -46,6 +46,30 @@ export function isTestudoNativeActionEvent(event: Event): event is CustomEvent<T
     && typeof detail.requestId === "string" && detail.requestId.length > 0 && detail.requestId.length <= 200
     && detail.tviewId === "main" && Number.isSafeInteger(detail.generation) && Number(detail.generation) >= 0
     && typeof detail.respond === "function";
+}
+
+export const TESTUDO_NATIVE_STOP_EVENT = "testudo:native-stop" as const;
+export type TestudoCaptureKind = "annotations" | "record-tour" | "record-video";
+export const TESTUDO_CAPTURE_KINDS: readonly TestudoCaptureKind[] = ["annotations", "record-tour", "record-video"];
+export function isTestudoCaptureKind(value: unknown): value is TestudoCaptureKind {
+  return typeof value === "string" && (TESTUDO_CAPTURE_KINDS as readonly string[]).includes(value);
+}
+
+/** Synchronous same-document stop request; each receiver calls report(true) when it stopped something. */
+export interface TestudoNativeStopDetail {
+  source: "testudo";
+  kind: TestudoCaptureKind;
+  report: (stopped: boolean) => void;
+}
+
+export function createTestudoNativeStopEvent(detail: TestudoNativeStopDetail): CustomEvent<TestudoNativeStopDetail> {
+  return new CustomEvent(TESTUDO_NATIVE_STOP_EVENT, { detail });
+}
+
+export function isTestudoNativeStopEvent(event: Event): event is CustomEvent<TestudoNativeStopDetail> {
+  if (event.type !== TESTUDO_NATIVE_STOP_EVENT || !(event instanceof CustomEvent)) return false;
+  const detail = event.detail as Partial<TestudoNativeStopDetail> | null;
+  return detail?.source === "testudo" && isTestudoCaptureKind(detail.kind) && typeof detail.report === "function";
 }
 
 export interface TestudoSupersedeStartupProjectDetail {

@@ -48,6 +48,7 @@ function harness() {
     openNetworkKpiPanel() { context.panelVisible = true; },
     closeNetworkKpiPanel() { context.panelVisible = false; context.loadToken++; },
     clearNetworkKpiGeometryCache() {},
+    resetNetworkKpiDashboard(_clearCache: boolean) {},
     fetchNetworkKpiManifestJson: async (_url: string): Promise<object> => { calls.fetch++; return {}; },
     capabilityAvailable: () => ({ available: true }),
     listVehicleManifestScenarios: () => [],
