@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@geolibre/core";
 import { ANNOTATIONS_PLUGIN_ID } from "@geolibre/plugins";
 import type { MapEngine } from "@geolibre/map";
 import { createAppAPI, usePluginRegistry } from "../../hooks/usePlugins";
-import { isTestudoNativeActionEvent, TESTUDO_NATIVE_ACTION_EVENT, type TestudoNativeActionResult } from "../../lib/testudo-protocol";
+import { isTestudoNativeActionEvent, isTestudoNativeStopEvent, TESTUDO_NATIVE_ACTION_EVENT, TESTUDO_NATIVE_STOP_EVENT, type TestudoNativeActionResult } from "../../lib/testudo-protocol";
 import { isCurrentTestudoNativeAction, testudoActionUnavailableReason, waitForTestudoRenderer, waitForTestudoRendererEpoch, type TestudoRendererReadinessRef, type TestudoTViewIdentityRef } from "../../lib/testudo-renderer-readiness";
 import { RecordTourDialog } from "./RecordTourDialog";
 import { RecordVideoDialog } from "./RecordVideoDialog";
@@ -25,6 +25,26 @@ export function TestudoNativeActionReceiver({ appApi, mapControllerRef, renderer
   const { isActive, toggle } = usePluginRegistry();
   const [recordTourOpen, setRecordTourOpen] = useState(false);
   const [recordVideoOpen, setRecordVideoOpen] = useState(false);
+
+  // Latest open state for the synchronous stop request (closing a dialog aborts its running take).
+  const openRef = useRef({ recordTour: false, recordVideo: false, annotations: false });
+  openRef.current = { recordTour: recordTourOpen, recordVideo: recordVideoOpen, annotations: isActive(ANNOTATIONS_PLUGIN_ID) };
+
+  useEffect(() => {
+    const onNativeStop = (event: Event) => {
+      if (!isTestudoNativeStopEvent(event)) return;
+      const { kind, report } = event.detail;
+      if (kind === "record-tour" && openRef.current.recordTour) { setRecordTourOpen(false); openRef.current.recordTour = false; report(true); }
+      else if (kind === "record-video" && openRef.current.recordVideo) { setRecordVideoOpen(false); openRef.current.recordVideo = false; report(true); }
+      else if (kind === "annotations" && openRef.current.annotations) {
+        toggle(ANNOTATIONS_PLUGIN_ID, appApi ?? createAppAPI(mapControllerRef));
+        openRef.current.annotations = false;
+        report(true);
+      }
+    };
+    window.addEventListener(TESTUDO_NATIVE_STOP_EVENT, onNativeStop);
+    return () => window.removeEventListener(TESTUDO_NATIVE_STOP_EVENT, onNativeStop);
+  }, [appApi, mapControllerRef, toggle]);
 
   useEffect(() => {
     let disposed = false;
